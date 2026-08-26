@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Log in — Anamnesis{% endblock %}
+{% block content %}
+  <div class="login-panel">
+    <h1>Log in</h1>
+    <p>Anamnesis signs you in through your identity provider. Nothing here ever
+      sees or stores a password.</p>
+    <a class="login-button" href="{{ authorize_url }}">Continue to log in</a>
+  </div>
+{% endblock %}

@@ -1,0 +1,89 @@
+//! `WebError`: maps `anamnesis_app::AppError` (and the web layer's own
+//! failure modes — a bad CSRF token, a broken login callback) to an HTTP
+//! response. `AppError` lives in `anamnesis-app`, `IntoResponse` lives in
+//! `axum`; neither is local to this crate, so this wrapper is what lets the
+//! orphan rule be satisfied.
+//!
+//! Per `docs/PLAN.md`: `Forbidden` -> 403, `NotFound` -> 404, `Domain` -> 422,
+//! `Repo` -> 500, logged with the cause and never leaked to the page.
+
+use anamnesis_app::{AppError, IdentityError};
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse, Response};
+use minijinja::{Environment, context};
+
+/// Every way a request handler in this crate can fail.
+#[derive(Debug)]
+pub enum WebError {
+    App(AppError),
+    /// A mutating form's `csrf_token` did not match the session's.
+    CsrfMismatch,
+    /// The OIDC login round trip could not be completed (missing or
+    /// mismatched pending-login state, or the identity provider rejected
+    /// it).
+    LoginFailed(IdentityError),
+    /// A request could not even be parsed (e.g. a malformed board id in the
+    /// path).
+    BadRequest(String),
+}
+
+impl From<AppError> for WebError {
+    fn from(err: AppError) -> Self {
+        WebError::App(err)
+    }
+}
+
+impl WebError {
+    fn status_and_message(&self) -> (StatusCode, String) {
+        match self {
+            WebError::App(AppError::NotFound) => {
+                (StatusCode::NOT_FOUND, "That board does not exist.".to_string())
+            }
+            WebError::App(AppError::Forbidden) => (
+                StatusCode::FORBIDDEN,
+                "You do not have access to that board.".to_string(),
+            ),
+            WebError::App(AppError::Domain(e)) => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
+            WebError::App(AppError::Repo(e)) => {
+                tracing::error!(error = %e, "repository error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Something went wrong on our end.".to_string(),
+                )
+            }
+            WebError::CsrfMismatch => (
+                StatusCode::FORBIDDEN,
+                "That form's security token was missing or stale. Please try again.".to_string(),
+            ),
+            WebError::LoginFailed(e) => {
+                tracing::error!(error = %e, "login failed");
+                (StatusCode::BAD_REQUEST, "Login could not be completed.".to_string())
+            }
+            WebError::BadRequest(message) => (StatusCode::BAD_REQUEST, message.clone()),
+        }
+    }
+
+    /// Renders this error as a standalone `error.html` page. Used for
+    /// failures that are not in the context of a specific board being
+    /// re-rendered (missing board, forbidden, a broken login, a repo
+    /// failure).
+    pub fn into_response_with(self, templates: &Environment<'static>) -> Response {
+        let (status, message) = self.status_and_message();
+        let body = templates
+            .get_template("error.html")
+            .and_then(|t| t.render(context! { status => status.as_u16(), message => message }))
+            .unwrap_or_else(|_| message.clone());
+        (status, Html(body)).into_response()
+    }
+}
+
+/// A minimal `IntoResponse` for contexts with no template environment handy
+/// (falls back to a plain-text body). Handlers that have `AppState` should
+/// prefer [`WebError::into_response_with`] so the error still looks like
+/// the rest of the app.
+impl IntoResponse for WebError {
+    fn into_response(self) -> Response {
+        let (status, message) = self.status_and_message();
+        (status, message).into_response()
+    }
+}

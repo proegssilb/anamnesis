@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ board.title }} — Anamnesis{% endblock %}
+{% block content %}
+  <div class="board-toolbar">
+    <h1>{{ board.title }}</h1>
+    <form method="post" action="/boards/{{ board.id }}/delete">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="danger">Delete board</button>
+    </form>
+  </div>
+
+  {% if error %}
+    <p class="error-banner" role="alert">{{ error }}</p>
+  {% endif %}
+
+  <div class="board" id="board-{{ board.id }}">
+    {% for column in board.columns %}
+      {% set board_id = board.id %}
+      {% set columns = board.columns %}
+      {% include "_column.html" %}
+    {% endfor %}
+
+    <section class="column new-column">
+      <header class="column-header"><h2 class="column-title">Add column</h2></header>
+      <form class="add-column-form" method="post" action="/boards/{{ board.id }}/columns">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="visually-hidden" for="new-column-title">New column title</label>
+        <input id="new-column-title" name="title" type="text" maxlength="200" placeholder="Column title" required>
+        <label class="visually-hidden" for="new-column-wip">WIP limit (optional)</label>
+        <input id="new-column-wip" name="wip_limit" type="number" min="1" placeholder="WIP limit">
+        <button type="submit">Add column</button>
+      </form>
+    </section>
+  </div>
+{% endblock %}

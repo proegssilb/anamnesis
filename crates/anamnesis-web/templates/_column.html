@@ -1,0 +1,25 @@
+<section class="column" id="column-{{ column.id }}">
+  <header class="column-header">
+    <h2 class="column-title">{{ column.title }}</h2>
+    {% if column.wip_limit %}
+      <span class="wip-limit">{{ column.cards | length }} / {{ column.wip_limit }}</span>
+    {% endif %}
+  </header>
+
+  <div class="card-list">
+    {% for card in column.cards %}
+      {% set card_index = loop.index0 %}
+      {% set current_column_id = column.id %}
+      {% include "_card.html" %}
+    {% endfor %}
+  </div>
+
+  <form class="add-card-form" method="post" action="/boards/{{ board_id }}/columns/{{ column.id }}/cards">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="visually-hidden" for="new-card-title-{{ column.id }}">New card title</label>
+    <input id="new-card-title-{{ column.id }}" name="title" type="text" maxlength="200" placeholder="New card title" required>
+    <label class="visually-hidden" for="new-card-body-{{ column.id }}">New card details</label>
+    <textarea id="new-card-body-{{ column.id }}" name="body" placeholder="Details (optional)"></textarea>
+    <button type="submit">Add card</button>
+  </form>
+</section>
