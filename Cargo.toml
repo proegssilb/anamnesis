@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/anamnesis-core", "crates/anamnesis-app"]
+members = ["crates/anamnesis-core", "crates/anamnesis-app", "crates/anamnesis-adapters"]
 
 [workspace.package]
 edition = "2024"
