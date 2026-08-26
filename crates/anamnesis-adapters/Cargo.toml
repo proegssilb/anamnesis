@@ -1,0 +1,21 @@
+[package]
+name = "anamnesis-adapters"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+anamnesis-app = { version = "0.1.0", path = "../anamnesis-app" }
+anamnesis-core = { version = "0.1.0", path = "../anamnesis-core" }
+async-trait = "0.1.92"
+openidconnect = "4.0.1"
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "tls-rustls", "sqlite", "postgres", "uuid"] }
+uuid = { version = "1.25.0", features = ["v4"] }
+
+[dev-dependencies]
+chrono = "0.4.45"
+rand = "0.8.8"
+rsa = { version = "0.9.10", features = ["pem"] }
+serde_json = "1.0.151"
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+wiremock = "0.6.5"
