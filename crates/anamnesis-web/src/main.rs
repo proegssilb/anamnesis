@@ -43,29 +43,36 @@ async fn main() {
             std::process::exit(1);
         });
 
-    let identity: Option<Arc<dyn IdentityProvider>> = match &config.oidc_issuer_url {
-        Some(issuer_url) => {
-            let client_id = config
-                .oidc_client_id
-                .clone()
-                .expect("ANAMNESIS_OIDC_CLIENT_ID is required whenever an issuer URL is set");
-            let redirect_url = format!("{}/auth/callback", config.base_url.trim_end_matches('/'));
-            let provider = OidcIdentityProvider::discover(
-                issuer_url,
-                client_id,
-                config.oidc_client_secret.clone(),
-                redirect_url,
-                config.oidc_scopes.clone(),
-            )
-            .await
-            .unwrap_or_else(|err| {
-                eprintln!("failed to discover the OIDC provider at {issuer_url}: {err}");
-                std::process::exit(1);
-            });
-            Some(Arc::new(provider))
-        }
-        None => None,
-    };
+    // Dev bypass never needs a real provider — skip discovery entirely even
+    // if ANAMNESIS_OIDC_* happens to also be set (config.rs only makes those
+    // optional in bypass mode, it does not forbid setting them), so a stray
+    // or unreachable issuer URL can never break a `cargo run` with bypass on.
+    let identity: Option<Arc<dyn IdentityProvider>> =
+        match (&config.oidc_issuer_url, config.dev_auth_bypass) {
+            (_, true) => None,
+            (None, false) => None,
+            (Some(issuer_url), false) => {
+                let client_id = config
+                    .oidc_client_id
+                    .clone()
+                    .expect("ANAMNESIS_OIDC_CLIENT_ID is required whenever an issuer URL is set");
+                let redirect_url =
+                    format!("{}/auth/callback", config.base_url.trim_end_matches('/'));
+                let provider = OidcIdentityProvider::discover(
+                    issuer_url,
+                    client_id,
+                    config.oidc_client_secret.clone(),
+                    redirect_url,
+                    config.oidc_scopes.clone(),
+                )
+                .await
+                .unwrap_or_else(|err| {
+                    eprintln!("failed to discover the OIDC provider at {issuer_url}: {err}");
+                    std::process::exit(1);
+                });
+                Some(Arc::new(provider))
+            }
+        };
 
     let state = AppState {
         repo: Arc::new(repo),
