@@ -1,0 +1,305 @@
+/* Anamnesis — one hand-written stylesheet, mobile-first.
+ * Single-column stack by default; columns become a horizontally scrolling
+ * flex row once there is room. No JavaScript anywhere in this app: every
+ * interactive affordance below is a plain link or a plain form.
+ */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --text: #1c2733;
+  --muted: #5b6774;
+  --border: #d7dce2;
+  --accent: #2d6cdf;
+  --accent-contrast: #ffffff;
+  --danger: #c0392b;
+  --radius: 10px;
+  --gap: 0.75rem;
+  --touch: 44px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14181e;
+    --surface: #1e242c;
+    --text: #eef1f5;
+    --muted: #9aa5b1;
+    --border: #333c47;
+    --accent: #6ea1ff;
+    --accent-contrast: #0b1220;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.4;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+a {
+  color: var(--accent);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* --- header --- */
+
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  padding: calc(env(safe-area-inset-top) + 0.75rem) 1rem 0.75rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.site-header .brand {
+  font-weight: 700;
+  font-size: 1.1rem;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.logout-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.current-user {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+main {
+  padding: 1rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* --- forms & buttons: every target at least 44px, per touch guidelines --- */
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+input,
+textarea,
+select,
+button {
+  font: inherit;
+  min-height: var(--touch);
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+}
+
+textarea {
+  min-height: calc(var(--touch) * 1.6);
+  resize: vertical;
+}
+
+button {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: transparent;
+  font-weight: 600;
+  cursor: pointer;
+  min-width: var(--touch);
+}
+
+button.danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+button:hover {
+  filter: brightness(1.05);
+}
+
+/* --- error banners --- */
+
+.error-banner {
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+}
+
+/* --- boards list --- */
+
+.board-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.board-list a {
+  display: block;
+  padding: 1rem;
+  min-height: var(--touch);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-decoration: none;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.new-board-form,
+.login-panel {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 32rem;
+}
+
+/* --- board toolbar --- */
+
+.board-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  flex-wrap: wrap;
+}
+
+.board-toolbar form {
+  flex-direction: row;
+}
+
+/* --- board: mobile-first single column stack --- */
+
+.board {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.column {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.column-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.column-title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.wip-limit {
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.card-title {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.card-body {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+}
+
+.card-move-form,
+.card-delete-form {
+  flex-direction: row;
+  gap: 0.5rem;
+}
+
+.card-move-form select,
+.card-move-form input[type="number"] {
+  flex: 1;
+  min-width: 0;
+}
+
+/* --- wide viewports: columns become a horizontally scrolling row --- */
+
+@media (min-width: 720px) {
+  .board {
+    flex-direction: row;
+    align-items: flex-start;
+    overflow-x: auto;
+    padding-bottom: 0.5rem;
+    scroll-snap-type: x proximity;
+  }
+
+  .column {
+    flex: 0 0 18rem;
+    scroll-snap-align: start;
+    max-height: calc(100vh - 8rem);
+    overflow-y: auto;
+  }
+}
