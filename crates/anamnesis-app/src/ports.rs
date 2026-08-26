@@ -3,6 +3,7 @@
 //! this module names a concrete database, HTTP, or OIDC crate.
 
 use async_trait::async_trait;
+use serde::Serialize;
 
 use anamnesis_core::{BoardId, Timestamp, Title, UserId};
 
@@ -13,7 +14,7 @@ pub use anamnesis_core::Board;
 
 /// A lightweight summary of a board, for listing without loading every
 /// column and card.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoardSummary {
     pub id: BoardId,
     pub title: Title,

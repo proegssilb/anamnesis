@@ -76,6 +76,36 @@ fn build_cookie(name: &'static str, value: String, secure: bool) -> Cookie<'stat
         .build()
 }
 
+/// Mints a fresh CSRF token: 256 bits of randomness (two concatenated random
+/// UUIDv4s, hex-encoded), far beyond what a double-submit token needs.
+/// Deliberately reuses `uuid` (already a dependency) rather than adding a
+/// dedicated RNG crate for this one call site.
+pub fn generate_csrf_token() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+/// Compares two CSRF tokens in constant time (with respect to the token
+/// content — the early-return on length mismatch is fine to leak, since the
+/// token length is fixed and public). A naive `==` short-circuits on the
+/// first differing byte, which leaks a timing signal an attacker could use
+/// to guess the token one byte at a time; this walks every byte regardless.
+pub fn csrf_tokens_match(expected: &str, submitted: &str) -> bool {
+    let expected = expected.as_bytes();
+    let submitted = submitted.as_bytes();
+    if expected.len() != submitted.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (a, b) in expected.iter().zip(submitted.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +151,38 @@ mod tests {
         let cookie = pending_login_cookie(&data, false);
         let parsed = parse_pending_login(cookie.value()).expect("valid pending login parses");
         assert_eq!(parsed, data);
+    }
+
+    #[test]
+    fn generated_csrf_tokens_are_64_hex_chars_and_distinct() {
+        let a = generate_csrf_token();
+        let b = generate_csrf_token();
+        assert_eq!(a.len(), 64);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b, "two successive tokens should not collide");
+    }
+
+    #[test]
+    fn matching_tokens_compare_equal() {
+        let token = generate_csrf_token();
+        assert!(csrf_tokens_match(&token, &token.clone()));
+    }
+
+    #[test]
+    fn a_single_differing_byte_is_detected() {
+        let token = generate_csrf_token();
+        let mut tampered = token.clone();
+        tampered.replace_range(0..1, if &tampered[0..1] == "a" { "b" } else { "a" });
+        assert!(!csrf_tokens_match(&token, &tampered));
+    }
+
+    #[test]
+    fn different_length_tokens_never_match() {
+        assert!(!csrf_tokens_match("short", "shorter-but-different-length"));
+    }
+
+    #[test]
+    fn empty_tokens_do_not_match_a_real_token() {
+        assert!(!csrf_tokens_match(&generate_csrf_token(), ""));
     }
 }

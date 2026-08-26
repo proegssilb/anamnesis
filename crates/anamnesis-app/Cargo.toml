@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 anamnesis-core = { version = "0.1.0", path = "../anamnesis-core" }
 async-trait = "0.1.92"
+serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.20"
 uuid = "1.25.0"
 
