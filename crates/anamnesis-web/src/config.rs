@@ -116,11 +116,16 @@ fn require(
     get: &impl Fn(&str) -> Option<String>,
     name: &'static str,
 ) -> Result<String, ConfigError> {
-    get(name).filter(|v| !v.is_empty()).ok_or(ConfigError::Missing(name))
+    get(name)
+        .filter(|v| !v.is_empty())
+        .ok_or(ConfigError::Missing(name))
 }
 
 fn parse_bool(raw: &str) -> bool {
-    matches!(raw.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 #[cfg(test)]
@@ -155,7 +160,10 @@ mod tests {
         let cfg = Config::from_source(env(&full_valid_env())).unwrap();
         assert_eq!(cfg.database_url, "sqlite://test.db");
         assert_eq!(cfg.base_url, "http://localhost:8080");
-        assert_eq!(cfg.oidc_issuer_url.as_deref(), Some("https://idp.example.com"));
+        assert_eq!(
+            cfg.oidc_issuer_url.as_deref(),
+            Some("https://idp.example.com")
+        );
         assert_eq!(cfg.oidc_client_id.as_deref(), Some("client"));
         assert_eq!(cfg.oidc_client_secret.as_deref(), Some("secret"));
         assert_eq!(cfg.oidc_scopes, vec!["openid", "profile", "email"]);
@@ -209,7 +217,10 @@ mod tests {
         let mut pairs = full_valid_env();
         pairs.push(("ANAMNESIS_BIND_ADDR", "127.0.0.1:3000"));
         let cfg = Config::from_source(env(&pairs)).unwrap();
-        assert_eq!(cfg.bind_addr, SocketAddr::from_str("127.0.0.1:3000").unwrap());
+        assert_eq!(
+            cfg.bind_addr,
+            SocketAddr::from_str("127.0.0.1:3000").unwrap()
+        );
     }
 
     #[test]
@@ -217,7 +228,13 @@ mod tests {
         let mut pairs = full_valid_env();
         pairs.push(("ANAMNESIS_BIND_ADDR", "not-an-addr"));
         let err = Config::from_source(env(&pairs)).unwrap_err();
-        assert!(matches!(err, ConfigError::Invalid { name: "ANAMNESIS_BIND_ADDR", .. }));
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "ANAMNESIS_BIND_ADDR",
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -25,6 +25,10 @@ pub enum WebError {
     /// A request could not even be parsed (e.g. a malformed board id in the
     /// path).
     BadRequest(String),
+    /// A template failed to render. Always a bug (a missing context
+    /// variable, a broken template), never something a request caused — but
+    /// it still has to become *some* response rather than a panic.
+    Template(String),
 }
 
 impl From<AppError> for WebError {
@@ -36,9 +40,10 @@ impl From<AppError> for WebError {
 impl WebError {
     fn status_and_message(&self) -> (StatusCode, String) {
         match self {
-            WebError::App(AppError::NotFound) => {
-                (StatusCode::NOT_FOUND, "That board does not exist.".to_string())
-            }
+            WebError::App(AppError::NotFound) => (
+                StatusCode::NOT_FOUND,
+                "That board does not exist.".to_string(),
+            ),
             WebError::App(AppError::Forbidden) => (
                 StatusCode::FORBIDDEN,
                 "You do not have access to that board.".to_string(),
@@ -57,10 +62,26 @@ impl WebError {
             ),
             WebError::LoginFailed(e) => {
                 tracing::error!(error = %e, "login failed");
-                (StatusCode::BAD_REQUEST, "Login could not be completed.".to_string())
+                (
+                    StatusCode::BAD_REQUEST,
+                    "Login could not be completed.".to_string(),
+                )
             }
             WebError::BadRequest(message) => (StatusCode::BAD_REQUEST, message.clone()),
+            WebError::Template(message) => {
+                tracing::error!(error = %message, "template render failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Something went wrong on our end.".to_string(),
+                )
+            }
         }
+    }
+
+    /// Wraps a MiniJinja error (template lookup or render failure) as a
+    /// [`WebError::Template`], keeping its `Display` message.
+    pub fn template(err: minijinja::Error) -> Self {
+        WebError::Template(err.to_string())
     }
 
     /// Renders this error as a standalone `error.html` page. Used for
