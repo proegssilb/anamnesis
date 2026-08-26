@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # fmt + clippy + the full workspace test suite (Postgres contract test
+  # excluded here — it is #[ignore]d by default and covered by the
+  # `postgres` job below, against a real database).
+  check:
+    name: fmt, clippy, test (stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build output
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+  # Runs the Postgres side of the SqlBoardRepository contract, which is
+  # #[ignore]d in the default `check` job above. A postgres:16 service
+  # container backs it; the health-check keeps the job from racing the
+  # database coming up.
+  postgres:
+    name: adapter contract tests (Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: anamnesis
+          POSTGRES_PASSWORD: anamnesis
+          POSTGRES_DB: anamnesis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U anamnesis -d anamnesis_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ANAMNESIS_TEST_PG_URL: postgres://anamnesis:anamnesis@localhost:5432/anamnesis_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build output
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: postgres
+
+      - name: cargo test -p anamnesis-adapters -- --ignored
+        run: cargo test -p anamnesis-adapters --test board_repository -- --ignored
