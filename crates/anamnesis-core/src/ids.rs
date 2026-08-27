@@ -54,9 +54,7 @@ macro_rules! uuid_id {
     };
 }
 
-uuid_id!(BoardId);
 uuid_id!(ColumnId);
-uuid_id!(CardId);
 uuid_id!(AreaId);
 uuid_id!(ProjectId);
 uuid_id!(TaskId);
@@ -128,21 +126,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn board_column_card_ids_wrap_and_expose_a_uuid() {
+    fn column_id_wraps_and_exposes_a_uuid() {
         let raw = Uuid::from_u128(1);
-        let board = BoardId::new(raw);
-        let column = ColumnId::new(raw);
-        let card = CardId::new(raw);
-        assert_eq!(board.as_uuid(), raw);
-        assert_eq!(column.as_uuid(), raw);
-        assert_eq!(card.as_uuid(), raw);
+        assert_eq!(ColumnId::new(raw).as_uuid(), raw);
     }
 
     #[test]
     fn ids_of_the_same_kind_compare_by_value() {
-        let a = CardId::new(Uuid::from_u128(1));
-        let b = CardId::new(Uuid::from_u128(1));
-        let c = CardId::new(Uuid::from_u128(2));
+        let a = ColumnId::new(Uuid::from_u128(1));
+        let b = ColumnId::new(Uuid::from_u128(1));
+        let c = ColumnId::new(Uuid::from_u128(2));
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
