@@ -11,9 +11,9 @@ use crate::handlers::{
     create_project_handler, create_relationship_handler, create_task_handler,
     delete_relationship_handler, drop_tangle_handler, drop_task_handler, edit_task_handler,
     healthz_handler, list_areas_handler, login_handler, logout_handler, raise_task_handler,
-    reposition_handler, root_handler, search_handler, set_field_value_handler,
-    set_parent_handler, transition_project_status_handler, view_area_handler, view_board_handler,
-    view_project_handler, view_task_handler,
+    reposition_handler, root_handler, search_handler, set_field_value_handler, set_parent_handler,
+    transition_project_status_handler, view_area_handler, view_board_handler, view_project_handler,
+    view_task_handler,
 };
 use crate::state::AppState;
 use crate::static_files;

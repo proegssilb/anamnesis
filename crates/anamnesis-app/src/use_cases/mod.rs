@@ -16,10 +16,10 @@ mod task;
 
 pub use archive::archive_done_tasks;
 pub use area::{create_area, edit_area, list_areas, reposition_area, view_area};
-pub use board::{BoardItemKind, reposition_board_item};
 pub use attachment::{
     add_file_attachment, add_link_attachment, delete_attachment, list_attachments,
 };
+pub use board::{BoardItemKind, reposition_board_item};
 pub use comment::{add_comment, delete_comment, edit_comment, list_comments};
 pub use project::{
     add_field_definition, add_relationship_kind, archive_project, create_project, edit_project,

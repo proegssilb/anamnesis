@@ -32,9 +32,8 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
 
 use anamnesis_app::{
-    AppError, BoardItem, BoardItemKind, archive_done_tasks, drop_tangle, place_tangle,
-    raise_task, reposition_board_item, request_suggestion, resolve_frozen_tangles,
-    run_tangle_detection,
+    AppError, BoardItem, BoardItemKind, archive_done_tasks, drop_tangle, place_tangle, raise_task,
+    reposition_board_item, request_suggestion, resolve_frozen_tangles, run_tangle_detection,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{Blockage, ColumnId, OfferItem, Outcome, ProjectId, Tangle, TangleId, TaskId};

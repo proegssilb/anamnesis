@@ -101,7 +101,10 @@ async fn create_area_impl(
             // `crate::handlers::access` already calls `MembershipQuery`
             // directly for the same kind of infra-adjacent reason
             // (`crate::error::WebError`'s doc comment).
-            state.search_index.index_area(area.id, area.title.as_str()).await?;
+            state
+                .search_index
+                .index_area(area.id, area.title.as_str())
+                .await?;
             Ok(Redirect::to(&format!("/areas/{}", area.id)).into_response())
         }
         Err(AppError::Rule(e)) => {

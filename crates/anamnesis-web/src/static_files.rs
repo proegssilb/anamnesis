@@ -25,7 +25,10 @@ pub async fn app_css() -> impl IntoResponse {
 
 pub async fn app_js() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
         include_str!("../static/app.js"),
     )
 }
@@ -33,7 +36,10 @@ pub async fn app_js() -> impl IntoResponse {
 /// Vendored `htmx` (`docs/DOMAIN.md` §8) — see the module doc comment.
 pub async fn htmx_js() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
         include_str!("../static/htmx.min.js"),
     )
 }
@@ -41,7 +47,10 @@ pub async fn htmx_js() -> impl IntoResponse {
 /// Vendored `SortableJS` (`docs/DOMAIN.md` §8) — see the module doc comment.
 pub async fn sortable_js() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
         include_str!("../static/sortable.min.js"),
     )
 }
