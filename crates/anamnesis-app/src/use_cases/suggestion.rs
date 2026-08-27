@@ -25,8 +25,9 @@ use crate::ports::{BoardQuery, Clock, TaskRepository};
 /// `local_date` is `(year, day-of-year)` in the user's own timezone,
 /// supplied by the caller: this crate has no timezone-aware clock of its
 /// own (`crate::ports::Clock` only ever hands back a bare `Timestamp`) —
-/// combining it with a `crate::ports::TimezoneResolver`'s `Timezone` to get
-/// a local calendar date is the caller's job, one layer up from here.
+/// calling `crate::ports::TimezoneResolver::local_date` to turn that
+/// `Timestamp` into a local calendar date is the caller's job, one layer up
+/// from here.
 ///
 /// The "board-state fingerprint" is folded from every candidate's
 /// scheduling-relevant fields, in an id-sorted (not insertion) order, so the

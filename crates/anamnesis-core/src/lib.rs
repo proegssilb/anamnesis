@@ -46,9 +46,7 @@ pub use project::{
     Project, ProjectStatus, archive_project, create_project, edit_project, transition_status,
     unarchive_project,
 };
-pub use recurrence::{
-    DstRule, DstTransition, Recurrence, Timezone, WeekOfMonth, next_run, sweep_done,
-};
+pub use recurrence::{Recurrence, next_run, sweep_done};
 pub use relationship::{
     Relationship, RelationshipKind, builtin_blocks, builtin_duplicates, builtin_relates_to,
     create_relationship, create_relationship_kind, is_blocking,

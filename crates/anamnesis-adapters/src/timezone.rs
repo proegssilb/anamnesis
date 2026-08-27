@@ -1,238 +1,385 @@
-//! [`TableTimezoneResolver`]: the [`TimezoneResolver`] port backed by a
-//! small, hand-curated table of IANA zone names — not a full tzdb.
+//! [`TzTimezoneResolver`]: the [`TimezoneResolver`] port backed by a real
+//! IANA time zone database, via [`time-tz`](https://docs.rs/time-tz) (its
+//! default `db` feature, backed by the `tz` crate's own vendored copy of
+//! the IANA database).
 //!
-//! `anamnesis-core` deliberately carries no timezone database
-//! (`anamnesis_core::recurrence`'s module doc comment); this adapter is the
-//! seam Phase C left for "a real tzdata source" to fill in. **This is that
-//! seam filled in narrowly, not a general IANA lookup**: it recognises a
-//! fixed list of common zone names, encoding two real, tested civil DST
-//! rules —
+//! **Why `time-tz`, not a hand-curated table (or `jiff`)**: the defect this
+//! replaces was a hand-curated table of ~22 zone names with hand-written
+//! DST rules (`docs/DOMAIN.md`-adjacent history — see the git log for the
+//! removed `TableTimezoneResolver`). Real DST rules change by government
+//! decree, often with only weeks of notice (Brazil abolished DST in 2019,
+//! Mexico and Iran dropped most of it in 2022, Jordan and Syria moved
+//! permanently, Chile shifts its dates), the whole Southern Hemisphere was
+//! missing, and a rule reapplied to a historical timestamp silently used
+//! *today's* rule instead of whichever was in force then. None of that is
+//! fixable by curating a bigger table — it needs a real tzdb. `time-tz` was
+//! chosen over `jiff` (also evaluated) because it fits the `time` crate
+//! already used throughout this workspace (`Date`, `Time`,
+//! `OffsetDateTime`) with no second date-time library or conversion layer
+//! at this seam; `jiff` is an excellent, independently capable library but
+//! would mean two competing date-time representations in the dependency
+//! graph for no behavioural gain here.
 //!
-//! - the current US rule (second Sunday of March / first Sunday of
-//!   November, 2 AM local, +1h saving) — exactly the rule
-//!   `anamnesis_core::recurrence`'s own tests already exercise for
-//!   `America/New_York`, reused here rather than re-derived, and
-//! - the current EU rule (last Sunday of March / last Sunday of October,
-//!   +1h saving, at the local wall-clock time that rule's 01:00 UTC
-//!   instant works out to for a given standard offset)
-//!
-//! — and applying each to the small set of zones in [`resolve`]'s match
-//! arms. A name outside that list resolves to `None`, not a best-effort
-//! guess. Growing the table is a matter of adding a match arm with the
-//! correct standard offset and rule, not a structural change.
-//!
-//! **Zones that resolve** (see the Phase E report for the authoritative
-//! list): `UTC`; fixed-offset `America/Phoenix`, `Pacific/Honolulu`,
-//! `Asia/Tokyo`, `Asia/Shanghai`, `Asia/Kolkata`, `Asia/Dubai`; US-rule
-//! `America/New_York`, `America/Chicago`, `America/Denver`,
-//! `America/Los_Angeles`, `America/Anchorage`; EU-rule `Europe/London`,
-//! `Europe/Berlin`, `Europe/Paris`, `Europe/Madrid`, `Europe/Rome`,
-//! `Europe/Amsterdam`, `Europe/Athens`, `Europe/Helsinki`,
-//! `Europe/Bucharest`. Nothing else — in particular no Southern Hemisphere
-//! zones (Australia, South America) and no historical rule changes.
+//! **How the tzdb data ships — no system tzdb required**: `time-tz`'s `db`
+//! feature (the default, enabled below) pulls in real IANA tzdata *source
+//! files* vendored directly inside the `time-tz` crate's own package (its
+//! `tz/` directory — `africa`, `asia`, `europe`, `northamerica`, ... —
+//! copied from the upstream `tz` database, not downloaded at build time).
+//! `time-tz`'s `build.rs` parses those files at compile time and bakes the
+//! result into the binary as a static `phf` map (`timezones::get_by_name`).
+//! There is **no runtime read of `/usr/share/zoneinfo`** anywhere in this
+//! path — a container with no system tzdb installed at all works
+//! identically to one that has the latest copy, because neither is ever
+//! consulted. The one tradeoff is that "freshness" is now pinned to
+//! whichever `time-tz` version is vendored (currently tracking the tzdata
+//! `2024a` release — well past every rule change named above), not to
+//! whatever the host OS happens to have; bumping `time-tz` is how this gets
+//! refreshed.
 
+use anamnesis_app::RepoError;
 use anamnesis_app::TimezoneResolver;
-use anamnesis_core::Timezone;
-use time::{Month, UtcOffset, Weekday};
+use anamnesis_core::Timestamp;
+use time::{Date, OffsetDateTime, PrimitiveDateTime, Time};
+use time_tz::{OffsetDateTimeExt, OffsetResult, PrimitiveDateTimeExt, timezones};
 
-fn offset(hours: i8, minutes: i8) -> UtcOffset {
-    UtcOffset::from_hms(hours, minutes, 0).expect("fixed offset table entries are valid")
-}
-
-/// The current US DST rule: 2nd Sunday of March / 1st Sunday of November,
-/// both at 02:00 local, +1h saving — identical to the rule
-/// `anamnesis_core::recurrence`'s own tests use for `America/New_York`.
-fn us_dst_rule() -> anamnesis_core::DstRule {
-    use anamnesis_core::{DstRule, DstTransition, WeekOfMonth};
-    DstRule {
-        saving: offset(1, 0),
-        starts: DstTransition {
-            month: Month::March,
-            week: WeekOfMonth::Second,
-            weekday: Weekday::Sunday,
-            local_time: time::Time::from_hms(2, 0, 0).expect("valid time"),
-        },
-        ends: DstTransition {
-            month: Month::November,
-            week: WeekOfMonth::First,
-            weekday: Weekday::Sunday,
-            local_time: time::Time::from_hms(2, 0, 0).expect("valid time"),
-        },
-    }
-}
-
-/// The current EU DST rule for a zone whose standard offset is
-/// `standard_offset`: DST starts and ends at 01:00 UTC on the last Sunday of
-/// March/October respectively, which — worked out to that zone's local wall
-/// clock — is `standard_offset + 1h` (start, still on standard time) and
-/// `standard_offset + 2h` (end, while still on daylight time). All European
-/// zones this table covers carry a whole-hour standard offset, so this
-/// integer-hour arithmetic is exact for them.
-fn eu_dst_rule(standard_offset: UtcOffset) -> anamnesis_core::DstRule {
-    use anamnesis_core::{DstRule, DstTransition, WeekOfMonth};
-    let base = standard_offset.whole_hours();
-    let starts_hour = (i32::from(base) + 1).rem_euclid(24) as u8;
-    let ends_hour = (i32::from(base) + 2).rem_euclid(24) as u8;
-    DstRule {
-        saving: offset(1, 0),
-        starts: DstTransition {
-            month: Month::March,
-            week: WeekOfMonth::Last,
-            weekday: Weekday::Sunday,
-            local_time: time::Time::from_hms(starts_hour, 0, 0).expect("valid hour"),
-        },
-        ends: DstTransition {
-            month: Month::October,
-            week: WeekOfMonth::Last,
-            weekday: Weekday::Sunday,
-            local_time: time::Time::from_hms(ends_hour, 0, 0).expect("valid hour"),
-        },
-    }
-}
-
-fn eu_zone(standard_offset: UtcOffset) -> Timezone {
-    Timezone::with_dst(standard_offset, eu_dst_rule(standard_offset))
-}
-
-fn us_zone(standard_offset: UtcOffset) -> Timezone {
-    Timezone::with_dst(standard_offset, us_dst_rule())
-}
-
-/// A [`TimezoneResolver`] backed by the hand-curated table documented on
-/// this module.
+/// A [`TimezoneResolver`] backed by `time-tz`'s embedded IANA database. See
+/// the module doc comment for exactly how the data ships and what it can
+/// and cannot promise.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct TableTimezoneResolver;
+pub struct TzTimezoneResolver;
 
-impl TableTimezoneResolver {
+impl TzTimezoneResolver {
     pub fn new() -> Self {
         Self
     }
 }
 
-impl TimezoneResolver for TableTimezoneResolver {
-    fn resolve(&self, iana_name: &str) -> Option<Timezone> {
-        Some(match iana_name {
-            "UTC" | "Etc/UTC" => Timezone::fixed(UtcOffset::UTC),
+fn unknown_zone(iana_name: &str) -> RepoError {
+    RepoError::new(format!("unknown or unsupported timezone: {iana_name}"))
+}
 
-            // Fixed offset, no DST.
-            "America/Phoenix" => Timezone::fixed(offset(-7, 0)),
-            "Pacific/Honolulu" => Timezone::fixed(offset(-10, 0)),
-            "Asia/Tokyo" => Timezone::fixed(offset(9, 0)),
-            "Asia/Shanghai" => Timezone::fixed(offset(8, 0)),
-            "Asia/Kolkata" => Timezone::fixed(offset(5, 30)),
-            "Asia/Dubai" => Timezone::fixed(offset(4, 0)),
+impl TimezoneResolver for TzTimezoneResolver {
+    fn local_date(&self, iana_name: &str, instant: Timestamp) -> Result<Date, RepoError> {
+        let tz = timezones::get_by_name(iana_name).ok_or_else(|| unknown_zone(iana_name))?;
+        let utc = OffsetDateTime::from_unix_timestamp(instant.unix_seconds())
+            .expect("Timestamp was validated at construction");
+        Ok(utc.to_timezone(tz).date())
+    }
 
-            // US DST rule.
-            "America/New_York" => us_zone(offset(-5, 0)),
-            "America/Chicago" => us_zone(offset(-6, 0)),
-            "America/Denver" => us_zone(offset(-7, 0)),
-            "America/Los_Angeles" => us_zone(offset(-8, 0)),
-            "America/Anchorage" => us_zone(offset(-9, 0)),
-
-            // EU DST rule.
-            "Europe/London" => eu_zone(offset(0, 0)),
-            "Europe/Berlin" | "Europe/Paris" | "Europe/Madrid" | "Europe/Rome"
-            | "Europe/Amsterdam" => eu_zone(offset(1, 0)),
-            "Europe/Athens" | "Europe/Helsinki" | "Europe/Bucharest" => eu_zone(offset(2, 0)),
-
-            _ => return None,
-        })
+    fn to_utc(&self, iana_name: &str, date: Date, time: Time) -> Result<Timestamp, RepoError> {
+        let tz = timezones::get_by_name(iana_name).ok_or_else(|| unknown_zone(iana_name))?;
+        let naive = PrimitiveDateTime::new(date, time);
+        let resolved = match naive.assume_timezone(tz) {
+            // Unambiguous: exactly one instant matches this local moment.
+            OffsetResult::Some(odt) => odt,
+            // Ambiguous: the repeated wall-clock hour of a fall-back
+            // transition — both readings are equally "correct"; this
+            // resolver deterministically takes the earlier instant (the
+            // pre-transition offset), per this port's documented contract.
+            OffsetResult::Ambiguous(earlier, _later) => earlier,
+            // The requested local moment does not exist at all (the
+            // skipped wall-clock hour of a spring-forward transition).
+            OffsetResult::None => {
+                return Err(RepoError::new(format!(
+                    "local time {naive} does not exist in {iana_name} (falls in a DST gap)"
+                )));
+            }
+        };
+        Timestamp::from_unix_seconds(resolved.unix_timestamp())
+            .map_err(|e| RepoError::from_source("computed instant out of range", e))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use time::Month;
+
+    fn ts(year: i32, month: Month, day: u8, hour: u8, minute: u8) -> Timestamp {
+        let odt = PrimitiveDateTime::new(
+            Date::from_calendar_date(year, month, day).unwrap(),
+            Time::from_hms(hour, minute, 0).unwrap(),
+        )
+        .assume_utc();
+        Timestamp::from_unix_seconds(odt.unix_timestamp()).unwrap()
+    }
+
+    fn date(year: i32, month: Month, day: u8) -> Date {
+        Date::from_calendar_date(year, month, day).unwrap()
+    }
+
+    // --- unknown / malformed zone names ---
 
     #[test]
-    fn resolves_every_documented_zone() {
-        let resolver = TableTimezoneResolver::new();
-        for name in [
-            "UTC",
-            "Etc/UTC",
-            "America/Phoenix",
-            "Pacific/Honolulu",
-            "Asia/Tokyo",
-            "Asia/Shanghai",
-            "Asia/Kolkata",
-            "Asia/Dubai",
-            "America/New_York",
-            "America/Chicago",
-            "America/Denver",
-            "America/Los_Angeles",
-            "America/Anchorage",
-            "Europe/London",
-            "Europe/Berlin",
-            "Europe/Paris",
-            "Europe/Madrid",
-            "Europe/Rome",
-            "Europe/Amsterdam",
-            "Europe/Athens",
-            "Europe/Helsinki",
-            "Europe/Bucharest",
-        ] {
-            assert!(
-                resolver.resolve(name).is_some(),
-                "{name} should resolve but did not"
-            );
-        }
+    fn an_unknown_zone_name_is_rejected_cleanly() {
+        let resolver = TzTimezoneResolver::new();
+        assert!(
+            resolver
+                .local_date("Mars/Colony_One", ts(2026, Month::June, 1, 0, 0))
+                .is_err()
+        );
+        assert!(
+            resolver
+                .to_utc("", date(2026, Month::June, 1), Time::MIDNIGHT)
+                .is_err()
+        );
+        assert!(
+            resolver
+                .to_utc(
+                    "not a real zone name!!",
+                    date(2026, Month::June, 1),
+                    Time::MIDNIGHT
+                )
+                .is_err()
+        );
+    }
+
+    // --- fixed-offset zone, no DST at all ---
+
+    #[test]
+    fn tokyo_has_a_fixed_offset_year_round() {
+        // Asia/Tokyo: UTC+9, no DST, ever.
+        let resolver = TzTimezoneResolver::new();
+        let winter = resolver
+            .to_utc("Asia/Tokyo", date(2026, Month::January, 15), Time::MIDNIGHT)
+            .unwrap();
+        let summer = resolver
+            .to_utc("Asia/Tokyo", date(2026, Month::July, 15), Time::MIDNIGHT)
+            .unwrap();
+        // 00:00 JST == 15:00 UTC the previous day, both seasons alike.
+        assert_eq!(winter, ts(2026, Month::January, 14, 15, 0));
+        assert_eq!(summer, ts(2026, Month::July, 14, 15, 0));
     }
 
     #[test]
-    fn an_unknown_zone_name_resolves_to_none() {
-        let resolver = TableTimezoneResolver::new();
-        assert_eq!(resolver.resolve("Mars/Colony_One"), None);
-        assert_eq!(resolver.resolve(""), None);
-        assert_eq!(resolver.resolve("america/new_york"), None); // case-sensitive
+    fn phoenix_has_a_fixed_offset_year_round() {
+        // America/Phoenix: UTC-7, no DST, unlike the rest of Arizona's
+        // neighbours.
+        let resolver = TzTimezoneResolver::new();
+        let winter = resolver
+            .to_utc(
+                "America/Phoenix",
+                date(2026, Month::January, 15),
+                Time::MIDNIGHT,
+            )
+            .unwrap();
+        let summer = resolver
+            .to_utc(
+                "America/Phoenix",
+                date(2026, Month::July, 15),
+                Time::MIDNIGHT,
+            )
+            .unwrap();
+        assert_eq!(winter, ts(2026, Month::January, 15, 7, 0));
+        assert_eq!(summer, ts(2026, Month::July, 15, 7, 0));
+    }
+
+    // --- half-hour / 45-minute offsets ---
+
+    #[test]
+    fn kolkata_is_a_fixed_half_hour_offset() {
+        // Asia/Kolkata: UTC+5:30, no DST.
+        let resolver = TzTimezoneResolver::new();
+        let instant = resolver
+            .to_utc("Asia/Kolkata", date(2026, Month::June, 1), Time::MIDNIGHT)
+            .unwrap();
+        assert_eq!(instant, ts(2026, Month::May, 31, 18, 30));
+
+        let round_trip = resolver.local_date("Asia/Kolkata", instant).unwrap();
+        assert_eq!(round_trip, date(2026, Month::June, 1));
     }
 
     #[test]
-    fn fixed_zones_carry_no_dst_rule() {
-        let resolver = TableTimezoneResolver::new();
-        let phoenix = resolver.resolve("America/Phoenix").unwrap();
-        assert_eq!(phoenix.standard_offset, offset(-7, 0));
-        assert!(phoenix.dst.is_none());
+    fn kathmandu_is_a_fixed_45_minute_offset() {
+        // Asia/Kathmandu: UTC+5:45 -- breaks any whole-hour or half-hour
+        // assumption.
+        let resolver = TzTimezoneResolver::new();
+        let instant = resolver
+            .to_utc("Asia/Kathmandu", date(2026, Month::June, 1), Time::MIDNIGHT)
+            .unwrap();
+        assert_eq!(instant, ts(2026, Month::May, 31, 18, 15));
     }
 
-    #[test]
-    fn new_york_matches_the_documented_us_rule_around_the_spring_transition() {
-        // 2026-03-08 is the 2nd Sunday of March 2026 -- the US spring-forward
-        // date. Just before 02:00 local the zone is still standard (-5);
-        // just at/after 02:00 local it is daylight (-4).
-        let resolver = TableTimezoneResolver::new();
-        let ny = resolver.resolve("America/New_York").unwrap();
+    // --- Southern Hemisphere: DST starts in the local spring (October) ---
 
-        let before = time::PrimitiveDateTime::new(
-            time::Date::from_calendar_date(2026, Month::March, 8).unwrap(),
-            time::Time::from_hms(1, 59, 0).unwrap(),
-        );
-        let after = time::PrimitiveDateTime::new(
-            time::Date::from_calendar_date(2026, Month::March, 8).unwrap(),
-            time::Time::from_hms(3, 0, 0).unwrap(),
-        );
-        assert_eq!(ny.to_utc(before).offset(), offset(-5, 0));
-        assert_eq!(ny.to_utc(after).offset(), offset(-4, 0));
+    #[test]
+    fn sydney_dst_inverts_to_the_southern_hemisphere_calendar() {
+        // Australia/Sydney: standard AEST = UTC+10, daylight AEDT = UTC+11.
+        // Unlike every Northern-Hemisphere zone, DST *starts* in October
+        // (the local spring) and *ends* in April (the local autumn) -- the
+        // exact shape the old hand-rolled rule table could not express.
+        let resolver = TzTimezoneResolver::new();
+
+        // 2026-10-04 is Sydney's DST start (2nd Sunday of October); before
+        // it, in the local winter, Sydney is on standard time (+10).
+        let before_start = resolver
+            .to_utc(
+                "Australia/Sydney",
+                date(2026, Month::September, 1),
+                Time::MIDNIGHT,
+            )
+            .unwrap();
+        assert_eq!(before_start, ts(2026, Month::August, 31, 14, 0));
+
+        // Well inside the daylight window (local summer, December) Sydney
+        // is on daylight time (+11) -- one hour different from standard,
+        // and the transition direction is inverted relative to the US/EU.
+        let inside_dst = resolver
+            .to_utc(
+                "Australia/Sydney",
+                date(2026, Month::December, 1),
+                Time::MIDNIGHT,
+            )
+            .unwrap();
+        assert_eq!(inside_dst, ts(2026, Month::November, 30, 13, 0));
     }
 
-    #[test]
-    fn berlin_matches_the_documented_eu_rule_around_the_autumn_transition() {
-        // 2026-10-25 is the last Sunday of October 2026 -- the EU
-        // fall-back date. Just before 03:00 local it is still daylight
-        // (+2); at/after the repeated 02:00-03:00 hour resolves to standard
-        // (+1) under this module's naive comparison (see the module doc
-        // comment on `anamnesis_core::recurrence::Timezone`).
-        let resolver = TableTimezoneResolver::new();
-        let berlin = resolver.resolve("Europe/Berlin").unwrap();
+    // --- US zone: both transition directions ---
 
-        let before = time::PrimitiveDateTime::new(
-            time::Date::from_calendar_date(2026, Month::October, 25).unwrap(),
-            time::Time::from_hms(2, 59, 0).unwrap(),
+    #[test]
+    fn new_york_spring_forward_and_fall_back_both_honoured() {
+        let resolver = TzTimezoneResolver::new();
+
+        // Just before the 2026 US spring-forward (2nd Sunday of March,
+        // 2026-03-08): still standard time, EST = UTC-5.
+        let before_spring = resolver
+            .to_utc(
+                "America/New_York",
+                date(2026, Month::March, 1),
+                Time::MIDNIGHT,
+            )
+            .unwrap();
+        assert_eq!(before_spring, ts(2026, Month::March, 1, 5, 0));
+
+        // Just after: daylight time, EDT = UTC-4.
+        let after_spring = resolver
+            .to_utc(
+                "America/New_York",
+                date(2026, Month::March, 15),
+                Time::MIDNIGHT,
+            )
+            .unwrap();
+        assert_eq!(after_spring, ts(2026, Month::March, 15, 4, 0));
+
+        // Just before the 2026 US fall-back (1st Sunday of November,
+        // 2026-11-01): still daylight time, EDT = UTC-4.
+        let before_fall = resolver
+            .to_utc(
+                "America/New_York",
+                date(2026, Month::October, 25),
+                Time::MIDNIGHT,
+            )
+            .unwrap();
+        assert_eq!(before_fall, ts(2026, Month::October, 25, 4, 0));
+
+        // Just after: back to standard time, EST = UTC-5.
+        let after_fall = resolver
+            .to_utc(
+                "America/New_York",
+                date(2026, Month::November, 8),
+                Time::MIDNIGHT,
+            )
+            .unwrap();
+        assert_eq!(after_fall, ts(2026, Month::November, 8, 5, 0));
+    }
+
+    // --- EU zone: both transition directions ---
+
+    #[test]
+    fn berlin_spring_forward_and_fall_back_both_honoured() {
+        let resolver = TzTimezoneResolver::new();
+
+        // EU rule: last Sunday of March / last Sunday of October. 2026's
+        // spring transition is 2026-03-29.
+        let before_spring = resolver
+            .to_utc("Europe/Berlin", date(2026, Month::March, 1), Time::MIDNIGHT)
+            .unwrap();
+        assert_eq!(before_spring, ts(2026, Month::February, 28, 23, 0)); // CET, UTC+1
+
+        let after_spring = resolver
+            .to_utc(
+                "Europe/Berlin",
+                date(2026, Month::April, 15),
+                Time::MIDNIGHT,
+            )
+            .unwrap();
+        assert_eq!(after_spring, ts(2026, Month::April, 14, 22, 0)); // CEST, UTC+2
+
+        // 2026's autumn transition is 2026-10-25.
+        let before_fall = resolver
+            .to_utc(
+                "Europe/Berlin",
+                date(2026, Month::October, 1),
+                Time::MIDNIGHT,
+            )
+            .unwrap();
+        assert_eq!(before_fall, ts(2026, Month::September, 30, 22, 0)); // CEST, UTC+2
+
+        let after_fall = resolver
+            .to_utc(
+                "Europe/Berlin",
+                date(2026, Month::November, 8),
+                Time::MIDNIGHT,
+            )
+            .unwrap();
+        assert_eq!(after_fall, ts(2026, Month::November, 7, 23, 0)); // CET, UTC+1
+    }
+
+    // --- historical rule change: the test the old table could never pass ---
+
+    #[test]
+    fn sao_paulo_historical_date_uses_the_rule_in_force_then_not_todays() {
+        // Brazil observed DST for decades, then abolished it outright in
+        // 2019. A hand-rolled "today's rule applied everywhere" table
+        // (the old `TableTimezoneResolver`) has no way to get this right
+        // for a date before the abolition -- it would apply 2026's
+        // (DST-less) rule retroactively. A real tzdb applies whichever
+        // rule was actually in force on the historical date itself.
+        let resolver = TzTimezoneResolver::new();
+
+        // 2018-12-01: mid-summer in the Southern Hemisphere, and DST was
+        // still in force in Sao Paulo that year -- standard offset -3,
+        // daylight saving -2.
+        let historical_summer = resolver
+            .to_utc(
+                "America/Sao_Paulo",
+                date(2018, Month::December, 1),
+                Time::MIDNIGHT,
+            )
+            .unwrap();
+        assert_eq!(
+            historical_summer,
+            ts(2018, Month::December, 1, 2, 0),
+            "2018 predates the 2019 abolition: DST (-2) must still apply"
         );
-        let after = time::PrimitiveDateTime::new(
-            time::Date::from_calendar_date(2026, Month::October, 25).unwrap(),
-            time::Time::from_hms(4, 0, 0).unwrap(),
+
+        // 2026-12-01: the same calendar date, years after DST was
+        // abolished (2019) -- standard offset -3 applies year-round now,
+        // one hour different from the 2018 answer above.
+        let post_abolition_summer = resolver
+            .to_utc(
+                "America/Sao_Paulo",
+                date(2026, Month::December, 1),
+                Time::MIDNIGHT,
+            )
+            .unwrap();
+        assert_eq!(
+            post_abolition_summer,
+            ts(2026, Month::December, 1, 3, 0),
+            "2026 postdates the abolition: no DST, even in local summer"
         );
-        assert_eq!(berlin.to_utc(before).offset(), offset(2, 0));
-        assert_eq!(berlin.to_utc(after).offset(), offset(1, 0));
+    }
+
+    // --- round trip: local_date and to_utc agree with each other ---
+
+    #[test]
+    fn local_date_round_trips_through_to_utc() {
+        let resolver = TzTimezoneResolver::new();
+        let original = date(2026, Month::July, 4);
+        let instant = resolver
+            .to_utc("Australia/Sydney", original, Time::MIDNIGHT)
+            .unwrap();
+        let recovered = resolver.local_date("Australia/Sydney", instant).unwrap();
+        assert_eq!(recovered, original);
     }
 }
