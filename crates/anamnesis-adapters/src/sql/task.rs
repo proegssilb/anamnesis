@@ -329,6 +329,22 @@ mod sqlite_impl {
         rows.iter().map(task_from_row).collect()
     }
 
+    pub(super) async fn list_by_project(
+        pool: &SqlitePool,
+        project_id: ProjectId,
+    ) -> Result<Vec<Task>, RepoError> {
+        let query = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ? AND archived_at IS NULL \
+             ORDER BY created_at"
+        );
+        let rows = sqlx::query(sqlx::AssertSqlSafe(query))
+            .bind(project_id.as_uuid().to_string())
+            .fetch_all(pool)
+            .await
+            .map_err(|e| RepoError::from_source("failed to list tasks for project", e))?;
+        rows.iter().map(task_from_row).collect()
+    }
+
     pub(super) async fn insert(pool: &SqlitePool, task: &Task) -> Result<(), RepoError> {
         let (placement_kind, column_id, board_position) = encode_placement(&task.placement);
         sqlx::query(
@@ -530,6 +546,22 @@ mod postgres_impl {
         rows.iter().map(task_from_row).collect()
     }
 
+    pub(super) async fn list_by_project(
+        pool: &PgPool,
+        project_id: ProjectId,
+    ) -> Result<Vec<Task>, RepoError> {
+        let query = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = $1 AND archived_at IS NULL \
+             ORDER BY created_at"
+        );
+        let rows = sqlx::query(sqlx::AssertSqlSafe(query))
+            .bind(project_id.as_uuid())
+            .fetch_all(pool)
+            .await
+            .map_err(|e| RepoError::from_source("failed to list tasks for project", e))?;
+        rows.iter().map(task_from_row).collect()
+    }
+
     pub(super) async fn insert(pool: &PgPool, task: &Task) -> Result<(), RepoError> {
         let (placement_kind, column_id, board_position) = encode_placement(&task.placement);
         let board_position = board_position
@@ -671,6 +703,13 @@ impl TaskRepository for SqlStore {
         match &self.backend {
             Backend::Sqlite(pool) => sqlite_impl::list_children(pool, parent_id).await,
             Backend::Postgres(pool) => postgres_impl::list_children(pool, parent_id).await,
+        }
+    }
+
+    async fn list_by_project(&self, project_id: ProjectId) -> Result<Vec<Task>, RepoError> {
+        match &self.backend {
+            Backend::Sqlite(pool) => sqlite_impl::list_by_project(pool, project_id).await,
+            Backend::Postgres(pool) => postgres_impl::list_by_project(pool, project_id).await,
         }
     }
 

@@ -3,11 +3,8 @@
 //! response. `AppError` lives in `anamnesis-app`, `IntoResponse` lives in
 //! `axum`; neither is local to this crate, so this wrapper is what lets the
 //! orphan rule be satisfied.
-//!
-//! Per `docs/PLAN.md`: `Forbidden` -> 403, `NotFound` -> 404, `Domain` -> 422,
-//! `Repo` -> 500, logged with the cause and never leaked to the page.
 
-use anamnesis_app::{AppError, IdentityError};
+use anamnesis_app::{AppError, IdentityError, RepoError};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use minijinja::{Environment, context};
@@ -22,8 +19,8 @@ pub enum WebError {
     /// mismatched pending-login state, or the identity provider rejected
     /// it).
     LoginFailed(IdentityError),
-    /// A request could not even be parsed (e.g. a malformed board id in the
-    /// path).
+    /// A request could not even be parsed (e.g. a malformed id in the path,
+    /// or a `status` field naming no known `ProjectStatus`).
     BadRequest(String),
     /// A template failed to render. Always a bug (a missing context
     /// variable, a broken template), never something a request caused — but
@@ -37,36 +34,44 @@ impl From<AppError> for WebError {
     }
 }
 
+/// A bare port failure (e.g. from `crate::handlers::access`, which calls
+/// `MembershipQuery` directly rather than through a use case) is exactly an
+/// `AppError::Repo` as far as this crate's error handling is concerned.
+impl From<RepoError> for WebError {
+    fn from(err: RepoError) -> Self {
+        WebError::App(AppError::Repo(err))
+    }
+}
+
 impl WebError {
     fn status_and_message(&self) -> (StatusCode, String) {
         match self {
-            WebError::App(AppError::NotFound) => (
-                StatusCode::NOT_FOUND,
-                "That board does not exist.".to_string(),
-            ),
+            WebError::App(AppError::NotFound) => {
+                (StatusCode::NOT_FOUND, "That was not found.".to_string())
+            }
             WebError::App(AppError::Forbidden) => (
                 StatusCode::FORBIDDEN,
-                "You do not have access to that board.".to_string(),
+                "You do not have access to do that.".to_string(),
             ),
-            WebError::App(AppError::Domain(e)) => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
+            WebError::App(AppError::Rule(e)) => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
+            WebError::App(AppError::Invalid(message)) => {
+                (StatusCode::UNPROCESSABLE_ENTITY, message.clone())
+            }
+            WebError::App(AppError::Conflict) => (
+                StatusCode::CONFLICT,
+                "That was changed by someone else in the meantime — reload and try again."
+                    .to_string(),
+            ),
+            WebError::App(AppError::ActiveProjectLimitExceeded) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "The active project limit has been reached.".to_string(),
+            ),
+            WebError::App(AppError::WipLimitExceeded) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "That column is already at its work-in-progress limit.".to_string(),
+            ),
             WebError::App(AppError::Repo(e)) => {
                 tracing::error!(error = %e, "repository error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Something went wrong on our end.".to_string(),
-                )
-            }
-            // The remaining `AppError` variants (`Rule`, `Invalid`,
-            // `Conflict`, `ActiveProjectLimitExceeded`, `WipLimitExceeded`)
-            // belong to the Phase D use cases against the real domain model
-            // (`docs/DOMAIN.md`), which this legacy kanban web layer never
-            // calls — Phase F rebuilds this crate against them and gives
-            // each its own real handling. A wildcard arm here (rather than
-            // one per variant) is deliberate: it is a compile-time
-            // reminder, not a masked bug, since no code path in this crate
-            // can actually produce one of these today.
-            WebError::App(other) => {
-                tracing::error!(error = %other, "unexpected application error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Something went wrong on our end.".to_string(),
@@ -100,10 +105,7 @@ impl WebError {
         WebError::Template(err.to_string())
     }
 
-    /// Renders this error as a standalone `error.html` page. Used for
-    /// failures that are not in the context of a specific board being
-    /// re-rendered (missing board, forbidden, a broken login, a repo
-    /// failure).
+    /// Renders this error as a standalone `error.html` page.
     pub fn into_response_with(self, templates: &Environment<'static>) -> Response {
         let (status, message) = self.status_and_message();
         let body = templates

@@ -6,11 +6,13 @@
 //! socket. See `docs/ARCHITECTURE.md` and `docs/PLAN.md` (Phase 4).
 
 pub mod auth;
+pub mod bootstrap;
 pub mod config;
 pub mod error;
 pub mod handlers;
 pub mod routes;
 pub mod session;
+pub mod settings;
 pub mod state;
 pub mod static_files;
 pub mod templates;

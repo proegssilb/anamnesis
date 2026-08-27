@@ -291,6 +291,17 @@ impl TaskRepository for Fakes {
             .collect())
     }
 
+    async fn list_by_project(&self, project_id: ProjectId) -> Result<Vec<Task>, RepoError> {
+        Ok(self
+            .tasks
+            .lock()
+            .unwrap()
+            .values()
+            .map(|agg| agg.task.clone())
+            .filter(|t| t.project_id == project_id && t.archived_at.is_none())
+            .collect())
+    }
+
     async fn insert(&self, task: &Task) -> Result<(), RepoError> {
         self.tasks.lock().unwrap().insert(
             task.id,
