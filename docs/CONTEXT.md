@@ -25,19 +25,27 @@ These come directly from the project owner and are binding on design decisions:
 3. **The deploying admin picks the database.** SQLite for single-user or small
    deployments, an external SQL server otherwise. Selected by connection
    string, `sqlite://` prefix for SQLite.
-4. **The UI must be ready for a future online-only PWA mobile app.** Today it
-   is server-rendered HTML + CSS with no JavaScript. It must not paint itself
-   into a corner that a mobile PWA cannot reuse.
+4. **The UI must be ready for a future online-only PWA mobile app.** It
+   started as server-rendered HTML + CSS with no JavaScript; the owner later
+   approved htmx plus a drag library for the task board specifically
+   (`docs/DOMAIN.md` §8), with form-POST fallbacks kept everywhere htmx also
+   handles. Either way, it must not paint itself into a corner that a mobile
+   PWA cannot reuse — no real-time sync, resource-oriented routes throughout.
 
-## Current phase: placeholder
+## Current phase: the real domain model
 
-The kanban board in this repo is **a placeholder**, chosen to prove the stack
-end to end. It is explicitly not the final product model. Everything will be
-massively reorganized once the placeholder works. Therefore:
+The placeholder kanban board (`Board`/`Column`/`Card`) served its purpose —
+proving the stack end to end — and has been fully replaced. The real domain
+model described in `docs/DOMAIN.md` (areas, projects, tasks, the horizon
+placement, tangles, the capacity-gated suggestion engine, recurrence and
+sweeping) is now built, running, and covered at every test layer; see
+`docs/ARCHITECTURE.md` for how it's structured and `README.md` for what
+still doesn't work yet. A few things from the placeholder phase remain true:
 
-- The **domain core is the asset**; the kanban shape is disposable.
-- Boundaries between core and outside world matter more than features.
-- No MCP server yet. It is anticipated, not built.
+- The **domain core is still the asset** that mattered most — the specific
+  shape of any one feature is more disposable than the boundary between
+  core and the outside world.
+- **No MCP server yet.** Still anticipated, still not built.
 
 ## Provenance — read this before trusting the above
 

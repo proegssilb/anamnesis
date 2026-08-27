@@ -1,8 +1,8 @@
 {
   "name": "Anamnesis",
   "short_name": "Anamnesis",
-  "description": "A small kanban board.",
-  "start_url": "/boards",
+  "description": "A personal task tracker: what's below the horizon isn't gone.",
+  "start_url": "/board",
   "scope": "/",
   "display": "standalone",
   "background_color": "#f5f6f8",
