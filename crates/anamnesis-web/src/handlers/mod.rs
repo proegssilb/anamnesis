@@ -14,6 +14,7 @@ mod login;
 mod misc;
 mod projects;
 mod search;
+mod settings;
 mod tasks;
 
 pub use areas::{
@@ -31,6 +32,7 @@ pub use projects::{
     unarchive_project_handler, view_project_handler,
 };
 pub use search::search_handler;
+pub use settings::{update_settings_handler, view_settings_handler};
 pub use tasks::{
     add_comment_handler, add_file_attachment_handler, add_link_attachment_handler,
     archive_task_handler, create_relationship_handler, delete_relationship_handler,
