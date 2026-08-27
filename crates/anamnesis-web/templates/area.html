@@ -53,5 +53,15 @@
       <textarea id="description" name="description"></textarea>
       <button type="submit">Create project</button>
     </form>
+
+    <form class="panel-form" method="post" action="/areas/{{ area.id }}">
+      <h2>Edit this area</h2>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="edit-title">Title</label>
+      <input id="edit-title" name="title" required maxlength="200" value="{{ area.title }}">
+      <label for="edit-description">Description</label>
+      <textarea id="edit-description" name="description">{{ area.description }}</textarea>
+      <button type="submit">Save</button>
+    </form>
   {% endif %}
 {% endblock %}

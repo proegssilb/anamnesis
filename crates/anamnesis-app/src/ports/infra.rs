@@ -75,6 +75,20 @@ pub trait TimezoneResolver: Send + Sync {
     /// `iana_name`. `Err` if `iana_name` is not a recognised zone.
     fn local_date(&self, iana_name: &str, instant: Timestamp) -> Result<Date, RepoError>;
 
+    /// The local wall-clock time-of-day `instant` falls on in the zone named
+    /// `iana_name`. `Err` if `iana_name` is not a recognised zone.
+    ///
+    /// Added alongside [`Self::local_date`] so a caller that needs the full
+    /// local wall-clock moment (not just the calendar date) — namely,
+    /// prefilling a stored `DateTime` field back into an
+    /// `<input type="datetime-local">`'s `"YYYY-MM-DDTHH:MM"` value — has a
+    /// real conversion to call instead of leaving that field permanently
+    /// empty on its own edit form (`anamnesis-web`'s
+    /// `handlers::format::field_input_value` used to do exactly that, for
+    /// exactly this missing reason — see its doc comment before this method
+    /// existed).
+    fn local_time(&self, iana_name: &str, instant: Timestamp) -> Result<Time, RepoError>;
+
     /// The UTC instant corresponding to local wall-clock `date` at `time` in
     /// the zone named `iana_name`. `Err` if `iana_name` is not a recognised
     /// zone, or if the given local date/time cannot be resolved to an

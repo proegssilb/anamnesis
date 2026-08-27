@@ -26,10 +26,17 @@ pub struct Config {
     /// The subject (OIDC `sub`, or the dev-bypass user id) granted System
     /// Admin on first boot of an empty database — see `crate::bootstrap`.
     pub bootstrap_admin: String,
+    /// The local filesystem directory `anamnesis_adapters::FsBlobStore`
+    /// roots file attachments under (`docs/DOMAIN.md` §3). Not security- or
+    /// correctness-sensitive the way `ANAMNESIS_SESSION_SECRET` is, so —
+    /// unlike every `require`d field above — it defaults rather than failing
+    /// startup when unset, exactly like `ANAMNESIS_BIND_ADDR`.
+    pub blob_root: String,
 }
 
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
 const DEFAULT_OIDC_SCOPES: &str = "openid profile email";
+const DEFAULT_BLOB_ROOT: &str = "./data/blobs";
 const MIN_SESSION_SECRET_BYTES: usize = 64;
 
 /// Why configuration could not be resolved. The `Display` message always
@@ -102,6 +109,7 @@ impl Config {
 
         let timezone = require(&get, "ANAMNESIS_TIMEZONE")?;
         let bootstrap_admin = require(&get, "ANAMNESIS_BOOTSTRAP_ADMIN")?;
+        let blob_root = get("ANAMNESIS_BLOB_ROOT").unwrap_or_else(|| DEFAULT_BLOB_ROOT.to_string());
 
         Ok(Config {
             database_url,
@@ -115,6 +123,7 @@ impl Config {
             dev_auth_bypass,
             timezone,
             bootstrap_admin,
+            blob_root,
         })
     }
 
@@ -273,6 +282,20 @@ mod tests {
         pairs.retain(|(k, _)| *k != "ANAMNESIS_BOOTSTRAP_ADMIN");
         let err = Config::from_source(env(&pairs)).unwrap_err();
         assert_eq!(err, ConfigError::Missing("ANAMNESIS_BOOTSTRAP_ADMIN"));
+    }
+
+    #[test]
+    fn blob_root_defaults_when_unset() {
+        let cfg = Config::from_source(env(&full_valid_env())).unwrap();
+        assert_eq!(cfg.blob_root, DEFAULT_BLOB_ROOT);
+    }
+
+    #[test]
+    fn blob_root_is_overridable() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_BLOB_ROOT", "/var/lib/anamnesis/blobs"));
+        let cfg = Config::from_source(env(&pairs)).unwrap();
+        assert_eq!(cfg.blob_root, "/var/lib/anamnesis/blobs");
     }
 
     #[test]

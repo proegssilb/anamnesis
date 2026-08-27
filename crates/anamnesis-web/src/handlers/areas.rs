@@ -10,7 +10,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
 
 use anamnesis_app::{
-    AppError, create_area, create_project, list_areas, list_projects_in_area,
+    AppError, create_area, create_project, edit_area, list_areas, list_projects_in_area,
     transition_project_status, view_area,
 };
 use anamnesis_core::policy::Role;
@@ -22,7 +22,7 @@ use crate::session::csrf_tokens_match;
 use crate::state::AppState;
 
 use super::access;
-use super::forms::{CreateAreaForm, CreateProjectForm, TransitionProjectStatusForm};
+use super::forms::{CreateAreaForm, CreateProjectForm, EditAreaForm, TransitionProjectStatusForm};
 
 pub async fn list_areas_handler(State(state): State<AppState>, user: CurrentUser) -> Response {
     match list_areas_impl(&state, &user).await {
@@ -146,6 +146,62 @@ async fn view_area_impl(
         None,
         StatusCode::OK,
     )
+}
+
+pub async fn edit_area_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<uuid::Uuid>,
+    Form(form): Form<EditAreaForm>,
+) -> Response {
+    match edit_area_impl(&state, &user, AreaId::new(id), form).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn edit_area_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    area_id: AreaId,
+    form: EditAreaForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let role = access::area_role(state, &user.user_id, area_id).await?;
+    match edit_area(
+        state.areas.as_ref(),
+        state.clock.as_ref(),
+        state.search_index.as_ref(),
+        role,
+        area_id,
+        &form.title,
+        &form.description,
+    )
+    .await
+    {
+        Ok(_) => {
+            // Re-indexed inside `edit_area` itself — see
+            // `create_area_impl`'s comment above.
+            Ok(Redirect::to(&format!("/areas/{area_id}")).into_response())
+        }
+        Err(AppError::Rule(e)) => {
+            let area = view_area(state.areas.as_ref(), role, area_id).await?;
+            let projects = list_projects_in_area(state.projects.as_ref(), role, area_id).await?;
+            let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
+            render_area_page(
+                state,
+                user,
+                &area,
+                &projects,
+                can_manage,
+                Some(&e.to_string()),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            )
+        }
+        Err(err) => Err(WebError::from(err)),
+    }
 }
 
 pub async fn create_project_handler(

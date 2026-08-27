@@ -207,7 +207,7 @@ impl ProjectRepository for Fakes {
             .unwrap()
             .values()
             .map(|agg| agg.project.clone())
-            .filter(|p| p.area_id == area_id)
+            .filter(|p| p.area_id == area_id && p.archived_at.is_none())
             .collect())
     }
 

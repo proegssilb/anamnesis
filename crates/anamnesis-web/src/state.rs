@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use anamnesis_app::{
-    AreaRepository, AttachmentRepository, BoardQuery, Clock, CommentRepository, IdGen,
+    AreaRepository, AttachmentRepository, BlobStore, BoardQuery, Clock, CommentRepository, IdGen,
     IdentityProvider, MembershipQuery, ProjectRepository, RelationshipRepository, SearchIndex,
     SearchQuery, TangleRepository, TaskRepository, TimezoneResolver,
 };
@@ -39,6 +39,12 @@ pub struct AppState {
     pub tangles: Arc<dyn TangleRepository>,
     pub comments: Arc<dyn CommentRepository>,
     pub attachments: Arc<dyn AttachmentRepository>,
+    /// File-attachment bytes (`docs/DOMAIN.md` §3: "Files need a new
+    /// `BlobStore` port (local filesystem first, S3-shaped later)") — backed
+    /// by `anamnesis_adapters::FsBlobStore` in production and in tests alike;
+    /// nothing about this port is backend-specific the way `SqlStore`'s other
+    /// fields are.
+    pub blobs: Arc<dyn BlobStore>,
     pub board: Arc<dyn BoardQuery>,
     /// The read side of global search (`docs/DOMAIN.md` §8). `search_index`
     /// is the write side — kept as a separate field (rather than one

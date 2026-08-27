@@ -10,6 +10,7 @@
       <span class="badge">below the horizon</span>
     {% endif %}
     {% if task.bounce_count > 0 %}<span class="badge">bounced {{ task.bounce_count }}x</span>{% endif %}
+    {% if task.archived_at %}<span class="badge">archived</span>{% endif %}
   </p>
   {% if task.description %}<p class="card-body">{{ task.description }}</p>{% endif %}
 
@@ -50,6 +51,22 @@
     {% endif %}
   </section>
 
+  <section class="panel-form">
+    <h2>Archive</h2>
+    {% if task.archived_at %}
+      <p class="hint">This task is archived — it is hidden from every view unless explicitly searched.</p>
+      <form method="post" action="/tasks/{{ task.id }}/unarchive">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">Unarchive</button>
+      </form>
+    {% else %}
+      <form method="post" action="/tasks/{{ task.id }}/archive">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="danger">Archive</button>
+      </form>
+    {% endif %}
+  </section>
+
   <section>
     <h2>Fields</h2>
     {% if fields %}
@@ -79,7 +96,7 @@
                 <input id="field-{{ f.id }}" type="time" name="value" value="{{ f.input_value }}">
               {% elif f.kind == "datetime" %}
                 <label for="field-{{ f.id }}">{{ f.name }}</label>
-                <input id="field-{{ f.id }}" type="datetime-local" name="value">
+                <input id="field-{{ f.id }}" type="datetime-local" name="value" value="{{ f.input_value }}">
               {% elif f.kind == "block" %}
                 <label for="field-{{ f.id }}">{{ f.name }}</label>
                 <textarea id="field-{{ f.id }}" name="value">{{ f.input_value }}</textarea>
@@ -170,7 +187,7 @@
         {% for a in attachments %}
           <li>
             {% if a.kind.Link %}<a href="{{ a.kind.Link.url }}">{{ a.kind.Link.url }}</a>{% endif %}
-            {% if a.kind.File %}{{ a.kind.File.filename }}{% endif %}
+            {% if a.kind.File %}<a href="/attachments/{{ a.id }}/download">{{ a.kind.File.filename }}</a>{% endif %}
           </li>
         {% endfor %}
       </ul>
@@ -182,6 +199,12 @@
       <label for="url">Attach a link</label>
       <input id="url" name="url" required type="url" placeholder="https://...">
       <button type="submit">Attach</button>
+    </form>
+    <form class="inline-form" method="post" action="/tasks/{{ task.id }}/attachments/file" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="file">Attach a file</label>
+      <input id="file" name="file" type="file" required>
+      <button type="submit">Upload</button>
     </form>
   </section>
 {% endblock %}

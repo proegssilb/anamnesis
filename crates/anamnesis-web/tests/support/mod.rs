@@ -18,7 +18,7 @@ use axum_extra::extract::cookie::{Cookie, Key, SignedCookieJar};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use anamnesis_adapters::{SqlStore, SystemClock, TzTimezoneResolver, UuidIdGen};
+use anamnesis_adapters::{FsBlobStore, SqlStore, SystemClock, TzTimezoneResolver, UuidIdGen};
 use anamnesis_web::session::SessionData;
 use anamnesis_web::settings::AppSettings;
 use anamnesis_web::state::AppState;
@@ -42,7 +42,9 @@ pub struct TestApp {
     router: Router,
     pub key: Key,
     pub store: Arc<SqlStore>,
+    pub blob_root: std::path::PathBuf,
     _dir: tempfile::TempDir,
+    _blob_dir: tempfile::TempDir,
 }
 
 impl TestApp {
@@ -77,6 +79,12 @@ impl TestApp {
 
         let key = Key::from(TEST_SESSION_SECRET.as_bytes());
 
+        let blob_dir = tempfile::tempdir().expect("create temp blob dir");
+        let blob_root = blob_dir.path().to_path_buf();
+        let blobs = FsBlobStore::new(&blob_root)
+            .await
+            .expect("create temp blob store");
+
         let state = AppState {
             areas: store.clone(),
             projects: store.clone(),
@@ -85,6 +93,7 @@ impl TestApp {
             tangles: store.clone(),
             comments: store.clone(),
             attachments: store.clone(),
+            blobs: Arc::new(blobs),
             board: store.clone(),
             search: store.clone(),
             search_index: store.clone(),
@@ -106,7 +115,9 @@ impl TestApp {
             router,
             key,
             store,
+            blob_root,
             _dir: dir,
+            _blob_dir: blob_dir,
         }
     }
 
@@ -166,6 +177,53 @@ impl TestApp {
         cookie: Option<&str>,
     ) -> Response<Body> {
         self.post_form_maybe_hx(path, form, cookie, true).await
+    }
+
+    /// Posts a `multipart/form-data` request — what a real
+    /// `<input type="file">` form submits, and what
+    /// `crate::handlers::tasks::add_file_attachment_handler`'s
+    /// `axum::extract::Multipart` extractor needs. `text_fields` become
+    /// plain form parts (e.g. `csrf_token`); `file_field` is
+    /// `(field_name, filename, bytes, content_type)` for the one file part.
+    pub async fn post_multipart(
+        &self,
+        path: &str,
+        text_fields: &[(&str, &str)],
+        file_field: (&str, &str, &[u8], &str),
+        cookie: Option<&str>,
+    ) -> Response<Body> {
+        let boundary = "----anamnesisTestBoundary7331";
+        let mut body = Vec::new();
+        for (name, value) in text_fields {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            body.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+            );
+            body.extend_from_slice(value.as_bytes());
+            body.extend_from_slice(b"\r\n");
+        }
+        let (field_name, filename, bytes, content_type) = file_field;
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!(
+                "Content-Disposition: form-data; name=\"{field_name}\"; filename=\"{filename}\"\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(format!("Content-Type: {content_type}\r\n\r\n").as_bytes());
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+        let mut builder = Request::builder().method("POST").uri(path).header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        );
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        let request = builder.body(Body::from(body)).unwrap();
+        self.router.clone().oneshot(request).await.unwrap()
     }
 
     async fn post_form_maybe_hx(
