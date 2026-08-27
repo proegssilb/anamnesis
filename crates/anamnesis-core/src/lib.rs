@@ -53,7 +53,10 @@ pub use suggest::{
     Blockage, BlockingGraph, BoardState, Offer, OfferItem, Outcome, SuggestionReason,
     SuggestionSettings, TaskOffer, TaskSummary, bounce_to_below, mark_offered, suggest,
 };
-pub use tangle::{DetectedTangle, Fingerprint, Reconciliation, Tangle, detect_tangles, reconcile};
+pub use tangle::{
+    DetectedTangle, Fingerprint, Reconciliation, Tangle, detect_tangles, drop_tangle, place_tangle,
+    reconcile, resolve_frozen_tangle, subgraph_has_cycle,
+};
 pub use task::{
     Task, archive_task, create_task, edit_task, move_placement, set_checklist_position, set_parent,
     unarchive_task,

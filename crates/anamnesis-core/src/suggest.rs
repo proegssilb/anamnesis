@@ -113,9 +113,12 @@ pub struct BlockingGraph {
     /// of whether that tangle is currently offerable (see the struct doc).
     pub tangled_task_ids: BTreeSet<TaskId>,
     /// Unresolved tangles currently available to offer in place of their
-    /// (excluded) member tasks. A tangle with `resolved_at: Some(_)` here is
-    /// ignored defensively, as is one already on the board per the struct
-    /// doc — both are the caller's responsibility to have excluded already.
+    /// (excluded) member tasks. A tangle with `resolved_at: Some(_)`, or one
+    /// already placed on the board, is filtered out by [`Self::active_tangles`]
+    /// regardless of what the caller passes here — "a tangle already on the
+    /// board is not re-offered" is enforced here, in core, rather than left
+    /// entirely to caller discipline, now that `Tangle::placement` makes the
+    /// check free.
     pub tangles: Vec<Tangle>,
 }
 
@@ -128,9 +131,13 @@ impl BlockingGraph {
             .any(|&(blocker, blocked)| blocked == task_id && !self.done_task_ids.contains(&blocker))
     }
 
-    /// The unresolved subset of `tangles` — the ones actually offerable.
+    /// The subset of `tangles` actually offerable: unresolved, and not
+    /// already sitting on the board (`docs/DOMAIN.md` Tangle section: "a
+    /// tangle already on the board is not re-offered").
     fn active_tangles(&self) -> impl Iterator<Item = &Tangle> {
-        self.tangles.iter().filter(|t| t.is_active())
+        self.tangles
+            .iter()
+            .filter(|t| t.is_active() && !t.placement.is_on_board())
     }
 }
 
@@ -739,6 +746,8 @@ mod tests {
             fingerprint: crate::tangle::Fingerprint::of(
                 &task_ids.iter().map(|&n| tid(n)).collect(),
             ),
+            placement: Placement::Below,
+            frozen: false,
             detected_at: ts(detected_at),
             resolved_at: None,
         }
@@ -884,6 +893,31 @@ mod tests {
             panic!("expected an Offer")
         };
         assert!(offer.items.iter().all(|i| matches!(i, OfferItem::Task(_))));
+    }
+
+    #[test]
+    fn a_tangle_already_on_the_board_is_never_offered_even_if_the_caller_still_passes_it() {
+        // Defense in depth for "a tangle already on the board is not
+        // re-offered": even if the caller forgets to curate `tangles` down
+        // (the old contract), `Tangle::placement` now lets core itself
+        // refuse to re-offer one that is already sitting on the board.
+        let candidates = vec![below_task(1, 0), below_task(2, 0)];
+        let mut t = tangle(1, &[1, 2], 0);
+        t.placement = Placement::OnBoard {
+            column: crate::ids::ColumnId::new(Uuid::from_u128(500)),
+            position: 0,
+        };
+        t.frozen = true;
+        let graph = BlockingGraph {
+            edges: vec![],
+            done_task_ids: BTreeSet::new(),
+            tangled_task_ids: [tid(1), tid(2)].into_iter().collect(),
+            tangles: vec![t],
+        };
+        let outcome = suggest(ts(100), 1, &room(0), &candidates, &graph, &settings());
+        // Both tasks stay excluded (still tangled) and the on-board tangle
+        // is not offered in their place either: nothing eligible at all.
+        assert_eq!(outcome, Outcome::Stuck(Blockage::AllTangled));
     }
 
     // --- Offer size shrinks with free slots ---
