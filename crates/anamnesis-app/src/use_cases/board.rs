@@ -50,6 +50,7 @@ fn identity_of(item: &BoardItem) -> BoardItemKind {
 /// The WIP limit is checked only when `item` is not already in `column`
 /// (reordering within a column already at its limit must still work,
 /// exactly like `crate::use_cases::task::raise_task`'s own exemption).
+#[allow(clippy::too_many_arguments)]
 pub async fn reposition_board_item(
     task_repo: &dyn TaskRepository,
     tangle_repo: &dyn TangleRepository,
