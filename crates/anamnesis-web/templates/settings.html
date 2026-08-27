@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Settings — Anamnesis{% endblock %}
+{% block content %}
+  <h1>Settings</h1>
+  <p class="hint">System-wide settings — visible and editable to System Admins only.</p>
+
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+  {% if last_swept_at %}
+    <p class="hint">The scheduled sweep last ran at unix time {{ last_swept_at }}.</p>
+  {% else %}
+    <p class="hint">The scheduled sweep has never run.</p>
+  {% endif %}
+
+  <form class="panel-form" method="post" action="/settings">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <h2>Projects</h2>
+    <label for="active_project_limit">Active project limit</label>
+    <input id="active_project_limit" name="active_project_limit" type="number" min="1"
+           inputmode="numeric" required value="{{ active_project_limit }}">
+
+    <h2>Suggestions</h2>
+    <label for="cooldown_seconds">Suggestion cooldown (seconds)</label>
+    <input id="cooldown_seconds" name="cooldown_seconds" type="number" min="0"
+           inputmode="numeric" required value="{{ cooldown_seconds }}">
+    <label for="high_bounce_threshold">High-bounce threshold</label>
+    <input id="high_bounce_threshold" name="high_bounce_threshold" type="number" min="0"
+           inputmode="numeric" required value="{{ high_bounce_threshold }}">
+
+    <h2>Scheduled archive sweep</h2>
+    <p class="hint">
+      On schedule, everything sitting in a Done column is archived
+      automatically — the same operation as the "Archive all" button, just
+      on a timer. Leave this as "Never" to rely on the manual button alone.
+    </p>
+    <label for="sweep_kind">Repeats</label>
+    <select id="sweep_kind" name="sweep_kind">
+      <option value="never" {% if sweep_kind == "never" %}selected{% endif %}>Never (manual only)</option>
+      <option value="every_n_weeks" {% if sweep_kind == "every_n_weeks" %}selected{% endif %}>Every N weeks, on a weekday</option>
+      <option value="day_of_month" {% if sweep_kind == "day_of_month" %}selected{% endif %}>On a day of the month</option>
+    </select>
+
+    <label for="sweep_n">Weeks between sweeps (for "Every N weeks")</label>
+    <input id="sweep_n" name="sweep_n" type="number" min="1" inputmode="numeric"
+           value="{{ sweep_n if sweep_n else 2 }}">
+
+    <label for="sweep_weekday">Weekday (for "Every N weeks")</label>
+    <select id="sweep_weekday" name="sweep_weekday">
+      <option value="monday" {% if sweep_weekday == "monday" %}selected{% endif %}>Monday</option>
+      <option value="tuesday" {% if sweep_weekday == "tuesday" %}selected{% endif %}>Tuesday</option>
+      <option value="wednesday" {% if sweep_weekday == "wednesday" %}selected{% endif %}>Wednesday</option>
+      <option value="thursday" {% if sweep_weekday == "thursday" %}selected{% endif %}>Thursday</option>
+      <option value="friday" {% if sweep_weekday == "friday" %}selected{% endif %}>Friday</option>
+      <option value="saturday" {% if sweep_weekday == "saturday" %}selected{% endif %}>Saturday</option>
+      <option value="sunday" {% if sweep_weekday == "sunday" %}selected{% endif %}>Sunday</option>
+    </select>
+
+    <label for="sweep_day">Day of the month (for "On a day of the month")</label>
+    <input id="sweep_day" name="sweep_day" type="number" min="1" max="31" inputmode="numeric"
+           value="{{ sweep_day if sweep_day else 15 }}">
+
+    <button type="submit">Save settings</button>
+  </form>
+{% endblock %}

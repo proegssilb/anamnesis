@@ -354,6 +354,11 @@ fn render_areas_page(
         .render(context! {
             areas => areas,
             can_manage => can_manage,
+            // `can_manage` here is always exactly "is this caller a System
+            // Admin" -- creating an area has nowhere else to hang a role
+            // (see this function's only two call sites) -- so it doubles as
+            // the nav link's admin gate with no extra membership lookup.
+            is_system_admin => can_manage,
             csrf_token => user.csrf_token,
             current_user => user.display_name,
             error => error,

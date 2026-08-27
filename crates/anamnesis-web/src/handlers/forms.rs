@@ -156,6 +156,30 @@ pub struct SetFieldValueForm {
     pub currency: String,
 }
 
+/// Replaces the runtime-editable [`anamnesis_app::Settings`] row
+/// (`docs/DOMAIN.md` §3) — `crate::handlers::settings`'s one write, System
+/// Admin only. `sweep_kind` selects which of `sweep_n`/`sweep_weekday`/
+/// `sweep_day` actually apply (`crate::handlers::settings::parse_recurrence`
+/// consumes them); the unused ones are sent blank by the `<select>`-driven
+/// form but never required to be.
+#[derive(Debug, Deserialize)]
+pub struct UpdateSettingsForm {
+    pub csrf_token: String,
+    pub active_project_limit: String,
+    pub cooldown_seconds: String,
+    pub high_bounce_threshold: String,
+    /// `"never"` | `"every_n_weeks"` | `"day_of_month"`.
+    pub sweep_kind: String,
+    #[serde(default)]
+    pub sweep_n: String,
+    /// `"monday"`..`"sunday"`, lowercase — the same spelling
+    /// `crate::handlers::settings::format_weekday`/`parse_weekday` use.
+    #[serde(default)]
+    pub sweep_weekday: String,
+    #[serde(default)]
+    pub sweep_day: String,
+}
+
 /// Moves a board card (a task or a placed tangle) to `column_id`/`position`
 /// (`docs/DOMAIN.md` §8) — posted either by `static/app.js`'s drag handler
 /// (via `htmx.ajax`) or by `_reposition_form.html`'s plain-form fallback,
