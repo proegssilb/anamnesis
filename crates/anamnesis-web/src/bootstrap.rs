@@ -38,7 +38,11 @@ pub const DEFAULT_TODO_WIP_LIMIT: u32 = 5;
 /// holds it, and seeds the three default board columns if none exist yet.
 /// Safe to call on every startup — see the module doc comment for why each
 /// half is idempotent.
-pub async fn run(store: &SqlStore, ids: &dyn IdGen, bootstrap_admin: &str) -> Result<(), RepoError> {
+pub async fn run(
+    store: &SqlStore,
+    ids: &dyn IdGen,
+    bootstrap_admin: &str,
+) -> Result<(), RepoError> {
     let admin = UserId::new(bootstrap_admin);
     if !store.is_system_admin(&admin).await? {
         store.grant_system_admin(&admin).await?;

@@ -1,19 +1,23 @@
 #![forbid(unsafe_code)]
 //! The binary entry point: resolve configuration, wire real adapters,
-//! build the router, and serve it. All the actual logic lives in the
-//! library (`src/lib.rs` and its modules) so integration tests can build
-//! the same `Router` in-process without a socket.
+//! bootstrap a fresh database, build the router, and serve it. All the
+//! actual logic lives in the library (`src/lib.rs` and its modules) so
+//! integration tests can build the same `Router` in-process without a
+//! socket.
 
 use std::sync::Arc;
 
 use axum_extra::extract::cookie::Key;
 use tracing_subscriber::EnvFilter;
 
-use anamnesis_adapters::{OidcIdentityProvider, SqlBoardRepository, SystemClock, UuidIdGen};
-use anamnesis_app::IdentityProvider;
+use anamnesis_adapters::{
+    OidcIdentityProvider, SqlStore, SystemClock, TzTimezoneResolver, UuidIdGen,
+};
+use anamnesis_app::{Clock, IdentityProvider, TimezoneResolver};
 use anamnesis_web::config::Config;
+use anamnesis_web::settings::AppSettings;
 use anamnesis_web::state::AppState;
-use anamnesis_web::{routes, session, templates};
+use anamnesis_web::{bootstrap, routes, session, templates};
 
 #[tokio::main]
 async fn main() {
@@ -36,10 +40,30 @@ async fn main() {
         );
     }
 
-    let repo = SqlBoardRepository::connect(&config.database_url)
+    let store = SqlStore::connect(&config.database_url)
         .await
         .unwrap_or_else(|err| {
             eprintln!("failed to connect to the database: {err}");
+            std::process::exit(1);
+        });
+
+    let clock = SystemClock;
+    let id_gen = UuidIdGen;
+    let timezone = TzTimezoneResolver::new();
+
+    // Fail loudly, naming the variable, if ANAMNESIS_TIMEZONE does not name
+    // a real IANA zone -- checked once, at startup, against "now", rather
+    // than discovered lazily the first time a sweep or a suggestion needs
+    // it.
+    if let Err(err) = timezone.local_date(&config.timezone, clock.now()) {
+        eprintln!("invalid ANAMNESIS_TIMEZONE {:?}: {err}", config.timezone);
+        std::process::exit(1);
+    }
+
+    bootstrap::run(&store, &id_gen, &config.bootstrap_admin)
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("failed to bootstrap the database: {err}");
             std::process::exit(1);
         });
 
@@ -74,16 +98,27 @@ async fn main() {
             }
         };
 
+    let store = Arc::new(store);
     let state = AppState {
-        repo: Arc::new(repo),
-        clock: Arc::new(SystemClock),
-        id_gen: Arc::new(UuidIdGen),
+        areas: store.clone(),
+        projects: store.clone(),
+        tasks: store.clone(),
+        relationships: store.clone(),
+        tangles: store.clone(),
+        comments: store.clone(),
+        attachments: store.clone(),
+        board: store.clone(),
+        membership: store.clone(),
+        timezone: Arc::new(timezone),
+        clock: Arc::new(clock),
+        id_gen: Arc::new(id_gen),
         identity,
         templates: Arc::new(templates::build_environment()),
         cookie_key: Key::from(config.session_secret.as_bytes()),
         dev_auth_bypass: config.dev_auth_bypass,
         dev_csrf_token: session::generate_csrf_token(),
         secure_cookies: config.base_url_is_https(),
+        settings: AppSettings::from_timezone(config.timezone.clone()),
     };
 
     let app = routes::build_router(state);

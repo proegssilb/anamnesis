@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ area.title }} — Anamnesis{% endblock %}
+
+{% macro lane(label, value, projects) %}
+  <section class="column">
+    <div class="column-header">
+      <h2 class="column-title">{{ label }}</h2>
+    </div>
+    <div class="card-list">
+      {% for p in projects %}
+        <div class="card">
+          <a class="card-title" href="/projects/{{ p.id }}">{{ p.title }}</a>
+          {% if p.description %}<p class="card-body">{{ p.description }}</p>{% endif %}
+          {% if can_manage %}
+            <form class="status-form" method="post" action="/projects/{{ p.id }}/status">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <select name="status">
+                <option value="pending" {% if value == "pending" %}selected{% endif %}>Pending</option>
+                <option value="active" {% if value == "active" %}selected{% endif %}>Active</option>
+                <option value="complete" {% if value == "complete" %}selected{% endif %}>Complete</option>
+              </select>
+              <button type="submit">Move</button>
+            </form>
+          {% endif %}
+        </div>
+      {% else %}
+        <p class="hint">Nothing here.</p>
+      {% endfor %}
+    </div>
+  </section>
+{% endmacro %}
+
+{% block content %}
+  <p class="breadcrumb"><a href="/areas">Areas</a></p>
+  <h1>{{ area.title }}</h1>
+  {% if area.description %}<p class="hint">{{ area.description }}</p>{% endif %}
+
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+  <div class="board">
+    {{ lane("Pending", "pending", pending) }}
+    {{ lane("Active", "active", active) }}
+    {{ lane("Complete", "complete", complete) }}
+  </div>
+
+  {% if can_manage %}
+    <form class="panel-form" method="post" action="/areas/{{ area.id }}/projects">
+      <h2>New project</h2>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="title">Title</label>
+      <input id="title" name="title" required maxlength="200">
+      <label for="description">Description</label>
+      <textarea id="description" name="description"></textarea>
+      <button type="submit">Create project</button>
+    </form>
+  {% endif %}
+{% endblock %}

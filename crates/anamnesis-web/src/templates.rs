@@ -20,10 +20,11 @@ pub fn build_environment() -> Environment<'static> {
 
 const TEMPLATES: &[(&str, &str)] = &[
     ("base.html", include_str!("../templates/base.html")),
-    ("boards.html", include_str!("../templates/boards.html")),
+    ("areas.html", include_str!("../templates/areas.html")),
+    ("area.html", include_str!("../templates/area.html")),
+    ("project.html", include_str!("../templates/project.html")),
+    ("task.html", include_str!("../templates/task.html")),
     ("board.html", include_str!("../templates/board.html")),
-    ("_column.html", include_str!("../templates/_column.html")),
-    ("_card.html", include_str!("../templates/_card.html")),
     ("login.html", include_str!("../templates/login.html")),
     ("error.html", include_str!("../templates/error.html")),
 ];
@@ -50,14 +51,23 @@ mod tests {
     }
 
     #[test]
-    fn boards_template_html_escapes_titles() {
-        // Auto-escape must be active for `.html` templates — a board titled
+    fn areas_template_html_escapes_titles() {
+        // Auto-escape must be active for `.html` templates — an area titled
         // with a `<script>` tag must never render as live markup.
         let env = build_environment();
-        let tmpl = env.get_template("boards.html").unwrap();
-        let boards = vec![minijinja::context! { id => "abc", title => "<script>evil</script>" }];
+        let tmpl = env.get_template("areas.html").unwrap();
+        let areas = vec![minijinja::context! {
+            id => "abc",
+            title => "<script>evil</script>",
+            description => "",
+        }];
         let body = tmpl
-            .render(context! { boards => boards, csrf_token => "tok", current_user => "alice" })
+            .render(context! {
+                areas => areas,
+                can_manage => false,
+                csrf_token => "tok",
+                current_user => "alice",
+            })
             .unwrap();
         assert!(!body.contains("<script>evil</script>"));
         assert!(body.contains("&lt;script&gt;"));

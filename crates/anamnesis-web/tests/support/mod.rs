@@ -18,10 +18,11 @@ use axum_extra::extract::cookie::{Cookie, Key, SignedCookieJar};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use anamnesis_adapters::{SqlBoardRepository, SystemClock, UuidIdGen};
+use anamnesis_adapters::{SqlStore, SystemClock, TzTimezoneResolver, UuidIdGen};
 use anamnesis_web::session::SessionData;
+use anamnesis_web::settings::AppSettings;
 use anamnesis_web::state::AppState;
-use anamnesis_web::{routes, session, templates};
+use anamnesis_web::{bootstrap, routes, session, templates};
 
 /// 64 bytes exactly — the floor `ANAMNESIS_SESSION_SECRET` and
 /// `axum_extra`'s `Key` both enforce.
@@ -32,16 +33,31 @@ pub const TEST_SESSION_SECRET: &str =
 /// need to scrape it out of rendered HTML to build a valid form submission.
 pub const DEV_CSRF_TOKEN: &str = "test-dev-csrf-token";
 
+/// The dev-bypass user's id — `anamnesis_web::auth::DEV_USER_ID`, duplicated
+/// here as a plain string constant so tests need not depend on that private
+/// module path.
+pub const DEV_USER_ID: &str = "dev-user";
+
 pub struct TestApp {
     router: Router,
     pub key: Key,
+    pub store: Arc<SqlStore>,
     _dir: tempfile::TempDir,
 }
 
 impl TestApp {
-    /// Builds an app talking to a fresh temp-file SQLite database.
-    /// `dev_auth_bypass` mirrors `ANAMNESIS_DEV_AUTH_BYPASS`.
+    /// Builds an app talking to a fresh temp-file SQLite database, bootstrapped
+    /// exactly as `main.rs` would (`DEV_USER_ID` granted System Admin, default
+    /// board columns seeded). `dev_auth_bypass` mirrors
+    /// `ANAMNESIS_DEV_AUTH_BYPASS`.
     pub async fn new(dev_auth_bypass: bool) -> Self {
+        Self::with_bootstrap_admin(dev_auth_bypass, DEV_USER_ID).await
+    }
+
+    /// As [`TestApp::new`], but bootstraps `bootstrap_admin` as System Admin
+    /// instead of the dev-bypass user — for tests that need a distinct,
+    /// real-OIDC-style admin identity.
+    pub async fn with_bootstrap_admin(dev_auth_bypass: bool, bootstrap_admin: &str) -> Self {
         assert!(
             TEST_SESSION_SECRET.len() >= 64,
             "test session secret must meet the same floor as production"
@@ -50,28 +66,44 @@ impl TestApp {
         let dir = tempfile::tempdir().expect("create temp dir");
         let db_path = dir.path().join("test.db");
         let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
-        let repo = SqlBoardRepository::connect(&db_url)
+        let store = SqlStore::connect(&db_url)
             .await
             .expect("connect to temp SQLite database");
+        let id_gen = UuidIdGen;
+        bootstrap::run(&store, &id_gen, bootstrap_admin)
+            .await
+            .expect("bootstrap a fresh test database");
+        let store = Arc::new(store);
 
         let key = Key::from(TEST_SESSION_SECRET.as_bytes());
 
         let state = AppState {
-            repo: Arc::new(repo),
+            areas: store.clone(),
+            projects: store.clone(),
+            tasks: store.clone(),
+            relationships: store.clone(),
+            tangles: store.clone(),
+            comments: store.clone(),
+            attachments: store.clone(),
+            board: store.clone(),
+            membership: store.clone(),
+            timezone: Arc::new(TzTimezoneResolver::new()),
             clock: Arc::new(SystemClock),
-            id_gen: Arc::new(UuidIdGen),
+            id_gen: Arc::new(id_gen),
             identity: None,
             templates: Arc::new(templates::build_environment()),
             cookie_key: key.clone(),
             dev_auth_bypass,
             dev_csrf_token: DEV_CSRF_TOKEN.to_string(),
             secure_cookies: false,
+            settings: AppSettings::from_timezone("UTC"),
         };
 
         let router = routes::build_router(state);
         Self {
             router,
             key,
+            store,
             _dir: dir,
         }
     }

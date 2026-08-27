@@ -10,7 +10,10 @@
 </head>
 <body>
   <header class="site-header">
-    <a class="brand" href="/boards">Anamnesis</a>
+    <nav class="brand-nav">
+      <a class="brand" href="/areas">Anamnesis</a>
+      {% if current_user %}<a class="nav-link" href="/board">Board</a>{% endif %}
+    </nav>
     {% if current_user %}
       <form class="logout-form" method="post" action="/logout">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
