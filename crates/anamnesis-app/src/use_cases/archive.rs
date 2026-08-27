@@ -11,7 +11,9 @@ use anamnesis_core::{self as core, TaskId};
 
 use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
-use crate::ports::{BoardItem, BoardQuery, Clock, TaskRepository};
+use crate::ports::{BoardItem, BoardQuery, Clock, SearchIndex, TaskRepository};
+
+use super::indexing::log_index_failure;
 
 /// Archives every task currently sitting in an `is_done` column. Called by a
 /// scheduled sweep ticker (Phase F) on its own schedule, or directly by a
@@ -21,10 +23,17 @@ use crate::ports::{BoardItem, BoardQuery, Clock, TaskRepository};
 /// carries no `archived_at` of its own to sweep — see `docs/DOMAIN.md`'s
 /// Tangle section), so a resolved tangle sitting in the `is_done` column is
 /// filtered out of `tasks` here rather than passed in.
+///
+/// Each archived task is dropped from the search index — see
+/// `crate::use_cases::task::archive_task`'s doc comment for why, and
+/// `crate::use_cases::indexing` for the indexing-failure policy (logged,
+/// non-fatal, applied independently per task so one bad index write cannot
+/// stop the rest of the sweep from being recorded as archived).
 pub async fn archive_done_tasks(
     board: &dyn BoardQuery,
     task_repo: &dyn TaskRepository,
     clock: &dyn Clock,
+    search: &dyn SearchIndex,
     role: Option<Role>,
 ) -> Result<Vec<TaskId>, AppError> {
     if !is_allowed(role, Action::RunArchiveAll) {
@@ -53,6 +62,9 @@ pub async fn archive_done_tasks(
         task_repo
             .update(&done, aggregate.task.last_touched_at)
             .await?;
+        if let Err(err) = search.remove_task(task_id).await {
+            log_index_failure("archive_done_tasks", err);
+        }
         archived.push(task_id);
     }
     Ok(archived)

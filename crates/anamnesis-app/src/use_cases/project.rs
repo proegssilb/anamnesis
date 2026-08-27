@@ -15,13 +15,20 @@ use anamnesis_core::{
 
 use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
-use crate::ports::{Clock, IdGen, ProjectAggregate, ProjectRepository};
+use crate::ports::{Clock, IdGen, ProjectAggregate, ProjectRepository, SearchIndex};
 
-/// Creates a new project (in `Pending` status) within an area.
+use super::indexing::log_index_failure;
+
+/// Creates a new project (in `Pending` status) within an area, then indexes
+/// it for global search. See `crate::use_cases::area::create_area`'s doc
+/// comment (and `crate::use_cases::indexing`) for why indexing happens here
+/// and what happens if it fails.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_project(
     repo: &dyn ProjectRepository,
     ids: &dyn IdGen,
     clock: &dyn Clock,
+    search: &dyn SearchIndex,
     role: Option<Role>,
     area_id: AreaId,
     title: &str,
@@ -38,6 +45,12 @@ pub async fn create_project(
         clock.now(),
     )?;
     repo.insert(&project).await?;
+    if let Err(err) = search
+        .index_project(project.id, project.title.as_str())
+        .await
+    {
+        log_index_failure("create_project", err);
+    }
     Ok(project)
 }
 
@@ -70,18 +83,22 @@ pub async fn list_projects_in_area(
 pub async fn edit_project(
     repo: &dyn ProjectRepository,
     clock: &dyn Clock,
+    search: &dyn SearchIndex,
     role: Option<Role>,
     id: ProjectId,
 ) -> Result<Project, AppError> {
-    edit_project_fields(repo, clock, role, id, None, None).await
+    edit_project_fields(repo, clock, search, role, id, None, None).await
 }
 
-/// Replaces a project's title and/or description; `None` leaves a field
-/// unchanged. Split from [`edit_project`] so callers that only want to
-/// rename need not repeat the current description (and vice versa).
+/// Replaces a project's title and/or description, then re-indexes it; `None`
+/// leaves a field unchanged. Split from [`edit_project`] so callers that
+/// only want to rename need not repeat the current description (and vice
+/// versa). See [`create_project`]'s doc comment for the indexing-failure
+/// policy.
 pub async fn edit_project_fields(
     repo: &dyn ProjectRepository,
     clock: &dyn Clock,
+    search: &dyn SearchIndex,
     role: Option<Role>,
     id: ProjectId,
     title: Option<&str>,
@@ -96,6 +113,9 @@ pub async fn edit_project_fields(
     let new_description = description.unwrap_or(project.description.as_str());
     let edited = core::edit_project(&project, new_title, new_description, clock.now())?;
     repo.update(&edited).await?;
+    if let Err(err) = search.index_project(edited.id, edited.title.as_str()).await {
+        log_index_failure("edit_project_fields", err);
+    }
     Ok(edited)
 }
 
@@ -128,10 +148,17 @@ pub async fn transition_project_status(
     Ok(transitioned)
 }
 
-/// Archives a project.
+/// Archives a project, then drops it from the search index — an archived
+/// entity is "vanished from every view unless explicitly searched"
+/// (`docs/DOMAIN.md` §2), and *global search is not that explicit-search
+/// exception*: it has no archived-vs-not-archived toggle of its own, so a
+/// stale index entry for an archived project would surface as a plain,
+/// unqualified search hit, which is simply wrong. See [`create_project`]'s
+/// doc comment for the indexing-failure policy.
 pub async fn archive_project(
     repo: &dyn ProjectRepository,
     clock: &dyn Clock,
+    search: &dyn SearchIndex,
     role: Option<Role>,
     id: ProjectId,
 ) -> Result<Project, AppError> {
@@ -141,13 +168,19 @@ pub async fn archive_project(
     let aggregate = repo.load(id).await?.ok_or(AppError::NotFound)?;
     let archived = core::archive_project(&aggregate.project, clock.now())?;
     repo.update(&archived).await?;
+    if let Err(err) = search.remove_project(archived.id).await {
+        log_index_failure("archive_project", err);
+    }
     Ok(archived)
 }
 
-/// Restores an archived project.
+/// Restores an archived project, then re-indexes it — see
+/// [`archive_project`] for why it was removed, and [`create_project`]'s doc
+/// comment for the indexing-failure policy.
 pub async fn unarchive_project(
     repo: &dyn ProjectRepository,
     clock: &dyn Clock,
+    search: &dyn SearchIndex,
     role: Option<Role>,
     id: ProjectId,
 ) -> Result<Project, AppError> {
@@ -157,6 +190,12 @@ pub async fn unarchive_project(
     let aggregate = repo.load(id).await?.ok_or(AppError::NotFound)?;
     let restored = core::unarchive_project(&aggregate.project, clock.now())?;
     repo.update(&restored).await?;
+    if let Err(err) = search
+        .index_project(restored.id, restored.title.as_str())
+        .await
+    {
+        log_index_failure("unarchive_project", err);
+    }
     Ok(restored)
 }
 

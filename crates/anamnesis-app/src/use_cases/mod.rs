@@ -8,6 +8,7 @@ mod area;
 mod attachment;
 mod board;
 mod comment;
+mod indexing;
 mod project;
 mod relationship;
 mod suggestion;

@@ -136,7 +136,8 @@ async fn tries_to_archive_project(world: &mut AppWorld, user: String, project_na
     let role = MembershipQuery::effective_role(&world.domain, &user_id, project_id, area_id)
         .await
         .unwrap();
-    let result = archive_project(&world.domain, &world.clock, role, project_id).await;
+    let result =
+        archive_project(&world.domain, &world.clock, &world.domain, role, project_id).await;
     world.last_domain_error = result.err();
 }
 
@@ -155,6 +156,7 @@ async fn tries_to_create_area(world: &mut AppWorld, user: String, area_name: Str
         &world.domain,
         &world.ids,
         &world.clock,
+        &world.domain,
         role,
         &area_name,
         "",
@@ -197,6 +199,7 @@ async fn tries_to_create_a_project_in_the_area_that_contains(
         &world.domain,
         &world.ids,
         &world.clock,
+        &world.domain,
         role,
         area_id,
         &new_project_name,

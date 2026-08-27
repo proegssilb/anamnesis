@@ -84,6 +84,7 @@ async fn create_area_impl(
         state.areas.as_ref(),
         state.id_gen.as_ref(),
         state.clock.as_ref(),
+        state.search_index.as_ref(),
         role,
         &form.title,
         &form.description,
@@ -92,19 +93,13 @@ async fn create_area_impl(
     .await
     {
         Ok(area) => {
-            // Keeps `docs/DOMAIN.md` §8's global search actually finding
-            // what it claims to search — `anamnesis_app`'s use cases never
-            // call `SearchIndex` themselves (it is a separate write-side
-            // port from the read-side `SearchQuery` those use cases don't
-            // depend on at all), so a handler that just wrote something
-            // searchable is where that has to happen instead, exactly like
-            // `crate::handlers::access` already calls `MembershipQuery`
-            // directly for the same kind of infra-adjacent reason
-            // (`crate::error::WebError`'s doc comment).
-            state
-                .search_index
-                .index_area(area.id, area.title.as_str())
-                .await?;
+            // Indexing for global search (`docs/DOMAIN.md` §8) now happens
+            // inside `create_area` itself, alongside the repository write —
+            // this handler is transport only. See
+            // `anamnesis_app::use_cases::indexing`'s module doc comment for
+            // why that boundary matters (any non-web caller of the use case
+            // must get a consistent index too) and what happens if the
+            // index write itself fails.
             Ok(Redirect::to(&format!("/areas/{}", area.id)).into_response())
         }
         Err(AppError::Rule(e)) => {
@@ -179,6 +174,7 @@ async fn create_project_impl(
         state.projects.as_ref(),
         state.id_gen.as_ref(),
         state.clock.as_ref(),
+        state.search_index.as_ref(),
         role,
         area_id,
         &form.title,
@@ -187,10 +183,8 @@ async fn create_project_impl(
     .await
     {
         Ok(project) => {
-            state
-                .search_index
-                .index_project(project.id, project.title.as_str())
-                .await?;
+            // Indexed inside `create_project` itself — see
+            // `create_area_impl`'s comment above.
             Ok(Redirect::to(&format!("/projects/{}", project.id)).into_response())
         }
         Err(AppError::Rule(e)) => {
