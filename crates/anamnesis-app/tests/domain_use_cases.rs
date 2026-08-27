@@ -17,8 +17,9 @@ use support::{FixedClock, SequentialIdGen};
 use anamnesis_app::*;
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
-    AreaId, Column, ColumnId, DomainError, FieldData, FieldKind, KindId, NumberValue, Outcome,
-    Placement, ProjectId, ProjectStatus, SuggestionSettings, Task, TaskSummary, Title, UserId,
+    AreaId, Column, ColumnId, DomainError, FieldData, FieldKind, KindId, NumberValue, OfferItem,
+    Outcome, Placement, ProjectId, ProjectStatus, SuggestionSettings, Task, TaskSummary, Title,
+    UserId,
 };
 
 fn admin() -> Option<Role> {
@@ -787,6 +788,310 @@ async fn run_tangle_detection_surfaces_a_knot_and_resolves_it() {
         .unwrap();
     assert_eq!(reconciliation2.resolved.len(), 1);
     assert!(reconciliation2.resolved[0].resolved_at.is_some());
+}
+
+/// Builds a knotted pair (`a` blocks `b`, `b` blocks `a`) in a real, Active
+/// project and runs detection once, returning `(project_id, a, b, tangle)`
+/// — the shared setup every placement test below starts from. A *real*
+/// Active project (not a bare `some_project_id`) matters here because the
+/// suggestion-exclusion test needs `ProjectStatus::Active`, which the fakes'
+/// `suggestion_candidates`/`blocking_graph` can only see for a project that
+/// actually exists in the store.
+async fn knotted_pair(
+    fakes: &Fakes,
+    ids: &SequentialIdGen,
+    clock: &FixedClock,
+) -> (ProjectId, Task, Task, anamnesis_core::Tangle) {
+    let area_id = AreaId::new(ids.next());
+    let project = create_project(fakes, ids, clock, project_admin(), area_id, "P", "")
+        .await
+        .unwrap();
+    transition_project_status(
+        fakes,
+        clock,
+        project_admin(),
+        project.id,
+        ProjectStatus::Active,
+        10,
+    )
+    .await
+    .unwrap();
+    let project_id = project.id;
+    let a = create_task(fakes, ids, clock, member(), project_id, "A", "")
+        .await
+        .unwrap();
+    let b = create_task(fakes, ids, clock, member(), project_id, "B", "")
+        .await
+        .unwrap();
+    create_relationship(
+        fakes,
+        fakes,
+        ids,
+        clock,
+        member(),
+        a.id,
+        project_id,
+        b.id,
+        project_id,
+        KindId::BUILTIN_BLOCKS,
+    )
+    .await
+    .unwrap();
+    create_relationship(
+        fakes,
+        fakes,
+        ids,
+        clock,
+        member(),
+        b.id,
+        project_id,
+        a.id,
+        project_id,
+        KindId::BUILTIN_BLOCKS,
+    )
+    .await
+    .unwrap();
+    let reconciliation = run_tangle_detection(fakes, fakes, ids, clock)
+        .await
+        .unwrap();
+    let tangle = reconciliation.newly_detected[0].clone();
+    (project_id, a, b, tangle)
+}
+
+#[tokio::test]
+async fn place_tangle_puts_it_on_the_board_and_freezes_it() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let (_, _, _, tangle) = knotted_pair(&fakes, &ids, &clock).await;
+    assert_eq!(tangle.placement, Placement::Below);
+    assert!(!tangle.frozen);
+
+    let column = make_column(&ids, "To-Do", 0, None, false);
+    fakes.seed_column(column.clone());
+
+    let placed = place_tangle(&fakes, &fakes, member(), tangle.id, column.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        placed.placement,
+        Placement::OnBoard {
+            column: column.id,
+            position: 0
+        }
+    );
+    assert!(placed.frozen);
+
+    let reloaded = TangleRepository::load(&fakes, tangle.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reloaded.placement, placed.placement);
+    assert!(reloaded.frozen);
+}
+
+#[tokio::test]
+async fn place_tangle_is_forbidden_with_no_role() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let (_, _, _, tangle) = knotted_pair(&fakes, &ids, &clock).await;
+    let column = make_column(&ids, "To-Do", 0, None, false);
+    fakes.seed_column(column.clone());
+
+    let result = place_tangle(&fakes, &fakes, none(), tangle.id, column.id).await;
+    assert!(matches!(result, Err(AppError::Forbidden)));
+}
+
+#[tokio::test]
+async fn a_task_and_a_tangle_together_fill_a_wip_limit_of_two() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let column = make_column(&ids, "To-Do", 0, Some(2), false);
+    fakes.seed_column(column.clone());
+
+    let (project_id, _, _, tangle) = knotted_pair(&fakes, &ids, &clock).await;
+
+    // One task raised: the column now holds 1 of 2.
+    let occupant = create_task(&fakes, &ids, &clock, member(), project_id, "Occupant", "")
+        .await
+        .unwrap();
+    raise_task(&fakes, &fakes, &clock, member(), occupant.id, column.id, 0)
+        .await
+        .unwrap();
+
+    // Placing the tangle fills the limit exactly: 1 task + 1 tangle == 2.
+    place_tangle(&fakes, &fakes, member(), tangle.id, column.id)
+        .await
+        .unwrap();
+    let state = BoardQuery::board_state(&fakes, column.id).await.unwrap();
+    assert_eq!(
+        state.current_count, 2,
+        "a placed tangle must count against the column's WIP limit like a task"
+    );
+
+    // A third item -- another task -- is now refused: the tangle already
+    // occupies the slot that would have gone to it.
+    let newcomer = create_task(&fakes, &ids, &clock, member(), project_id, "Newcomer", "")
+        .await
+        .unwrap();
+    let result = raise_task(&fakes, &fakes, &clock, member(), newcomer.id, column.id, 1).await;
+    assert!(matches!(result, Err(AppError::WipLimitExceeded)));
+}
+
+#[tokio::test]
+async fn placing_a_tangle_is_itself_refused_once_the_column_is_already_at_its_wip_limit() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let column = make_column(&ids, "To-Do", 0, Some(1), false);
+    fakes.seed_column(column.clone());
+    let (project_id, _, _, tangle) = knotted_pair(&fakes, &ids, &clock).await;
+
+    let occupant = create_task(&fakes, &ids, &clock, member(), project_id, "Occupant", "")
+        .await
+        .unwrap();
+    raise_task(&fakes, &fakes, &clock, member(), occupant.id, column.id, 0)
+        .await
+        .unwrap();
+
+    let result = place_tangle(&fakes, &fakes, member(), tangle.id, column.id).await;
+    assert!(matches!(result, Err(AppError::WipLimitExceeded)));
+}
+
+#[tokio::test]
+async fn a_placed_tangle_keeps_its_board_slot_across_a_detection_pass() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let (_, _, _, tangle) = knotted_pair(&fakes, &ids, &clock).await;
+    let column = make_column(&ids, "To-Do", 0, None, false);
+    fakes.seed_column(column.clone());
+    let placed = place_tangle(&fakes, &fakes, member(), tangle.id, column.id)
+        .await
+        .unwrap();
+
+    // The exact same knot is detected again -- the ordinary "nothing
+    // changed" re-run every board view does.
+    let reconciliation = run_tangle_detection(&fakes, &fakes, &ids, &clock)
+        .await
+        .unwrap();
+    assert!(reconciliation.newly_detected.is_empty());
+    assert!(reconciliation.resolved.is_empty());
+    assert_eq!(reconciliation.still_holding, vec![placed.clone()]);
+
+    let reloaded = TangleRepository::load(&fakes, tangle.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reloaded.placement, placed.placement);
+    assert!(reloaded.frozen);
+}
+
+#[tokio::test]
+async fn drop_tangle_unfreezes_it_and_moves_it_below_the_horizon() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let (_, _, _, tangle) = knotted_pair(&fakes, &ids, &clock).await;
+    let column = make_column(&ids, "To-Do", 0, None, false);
+    fakes.seed_column(column.clone());
+    place_tangle(&fakes, &fakes, member(), tangle.id, column.id)
+        .await
+        .unwrap();
+
+    let dropped = drop_tangle(&fakes, member(), tangle.id).await.unwrap();
+    assert_eq!(dropped.placement, Placement::Below);
+    assert!(!dropped.frozen);
+}
+
+#[tokio::test]
+async fn resolve_frozen_tangles_closes_one_and_moves_it_to_the_done_column() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let (_, a, b, tangle) = knotted_pair(&fakes, &ids, &clock).await;
+    let todo = make_column(&ids, "To-Do", 0, None, false);
+    let done = make_column(&ids, "Done", 1, None, true);
+    fakes.seed_column(todo.clone());
+    fakes.seed_column(done.clone());
+    place_tangle(&fakes, &fakes, member(), tangle.id, todo.id)
+        .await
+        .unwrap();
+
+    // Untangling: the edge b->a is removed, leaving only a->b -- no more
+    // cycle in the frozen set.
+    let b_blocks_a = RelationshipRepository::list_for_task(&fakes, b.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.from_task_id == b.id && r.to_task_id == a.id)
+        .unwrap();
+    delete_relationship(&fakes, member(), b_blocks_a.id)
+        .await
+        .unwrap();
+
+    let resolved = resolve_frozen_tangles(&fakes, &fakes, &fakes, &clock, Some(done.id))
+        .await
+        .unwrap();
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].id, tangle.id);
+    assert!(resolved[0].resolved_at.is_some());
+    assert_eq!(
+        resolved[0].placement,
+        Placement::OnBoard {
+            column: done.id,
+            position: 0
+        },
+        "a tangle that resolves while on the board moves into the is_done column"
+    );
+
+    let active = TangleRepository::list_active(&fakes).await.unwrap();
+    assert!(!active.iter().any(|t| t.id == tangle.id));
+}
+
+#[tokio::test]
+async fn a_tangle_already_on_the_board_is_not_offered_again_by_a_suggestion_request() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let (project_id, _, _, tangle) = knotted_pair(&fakes, &ids, &clock).await;
+    let todo = make_column(&ids, "To-Do", 0, Some(3), false);
+    fakes.seed_column(todo.clone());
+    place_tangle(&fakes, &fakes, member(), tangle.id, todo.id)
+        .await
+        .unwrap();
+
+    // A third, wholly unrelated eligible task in the same active project,
+    // so the engine has something to offer -- proving specifically that the
+    // *tangle* is excluded, not merely that everything happens to be stuck.
+    create_task(&fakes, &ids, &clock, member(), project_id, "C", "")
+        .await
+        .unwrap();
+
+    let outcome = request_suggestion(
+        &fakes,
+        &fakes,
+        &clock,
+        member(),
+        &alice(),
+        (2026, 1),
+        todo.id,
+        &settings(),
+    )
+    .await
+    .unwrap();
+    let Outcome::Offer(offer) = outcome else {
+        panic!("expected an Offer (task C is eligible), got {outcome:?}")
+    };
+    assert!(
+        offer
+            .items
+            .iter()
+            .all(|item| !matches!(item, OfferItem::Tangle(_))),
+        "a tangle already on the board must never be offered again: {offer:?}"
+    );
 }
 
 // ============================== Archive ==============================
