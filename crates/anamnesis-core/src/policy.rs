@@ -14,6 +14,12 @@
 //! "what role does this user hold here" before calling in.
 
 /// A user's role, scoped to whatever resource is being checked.
+///
+/// Roles form a ladder — `Member < ProjectAdmin < SystemAdmin` — via
+/// [`Ord`], derived from [`Role::rank`] rather than hand-written comparisons.
+/// This is what lets independently-granted roles (e.g. an Area grant and a
+/// Project grant on the same user) be composed by taking the strongest: see
+/// `anamnesis_app::ports::MembershipQuery::effective_role`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     /// Manages users, global settings, global columns, and the active
@@ -26,6 +32,31 @@ pub enum Role {
     ProjectAdmin,
     /// Ordinary access to a project: view and work its tasks.
     Member,
+}
+
+impl Role {
+    /// This role's position on the ladder `Member < ProjectAdmin <
+    /// SystemAdmin`, as a plain number so [`Ord`] can be derived from one
+    /// place instead of drifting across hand-written if-chains.
+    fn rank(self) -> u8 {
+        match self {
+            Role::Member => 0,
+            Role::ProjectAdmin => 1,
+            Role::SystemAdmin => 2,
+        }
+    }
+}
+
+impl PartialOrd for Role {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Role {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.rank().cmp(&other.rank())
+    }
 }
 
 /// Whether a user with `role` in a project (`None` = not a member of it, and
@@ -83,5 +114,14 @@ mod tests {
     #[case(None, false)]
     fn can_manage_system_requires_system_admin(#[case] role: Option<Role>, #[case] expected: bool) {
         assert_eq!(can_manage_system(role), expected);
+    }
+
+    #[test]
+    fn role_ladder_orders_member_below_project_admin_below_system_admin() {
+        assert!(Role::Member < Role::ProjectAdmin);
+        assert!(Role::ProjectAdmin < Role::SystemAdmin);
+        assert!(Role::Member < Role::SystemAdmin);
+        assert_eq!(Role::Member.max(Role::ProjectAdmin), Role::ProjectAdmin);
+        assert_eq!(Role::SystemAdmin.max(Role::ProjectAdmin), Role::SystemAdmin);
     }
 }

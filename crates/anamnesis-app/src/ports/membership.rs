@@ -15,9 +15,17 @@
 //! fix: **Areas are a real membership scope too, and a Project inherits its
 //! Area's role** when it carries no explicit role of its own.
 //!
-//! An explicit [`MembershipQuery::project_role`] always wins over an
-//! inherited Area role — including when it is *lower* — because an explicit
-//! grant is a deliberate statement, not a floor. See
+//! ## Composition: strongest grant wins, by analogy to `chmod`
+//!
+//! [`MembershipQuery::area_role`], [`MembershipQuery::project_role`], and
+//! System Admin status are three *independent* grants, not a most-specific-
+//! wins override chain. [`MembershipQuery::effective_role`] takes the
+//! **strongest** of the three (via [`Role`]'s ladder ordering, `Member <
+//! ProjectAdmin < SystemAdmin`), and [`MembershipQuery::effective_area_role`]
+//! takes the strongest of System Admin and the Area grant. A grant must
+//! never *subtract* capability — adding someone to a project as a Member
+//! must not demote an Area Admin on that one project, exactly as adding a
+//! `chmod` bit never removes one already held. See
 //! [`MembershipQuery::effective_role`].
 
 use async_trait::async_trait;
@@ -49,9 +57,9 @@ pub trait MembershipQuery: Send + Sync {
         project: ProjectId,
     ) -> Result<Option<Role>, RepoError>;
 
-    /// `user`'s *effective* role with respect to `area` alone: whatever
-    /// [`Self::area_role`] says, otherwise `SystemAdmin` if they hold that
-    /// globally, otherwise `None`.
+    /// `user`'s *effective* role with respect to `area` alone: the
+    /// **strongest** of [`Self::area_role`] and `SystemAdmin` (if they hold
+    /// that globally), or `None` if neither grant exists.
     ///
     /// This is what a purely area-scoped action (`ViewArea`, `ManageArea`)
     /// should be gated on, and also what `CreateProject` is gated on — a
@@ -62,25 +70,27 @@ pub trait MembershipQuery: Send + Sync {
         user: &UserId,
         area: AreaId,
     ) -> Result<Option<Role>, RepoError> {
-        if let Some(role) = self.area_role(user, area).await? {
-            return Ok(Some(role));
-        }
-        if self.is_system_admin(user).await? {
-            return Ok(Some(Role::SystemAdmin));
-        }
-        Ok(None)
+        let area_role = self.area_role(user, area).await?;
+        let admin_role = self
+            .is_system_admin(user)
+            .await?
+            .then_some(Role::SystemAdmin);
+        // `Option<Role>`'s derived `Ord` puts `None` below every `Some`, and
+        // orders `Some(a)` vs `Some(b)` by `Role`'s ladder — so `.max` is
+        // exactly "the stronger of the two grants, or `None` if neither".
+        Ok(area_role.max(admin_role))
     }
 
     /// `user`'s *effective* role with respect to `project`, which lives in
-    /// `area`: precedence is **explicit project role, then inherited Area
-    /// role, then System Admin, then `None`.**
+    /// `area`: the **strongest** of System Admin status, the Area grant, and
+    /// the Project grant — never their most-specific override.
     ///
-    /// An explicit [`Self::project_role`] wins outright the moment it is
-    /// present — even when it is *lower* than what the Area would grant —
-    /// because an explicit grant is a deliberate statement about this one
-    /// project, not a floor under it. Only when no explicit project role
-    /// exists does the Area's role (and, failing that, System Admin) take
-    /// over, via [`Self::effective_area_role`].
+    /// Each of [`Self::project_role`], [`Self::area_role`], and System Admin
+    /// status is an independent grant, by analogy to `chmod`: adding one
+    /// must never subtract capability another already grants. In
+    /// particular, an explicit [`Self::project_role`] that is *lower* than
+    /// the user's Area grant does **not** demote them on that project — it
+    /// only matters when it is the *strongest* of the three.
     ///
     /// This is what every project-scoped use case should call — calling
     /// `project_role` directly would wrongly deny both a System Admin and
@@ -92,9 +102,8 @@ pub trait MembershipQuery: Send + Sync {
         project: ProjectId,
         area: AreaId,
     ) -> Result<Option<Role>, RepoError> {
-        if let Some(role) = self.project_role(user, project).await? {
-            return Ok(Some(role));
-        }
-        self.effective_area_role(user, area).await
+        let project_role = self.project_role(user, project).await?;
+        let area_effective_role = self.effective_area_role(user, area).await?;
+        Ok(project_role.max(area_effective_role))
     }
 }

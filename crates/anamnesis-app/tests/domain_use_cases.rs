@@ -1309,10 +1309,9 @@ async fn add_link_and_file_attachments_and_delete_cleans_up_the_blob() {
 // ============================ MembershipQuery ============================
 // `effective_role`'s default-method composition (crate::ports::membership's
 // module doc comment: "this is what every project-scoped use case should
-// call"): a System Admin gets that role everywhere, even on a project (or
-// area) they hold no explicit membership row for; otherwise it falls
-// through to an explicit project role, then an inherited Area role, `None`
-// included.
+// call"): System Admin, an Area grant, and a Project grant are independent
+// -- `effective_role` takes the *strongest* of the three, never the most
+// specific. Adding a further grant must never subtract capability.
 
 fn some_area_id(ids: &SequentialIdGen) -> AreaId {
     AreaId::new(ids.next())
@@ -1372,6 +1371,12 @@ async fn effective_role_falls_through_to_the_stored_project_role() {
 // scope, and a Project inherits its Area's role when it carries no explicit
 // project role of its own. Each test below is built to fail if inheritance
 // were wired naively (see the Phase D report for what was falsified).
+//
+// A later correction: composition across scopes is "strongest grant wins",
+// not "most specific scope wins" -- see the tests below named around
+// "demote" and the `adding_a_further_grant_never_reduces_the_effective_role`
+// monotonicity test (see the role-composition-fix report for what was
+// falsified there).
 
 #[tokio::test]
 async fn a_role_held_only_on_the_area_is_inherited_by_a_project_with_no_role_of_its_own() {
@@ -1399,7 +1404,7 @@ async fn a_role_held_only_on_the_area_is_inherited_by_a_project_with_no_role_of_
 }
 
 #[tokio::test]
-async fn an_explicit_project_role_overrides_an_inherited_area_role_even_when_lower() {
+async fn a_lower_explicit_project_role_does_not_demote_a_stronger_inherited_area_role() {
     let fakes = Fakes::new();
     let ids = SequentialIdGen::new();
     let area_id = some_area_id(&ids);
@@ -1408,21 +1413,23 @@ async fn an_explicit_project_role_overrides_an_inherited_area_role_even_when_low
 
     // Priya administers the whole Area...
     fakes.set_area_role(&priya, area_id, Role::ProjectAdmin);
-    // ...but is explicitly only a Member on this one project.
+    // ...and is also explicitly added as a Member on this one project.
     fakes.set_project_role(&priya, project_id, Role::Member);
 
-    // The explicit (lower) project role wins outright -- it is not floored
-    // by the (higher) inherited Area role.
+    // The grants are independent and stack -- adding the (lower) Member
+    // grant on the project must not subtract the (higher) Area grant.
+    // "Most specific scope wins" was rejected precisely because it did:
+    // this is the defect the project owner asked to be fixed.
     assert_eq!(
         MembershipQuery::effective_role(&fakes, &priya, project_id, area_id)
             .await
             .unwrap(),
-        Some(Role::Member)
+        Some(Role::ProjectAdmin)
     );
 }
 
 #[tokio::test]
-async fn an_explicit_project_role_also_overrides_an_inherited_area_role_when_higher() {
+async fn a_higher_explicit_project_role_elevates_above_a_weaker_inherited_area_role() {
     let fakes = Fakes::new();
     let ids = SequentialIdGen::new();
     let area_id = some_area_id(&ids);
@@ -1438,6 +1445,108 @@ async fn an_explicit_project_role_also_overrides_an_inherited_area_role_when_hig
             .unwrap(),
         Some(Role::ProjectAdmin)
     );
+}
+
+#[tokio::test]
+async fn adding_a_further_grant_never_reduces_the_effective_role() {
+    // The actual property the project owner asked for, stated directly so a
+    // future refactor can't quietly reintroduce "most specific scope wins"
+    // while the individual before/after cases above still happen to pass.
+    //
+    // A starting grant state is any independent combination of (project
+    // role, area role, system admin bit). "Adding a further grant" means
+    // strengthening exactly one of those three slots to a role at least as
+    // strong as whatever it already held (never a downgrade -- replacing an
+    // explicit grant with a *weaker* one for the same scope is a deliberate
+    // demotion, not "adding a grant", and is intentionally out of scope
+    // here). For every such starting state and every such addition, the
+    // effective role must never go down.
+    let ids = SequentialIdGen::new();
+    let area_id = some_area_id(&ids);
+    let project_id = ProjectId::new(ids.next());
+
+    // `None` first so `Option<Role>`'s derived `Ord` (`None` below every
+    // `Some`) lines up with array order, letting `role_options[i..]` give
+    // "at least as strong as `role_options[i]`" directly.
+    let role_options: [Option<Role>; 4] = [
+        None,
+        Some(Role::Member),
+        Some(Role::ProjectAdmin),
+        Some(Role::SystemAdmin),
+    ];
+
+    async fn effective(
+        fakes: &Fakes,
+        user: &UserId,
+        project_id: ProjectId,
+        area_id: AreaId,
+    ) -> Option<Role> {
+        MembershipQuery::effective_role(fakes, user, project_id, area_id)
+            .await
+            .unwrap()
+    }
+
+    fn build(
+        user: &UserId,
+        project_id: ProjectId,
+        area_id: AreaId,
+        state: (Option<Role>, Option<Role>, bool),
+    ) -> Fakes {
+        let fakes = Fakes::new();
+        let (project_role, area_role, is_admin) = state;
+        if let Some(role) = project_role {
+            fakes.set_project_role(user, project_id, role);
+        }
+        if let Some(role) = area_role {
+            fakes.set_area_role(user, area_id, role);
+        }
+        if is_admin {
+            fakes.make_system_admin(user);
+        }
+        fakes
+    }
+
+    for (p0_idx, &p0) in role_options.iter().enumerate() {
+        for (a0_idx, &a0) in role_options.iter().enumerate() {
+            for &s0 in &[false, true] {
+                let user = UserId::new("monotonicity-probe");
+                let before_fakes = build(&user, project_id, area_id, (p0, a0, s0));
+                let before = effective(&before_fakes, &user, project_id, area_id).await;
+
+                // Strengthen the project slot alone, to every role >= p0.
+                for &p1 in &role_options[p0_idx..] {
+                    let after_fakes = build(&user, project_id, area_id, (p1, a0, s0));
+                    let after = effective(&after_fakes, &user, project_id, area_id).await;
+                    assert!(
+                        after >= before,
+                        "strengthening the project grant from {p0:?} to {p1:?} (area={a0:?}, admin={s0}) \
+                         reduced the effective role from {before:?} to {after:?}"
+                    );
+                }
+
+                // Strengthen the area slot alone, to every role >= a0.
+                for &a1 in &role_options[a0_idx..] {
+                    let after_fakes = build(&user, project_id, area_id, (p0, a1, s0));
+                    let after = effective(&after_fakes, &user, project_id, area_id).await;
+                    assert!(
+                        after >= before,
+                        "strengthening the area grant from {a0:?} to {a1:?} (project={p0:?}, admin={s0}) \
+                         reduced the effective role from {before:?} to {after:?}"
+                    );
+                }
+
+                // Grant system admin (never revoke it -- s0 -> true is the
+                // only direction "adding a further grant" can move).
+                let after_fakes = build(&user, project_id, area_id, (p0, a0, true));
+                let after = effective(&after_fakes, &user, project_id, area_id).await;
+                assert!(
+                    after >= before,
+                    "granting system admin (project={p0:?}, area={a0:?}, was admin={s0}) \
+                     reduced the effective role from {before:?} to {after:?}"
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -1568,7 +1677,7 @@ async fn a_user_with_only_a_project_role_cannot_see_a_sibling_project_or_the_are
 }
 
 #[tokio::test]
-async fn an_explicit_project_role_overrides_area_role_through_the_use_cases() {
+async fn a_lower_explicit_project_role_does_not_demote_area_role_through_the_use_cases() {
     let fakes = Fakes::new();
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
@@ -1583,16 +1692,17 @@ async fn an_explicit_project_role_overrides_area_role_through_the_use_cases() {
 
     // Priya administers the whole Area...
     fakes.set_area_role(&priya, area.id, Role::ProjectAdmin);
-    // ...but is explicitly only a Member on this one project.
+    // ...and is also explicitly added as a Member on this one project.
     fakes.set_project_role(&priya, project.id, Role::Member);
 
     let role = MembershipQuery::effective_role(&fakes, &priya, project.id, area.id)
         .await
         .unwrap();
-    assert_eq!(role, Some(Role::Member));
+    assert_eq!(role, Some(Role::ProjectAdmin));
 
-    // A Member cannot manage field definitions, even though Priya is a
-    // Project Admin of the surrounding Area.
+    // Priya can still manage field definitions: the Member grant on this
+    // one project is an independent addition, not a demotion of her Area
+    // Admin standing.
     let result = add_field_definition(
         &fakes,
         &ids,
@@ -1604,5 +1714,5 @@ async fn an_explicit_project_role_overrides_area_role_through_the_use_cases() {
         true,
     )
     .await;
-    assert!(matches!(result, Err(AppError::Forbidden)));
+    assert!(result.is_ok());
 }

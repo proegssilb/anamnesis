@@ -42,7 +42,10 @@ Feature: Access control
   # were only ever project-scoped, so anything area-level had nowhere to
   # hang except System Admin. The fix: Areas are a real membership scope,
   # and a Project inherits its Area's role when it has no explicit project
-  # role of its own -- but an explicit project role always wins.
+  # role of its own. A later correction: an Area grant and a Project grant
+  # are independent and stack, by analogy to `chmod` -- the effective role
+  # is the *strongest* of the two, never the more specific one, so adding a
+  # grant can never subtract capability.
 
   Scenario: A role on the Area alone is enough to view it and start a project there
     Given "Priya" is a Project Admin of the area that contains "Kitchen Remodel"
@@ -59,11 +62,11 @@ Feature: Access control
     When "Bob" tries to view the area that contains "Kitchen Remodel"
     Then access is refused
 
-  Scenario: An explicit project role overrides an inherited Area role, even a more restrictive one
+  Scenario: A lesser explicit project role does not demote a stronger inherited Area role
     Given "Priya" is a Project Admin of the area that contains "Kitchen Remodel"
     And "Priya" is a Member of "Kitchen Remodel"
     When "Priya" tries to add a field definition to project "Kitchen Remodel"
-    Then access is refused
+    Then access is granted
 
   Scenario: A System Admin needs no Area or project membership row at all
     Given "Sam" is a System Admin
