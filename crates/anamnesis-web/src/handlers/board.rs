@@ -337,9 +337,11 @@ async fn fetch_suggestion(
     entry_column: anamnesis_core::ColumnId,
 ) -> Result<Outcome, WebError> {
     let now = state.clock.now();
-    let local_date = state
-        .timezone
-        .local_date(&state.settings.timezone_name, now)?;
+    let local_date = state.timezone.local_date(&state.timezone_name, now)?;
+    // A live read, not a value cached at startup -- so editing the
+    // suggestion cooldown / high-bounce threshold through `/settings`
+    // actually changes eligibility on the very next request.
+    let suggestion_settings = state.settings.load().await?.suggestion;
     let outcome = request_suggestion(
         state.board.as_ref(),
         state.tasks.as_ref(),
@@ -348,7 +350,7 @@ async fn fetch_suggestion(
         &user.user_id,
         (local_date.year(), local_date.ordinal()),
         entry_column,
-        &state.settings.suggestion,
+        &suggestion_settings,
     )
     .await?;
     Ok(outcome)

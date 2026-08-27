@@ -17,13 +17,11 @@ use std::sync::Arc;
 use anamnesis_app::{
     AreaRepository, AttachmentRepository, BlobStore, BoardQuery, Clock, CommentRepository, IdGen,
     IdentityProvider, MembershipQuery, ProjectRepository, RelationshipRepository, SearchIndex,
-    SearchQuery, TangleRepository, TaskRepository, TimezoneResolver,
+    SearchQuery, SettingsRepository, TangleRepository, TaskRepository, TimezoneResolver,
 };
 use axum::extract::FromRef;
 use axum_extra::extract::cookie::Key;
 use minijinja::Environment;
-
-use crate::settings::AppSettings;
 
 /// The application's shared state. Every field is `pub` on purpose: tests
 /// build this struct directly (rather than through [`crate::config::Config`]
@@ -79,10 +77,22 @@ pub struct AppState {
     /// Whether the session cookie gets the `Secure` attribute — true when
     /// `ANAMNESIS_BASE_URL` is `https://`.
     pub secure_cookies: bool,
-    /// The knobs `docs/DOMAIN.md` §3 assigns to a `Settings` entity that no
-    /// port in `anamnesis-app` reads or writes (`crate::settings`'s module
-    /// doc comment explains the gap) — config-sourced for this phase.
-    pub settings: AppSettings,
+    /// The runtime-editable knobs `docs/DOMAIN.md` §3 assigns to a
+    /// `Settings` entity: the active-project limit, the suggestion engine's
+    /// tunables, and the sweep schedule. A live port, not a cached snapshot
+    /// — every handler that needs a current value calls
+    /// `settings.load().await` rather than reading a value captured at
+    /// startup, which is what makes editing settings through the UI
+    /// (`crate::handlers::settings`) actually change behaviour on the very
+    /// next request.
+    pub settings: Arc<dyn SettingsRepository>,
+    /// The IANA zone name every local-date calculation (the suggestion
+    /// seed's `local_date`, the sweep ticker) is resolved against —
+    /// `ANAMNESIS_TIMEZONE`, validated once at startup (`main.rs`).
+    /// Deliberately **not** part of [`Self::settings`] — see
+    /// `anamnesis_app::settings`'s module doc comment for why timezone
+    /// stays config-sourced rather than becoming a runtime-editable value.
+    pub timezone_name: String,
 }
 
 impl FromRef<AppState> for Key {

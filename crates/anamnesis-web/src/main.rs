@@ -15,9 +15,8 @@ use anamnesis_adapters::{
 };
 use anamnesis_app::{Clock, IdentityProvider, TimezoneResolver};
 use anamnesis_web::config::Config;
-use anamnesis_web::settings::AppSettings;
 use anamnesis_web::state::AppState;
-use anamnesis_web::{bootstrap, routes, session, templates};
+use anamnesis_web::{bootstrap, routes, session, sweep, templates};
 
 #[tokio::main]
 async fn main() {
@@ -60,7 +59,7 @@ async fn main() {
         std::process::exit(1);
     }
 
-    bootstrap::run(&store, &id_gen, &config.bootstrap_admin)
+    bootstrap::run(&store, &id_gen, &config.bootstrap_admin, &config.timezone)
         .await
         .unwrap_or_else(|err| {
             eprintln!("failed to bootstrap the database: {err}");
@@ -131,8 +130,17 @@ async fn main() {
         dev_auth_bypass: config.dev_auth_bypass,
         dev_csrf_token: session::generate_csrf_token(),
         secure_cookies: config.base_url_is_https(),
-        settings: AppSettings::from_timezone(config.timezone.clone()),
+        settings: store.clone(),
+        timezone_name: config.timezone.clone(),
     };
+
+    // The scheduled-sweep ticker (`docs/DOMAIN.md` §6). Deliberately started
+    // only here, in the binary -- never from `routes::build_router`,
+    // `AppState` construction, or `bootstrap::run` -- so no integration test
+    // (which builds a `Router` directly via `routes::build_router`, per
+    // `tests/support`) can ever cause it to spawn. See `sweep`'s module doc
+    // comment for the full reasoning.
+    let ticker_handle = sweep::spawn_ticker(state.clone());
 
     let app = routes::build_router(state);
 
@@ -144,7 +152,20 @@ async fn main() {
         });
     tracing::info!(addr = %config.bind_addr, "anamnesis listening");
 
+    let shutdown = async {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("shutdown signal received, draining in-flight requests");
+    };
+
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
         .await
         .expect("server encountered a fatal error");
+
+    // The ticker is a detached background task with nothing left to flush
+    // (a sweep either committed or it didn't; `sweep_done` is idempotent, so
+    // an abort mid-sweep is safe to resume on the next boot -- see `sweep`'s
+    // module doc comment) -- `abort()` returns immediately rather than
+    // waiting for its next wake-up, so it never delays process exit.
+    ticker_handle.abort();
 }

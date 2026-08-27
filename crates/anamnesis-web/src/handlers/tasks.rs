@@ -715,7 +715,7 @@ async fn set_field_value_impl(
         &form.value,
         &form.currency,
         state.timezone.as_ref(),
-        &state.settings.timezone_name,
+        &state.timezone_name,
     ) {
         Ok(data) => data,
         Err(WebError::BadRequest(message)) => {
@@ -883,13 +883,7 @@ async fn render_task_page(
         .map(|def| {
             let stored = field_values.iter().find(|v| v.field_id == def.id);
             let (input_value, currency_code) = stored
-                .map(|v| {
-                    field_input_value(
-                        &v.data,
-                        state.timezone.as_ref(),
-                        &state.settings.timezone_name,
-                    )
-                })
+                .map(|v| field_input_value(&v.data, state.timezone.as_ref(), &state.timezone_name))
                 .unwrap_or_default();
             context! {
                 id => def.id.to_string(),

@@ -20,7 +20,6 @@ use tower::ServiceExt;
 
 use anamnesis_adapters::{FsBlobStore, SqlStore, SystemClock, TzTimezoneResolver, UuidIdGen};
 use anamnesis_web::session::SessionData;
-use anamnesis_web::settings::AppSettings;
 use anamnesis_web::state::AppState;
 use anamnesis_web::{bootstrap, routes, session, templates};
 
@@ -72,7 +71,7 @@ impl TestApp {
             .await
             .expect("connect to temp SQLite database");
         let id_gen = UuidIdGen;
-        bootstrap::run(&store, &id_gen, bootstrap_admin)
+        bootstrap::run(&store, &id_gen, bootstrap_admin, "UTC")
             .await
             .expect("bootstrap a fresh test database");
         let store = Arc::new(store);
@@ -107,7 +106,8 @@ impl TestApp {
             dev_auth_bypass,
             dev_csrf_token: DEV_CSRF_TOKEN.to_string(),
             secure_cookies: false,
-            settings: AppSettings::from_timezone("UTC"),
+            settings: store.clone(),
+            timezone_name: "UTC".to_string(),
         };
 
         let router = routes::build_router(state);

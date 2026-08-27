@@ -5,9 +5,10 @@
 //! it out of that hole. `anamnesis_adapters::SqlStore` exposes
 //! `grant_system_admin`, `seed_board_column`, `set_area_role`, and
 //! `set_project_role` as inherent seams (not ports — `docs/DOMAIN.md` §7
-//! defines no `SettingsRepository`/column-writing port at all) for exactly
-//! this: run once at startup, idempotently, before the router starts
-//! accepting requests.
+//! defines no column-writing port at all) for exactly this: run once at
+//! startup, idempotently, before the router starts accepting requests.
+//! `SqlStore::seed_settings_if_missing` (also inherent, same reasoning) is
+//! the equivalent seam for the `Settings` singleton row, seeded here too.
 //!
 //! **Idempotency.** `MembershipQuery` has no "does any System Admin exist"
 //! query, only "does *this* user hold it" (`MembershipQuery::is_system_admin`)
@@ -21,12 +22,14 @@
 //! columns.
 //!
 //! **Column defaults.** `docs/DOMAIN.md` §3 names the three default columns
-//! (To-Do WIP-limited, Doing, Done) but not a WIP limit number — no port
-//! resolves one either (`Settings` has no reader). [`DEFAULT_TODO_WIP_LIMIT`]
-//! is a stated, tunable assumption, not a hidden default.
+//! (To-Do WIP-limited, Doing, Done) but not a WIP limit number, and columns
+//! are not one of the runtime-editable `Settings` fields (`docs/DOMAIN.md`
+//! §3 also names them as System-Admin territory, but that surface is not in
+//! scope here). [`DEFAULT_TODO_WIP_LIMIT`] is a stated, tunable assumption,
+//! not a hidden default.
 
 use anamnesis_adapters::SqlStore;
-use anamnesis_app::{BoardQuery, IdGen, MembershipQuery, RepoError};
+use anamnesis_app::{BoardQuery, IdGen, MembershipQuery, RepoError, Settings};
 use anamnesis_core::{ColumnId, UserId, create_column};
 
 /// `docs/DOMAIN.md` §3 requires the To-Do column to carry *a* WIP limit but
@@ -35,13 +38,17 @@ use anamnesis_core::{ColumnId, UserId, create_column};
 pub const DEFAULT_TODO_WIP_LIMIT: u32 = 5;
 
 /// Grants `bootstrap_admin` System Admin if nobody by that name already
-/// holds it, and seeds the three default board columns if none exist yet.
-/// Safe to call on every startup — see the module doc comment for why each
-/// half is idempotent.
+/// holds it, seeds the three default board columns if none exist yet, and
+/// seeds a default [`Settings`] row if none exists yet (`timezone` is
+/// stored on that row only because the schema's `timezone` column is
+/// `NOT NULL` — it is not read back by any port; see
+/// `anamnesis_app::settings`'s module doc comment). Safe to call on every
+/// startup — see the module doc comment for why each half is idempotent.
 pub async fn run(
     store: &SqlStore,
     ids: &dyn IdGen,
     bootstrap_admin: &str,
+    timezone: &str,
 ) -> Result<(), RepoError> {
     let admin = UserId::new(bootstrap_admin);
     if !store.is_system_admin(&admin).await? {
@@ -73,6 +80,10 @@ pub async fn run(
         tracing::info!("bootstrap: seeded default board columns (To-Do, Doing, Done)");
     }
 
+    store
+        .seed_settings_if_missing(&Settings::default(), timezone)
+        .await?;
+
     Ok(())
 }
 
@@ -96,7 +107,7 @@ mod tests {
         let (store, _dir) = temp_store().await;
         let ids = UuidIdGen;
 
-        run(&store, &ids, "alice").await.unwrap();
+        run(&store, &ids, "alice", "UTC").await.unwrap();
 
         assert!(store.is_system_admin(&UserId::new("alice")).await.unwrap());
         let columns = store.columns_with_items().await.unwrap();
@@ -118,8 +129,8 @@ mod tests {
         let (store, _dir) = temp_store().await;
         let ids = UuidIdGen;
 
-        run(&store, &ids, "alice").await.unwrap();
-        run(&store, &ids, "alice").await.unwrap();
+        run(&store, &ids, "alice", "UTC").await.unwrap();
+        run(&store, &ids, "alice", "UTC").await.unwrap();
 
         let columns = store.columns_with_items().await.unwrap();
         assert_eq!(
@@ -142,12 +153,36 @@ mod tests {
         let (store, _dir) = temp_store().await;
         let ids = UuidIdGen;
 
-        run(&store, &ids, "alice").await.unwrap();
-        run(&store, &ids, "bob").await.unwrap();
+        run(&store, &ids, "alice", "UTC").await.unwrap();
+        run(&store, &ids, "bob", "UTC").await.unwrap();
 
         assert!(store.is_system_admin(&UserId::new("alice")).await.unwrap());
         assert!(store.is_system_admin(&UserId::new("bob")).await.unwrap());
         let columns = store.columns_with_items().await.unwrap();
         assert_eq!(columns.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_database_gets_default_settings_and_a_second_boot_does_not_reset_an_edit() {
+        use anamnesis_app::SettingsRepository;
+
+        let (store, _dir) = temp_store().await;
+        let ids = UuidIdGen;
+
+        run(&store, &ids, "alice", "UTC").await.unwrap();
+        let settings = SettingsRepository::load(&store).await.unwrap();
+        assert_eq!(settings, Settings::default());
+
+        // An admin edits a setting between boots...
+        let edited = Settings {
+            active_project_limit: 42,
+            ..Settings::default()
+        };
+        SettingsRepository::update(&store, &edited).await.unwrap();
+
+        // ...and a second boot must not reset it back to the default.
+        run(&store, &ids, "alice", "UTC").await.unwrap();
+        let settings = SettingsRepository::load(&store).await.unwrap();
+        assert_eq!(settings.active_project_limit, 42);
     }
 }
