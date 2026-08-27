@@ -3,7 +3,9 @@
 //! `crate::ports::MembershipQuery::effective_role`) and passed in — these
 //! use cases only enforce, they never look membership up themselves, so a
 //! `create_project` (which by definition has no project yet to resolve a
-//! role *in*) can still be gated on the *area's* role.
+//! role *in*) is instead gated on the *Area's* effective role
+//! (`crate::ports::MembershipQuery::effective_area_role`) — Project Admin
+//! (or System Admin) in the Area the new project will live in.
 
 use anamnesis_core::policy::Role;
 use anamnesis_core::{

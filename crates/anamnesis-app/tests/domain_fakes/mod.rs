@@ -44,6 +44,7 @@ pub struct Fakes {
     columns: Mutex<Vec<Column>>,
     blobs: Mutex<HashMap<String, (Vec<u8>, String)>>,
     system_admins: Mutex<HashMap<UserId, bool>>,
+    area_roles: Mutex<HashMap<(UserId, AreaId), Role>>,
     project_roles: Mutex<HashMap<(UserId, ProjectId), Role>>,
     /// Every `(kind, id, title)` ever indexed, minus anything removed —
     /// good enough for `support_doubles`-style assertions on `SearchIndex`.
@@ -115,6 +116,16 @@ impl Fakes {
             .lock()
             .unwrap()
             .insert((user.clone(), project), role);
+    }
+
+    /// Grants `user` `role` on `area` — inherited by every project in that
+    /// area that carries no explicit project role of its own (see
+    /// `MembershipQuery::effective_role`).
+    pub fn set_area_role(&self, user: &UserId, area: AreaId, role: Role) {
+        self.area_roles
+            .lock()
+            .unwrap()
+            .insert((user.clone(), area), role);
     }
 
     /// Reads a task straight out of the store, bypassing any use case —
@@ -581,6 +592,15 @@ impl MembershipQuery for Fakes {
             .get(user)
             .copied()
             .unwrap_or(false))
+    }
+
+    async fn area_role(&self, user: &UserId, area: AreaId) -> Result<Option<Role>, RepoError> {
+        Ok(self
+            .area_roles
+            .lock()
+            .unwrap()
+            .get(&(user.clone(), area))
+            .copied())
     }
 
     async fn project_role(
