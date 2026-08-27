@@ -24,7 +24,11 @@ pub fn format_field_data(data: &FieldData) -> String {
     match data {
         FieldData::Number(n) => format_scaled(n.units, n.scale),
         FieldData::Currency(c) => {
-            format!("{} {}", format_scaled(c.minor_units, 2), c.currency.as_str())
+            format!(
+                "{} {}",
+                format_scaled(c.minor_units, 2),
+                c.currency.as_str()
+            )
         }
         FieldData::Date(d) => format!("{d}"),
         FieldData::Time(t) => format!("{t}"),

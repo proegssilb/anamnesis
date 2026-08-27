@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}{{ task.title }} — Anamnesis{% endblock %}
+{% block content %}
+  <p class="breadcrumb"><a href="/board">Board</a></p>
+  <h1>{{ task.title }}</h1>
+  <p class="hint">
+    {% if is_on_board %}
+      <span class="badge">on the board</span>
+    {% else %}
+      <span class="badge">below the horizon</span>
+    {% endif %}
+    {% if task.bounce_count > 0 %}<span class="badge">bounced {{ task.bounce_count }}x</span>{% endif %}
+  </p>
+  {% if task.description %}<p class="card-body">{{ task.description }}</p>{% endif %}
+
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+  <section class="panel-form">
+    <h2>Edit</h2>
+    <form method="post" action="/tasks/{{ task.id }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="title">Title</label>
+      <input id="title" name="title" required maxlength="200" value="{{ task.title }}">
+      <label for="description">Description</label>
+      <textarea id="description" name="description">{{ task.description }}</textarea>
+      <button type="submit">Save</button>
+    </form>
+  </section>
+
+  <section class="panel-form">
+    <h2>Placement</h2>
+    {% if column_options %}
+      <form method="post" action="/tasks/{{ task.id }}/raise">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="column_id">{% if is_on_board %}Move to{% else %}Raise onto{% endif %} the board, in column</label>
+        <select id="column_id" name="column_id">
+          {% for c in column_options %}<option value="{{ c.id }}">{{ c.title }}</option>{% endfor %}
+        </select>
+        <button type="submit">{% if is_on_board %}Move{% else %}Raise{% endif %}</button>
+      </form>
+    {% endif %}
+    {% if is_on_board %}
+      <form method="post" action="/tasks/{{ task.id }}/drop">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">Drop back below the horizon</button>
+      </form>
+      {% if not current_column_is_done %}
+        <p class="hint">Dropping without finishing counts as a bounce.</p>
+      {% endif %}
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Checklist</h2>
+    {% if children %}
+      <ul class="task-list">
+        {% for c in children %}<li><a href="/tasks/{{ c.id }}">{{ c.title }}</a></li>{% endfor %}
+      </ul>
+    {% else %}
+      <p class="hint">No checklist items yet.</p>
+    {% endif %}
+    <form class="inline-form" method="post" action="/tasks/{{ task.id }}/parent">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="parent_task_id">Set this task's parent (its id, blank to clear)</label>
+      <input id="parent_task_id" name="parent_task_id" placeholder="parent task id">
+      <button type="submit">Set parent</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Relationships</h2>
+    {% if relationships %}
+      <ul class="task-list">
+        {% for r in relationships %}
+          <li>{{ r.label }} <a href="/tasks/{{ r.other_id }}">{{ r.other_title }}</a></li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="hint">No relationships yet.</p>
+    {% endif %}
+    <form class="inline-form" method="post" action="/tasks/{{ task.id }}/relationships">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="to_task_id">Related task id</label>
+      <input id="to_task_id" name="to_task_id" required placeholder="task id">
+      <select name="kind">
+        <option value="blocks">blocks</option>
+        <option value="relates_to">relates to</option>
+        <option value="duplicates">duplicates</option>
+      </select>
+      <button type="submit">Link</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Comments</h2>
+    {% if comments %}
+      <ul class="comment-list">
+        {% for c in comments %}
+          <li><p class="comment-meta">{{ c.author }}</p><p>{{ c.body }}</p></li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="hint">No comments yet.</p>
+    {% endif %}
+    <form class="inline-form" method="post" action="/tasks/{{ task.id }}/comments">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="body">Add a comment</label>
+      <textarea id="body" name="body" required></textarea>
+      <button type="submit">Comment</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Attachments</h2>
+    {% if attachments %}
+      <ul class="task-list">
+        {% for a in attachments %}
+          <li>
+            {% if a.kind.Link %}<a href="{{ a.kind.Link.url }}">{{ a.kind.Link.url }}</a>{% endif %}
+            {% if a.kind.File %}{{ a.kind.File.filename }}{% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="hint">No attachments yet.</p>
+    {% endif %}
+    <form class="inline-form" method="post" action="/tasks/{{ task.id }}/attachments">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="url">Attach a link</label>
+      <input id="url" name="url" required type="url" placeholder="https://...">
+      <button type="submit">Attach</button>
+    </form>
+  </section>
+{% endblock %}

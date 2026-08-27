@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}{{ project.title }} — Anamnesis{% endblock %}
+{% block content %}
+  <p class="breadcrumb"><a href="/areas/{{ project.area_id }}">Area</a></p>
+  <h1>{{ project.title }}</h1>
+  <p class="hint">Status: <span class="badge">{{ project.status }}</span></p>
+  {% if project.description %}<p class="hint">{{ project.description }}</p>{% endif %}
+
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+  <h2>On the board</h2>
+  {% if on_board %}
+    <ul class="task-list">
+      {% for t in on_board %}
+        <li><a href="/tasks/{{ t.id }}">{{ t.title }}</a></li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="hint">Nothing from this project is above the horizon right now.</p>
+  {% endif %}
+
+  <h2>Below the horizon</h2>
+  {% if below %}
+    <ul class="task-list">
+      {% for t in below %}
+        <li><a href="/tasks/{{ t.id }}">{{ t.title }}</a></li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="hint">Nothing waiting in the backlog.</p>
+  {% endif %}
+
+  <form class="panel-form" method="post" action="/projects/{{ project.id }}/tasks">
+    <h2>New task</h2>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="title">Title</label>
+    <input id="title" name="title" required maxlength="200">
+    <label for="description">Description</label>
+    <textarea id="description" name="description"></textarea>
+    <button type="submit">Create task</button>
+  </form>
+{% endblock %}

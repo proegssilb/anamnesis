@@ -2,20 +2,28 @@
 //! follows the same shape: a thin `pub async fn ..._handler` axum can route
 //! to, delegating to a private `..._impl` that returns
 //! `Result<Response, WebError>` so it can use `?`; the thin wrapper turns an
-//! `Err` into a rendered error page via [`WebError::into_response_with`].
+//! `Err` into a rendered error page via [`crate::error::WebError::into_response_with`].
 
+mod access;
+mod areas;
 mod board;
-mod boards;
-mod cards;
-mod columns;
+mod format;
 mod forms;
 mod login;
 mod misc;
-mod render;
+mod projects;
+mod tasks;
 
-pub use board::{delete_board_handler, view_board_handler};
-pub use boards::{create_board_handler, list_boards_handler};
-pub use cards::{add_card_handler, delete_card_handler, move_card_handler};
-pub use columns::add_column_handler;
+pub use areas::{
+    create_area_handler, create_project_handler, list_areas_handler,
+    transition_project_status_handler, view_area_handler,
+};
+pub use board::{accept_suggestion_handler, archive_all_handler, view_board_handler};
 pub use login::{callback_handler, login_handler, logout_handler};
 pub use misc::{healthz_handler, root_handler};
+pub use projects::{create_task_handler, view_project_handler};
+pub use tasks::{
+    add_comment_handler, add_link_attachment_handler, create_relationship_handler,
+    drop_task_handler, edit_task_handler, raise_task_handler, set_parent_handler,
+    view_task_handler,
+};

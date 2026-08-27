@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Areas — Anamnesis{% endblock %}
+{% block content %}
+  <h1>Areas</h1>
+  <p class="hint">Parallel domains of life — the masks you wear.</p>
+
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+  {% if areas %}
+    <ul class="card-grid">
+      {% for a in areas %}
+        <li><a class="grid-card" href="/areas/{{ a.id }}">
+          <h2>{{ a.title }}</h2>
+          {% if a.description %}<p>{{ a.description }}</p>{% endif %}
+        </a></li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="hint">No areas yet{% if can_manage %} — create the first one below{% endif %}.</p>
+  {% endif %}
+
+  {% if can_manage %}
+    <form class="panel-form" method="post" action="/areas">
+      <h2>New area</h2>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="title">Title</label>
+      <input id="title" name="title" required maxlength="200">
+      <label for="description">Description</label>
+      <textarea id="description" name="description"></textarea>
+      <button type="submit">Create area</button>
+    </form>
+  {% endif %}
+{% endblock %}

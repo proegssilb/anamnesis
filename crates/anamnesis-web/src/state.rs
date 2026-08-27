@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use anamnesis_app::{
     AreaRepository, AttachmentRepository, BoardQuery, Clock, CommentRepository, IdGen,
-    IdentityProvider, MembershipQuery, ProjectRepository, RelationshipRepository,
-    TangleRepository, TaskRepository, TimezoneResolver,
+    IdentityProvider, MembershipQuery, ProjectRepository, RelationshipRepository, TangleRepository,
+    TaskRepository, TimezoneResolver,
 };
 use axum::extract::FromRef;
 use axum_extra::extract::cookie::Key;

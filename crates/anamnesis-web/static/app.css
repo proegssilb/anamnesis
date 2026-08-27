@@ -303,3 +303,210 @@ button:hover {
     overflow-y: auto;
   }
 }
+
+/* --- header nav (brand + board link) --- */
+
+.brand-nav {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+}
+
+.nav-link {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.95rem;
+}
+
+/* --- shared page furniture: hints, breadcrumbs, badges --- */
+
+.hint {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.breadcrumb {
+  margin: 0 0 0.25rem;
+}
+
+.breadcrumb a {
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.badge {
+  display: inline-block;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin: 0 0.25rem 0.25rem 0;
+}
+
+/* --- area grid --- */
+
+.card-grid {
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.75rem;
+}
+
+.grid-card {
+  display: block;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-decoration: none;
+  color: var(--text);
+}
+
+.grid-card h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+}
+
+.grid-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* --- generic panel form (create area/project/task) --- */
+
+.panel-form {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 32rem;
+}
+
+.panel-form h2 {
+  margin-top: 0;
+  font-size: 1rem;
+}
+
+.inline-form {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0 1.5rem;
+}
+
+.inline-form label {
+  flex-basis: 100%;
+}
+
+.status-form {
+  flex-direction: row;
+  gap: 0.5rem;
+}
+
+/* --- plain task lists (checklist, project flat list) --- */
+
+.task-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.task-list a {
+  display: block;
+  padding: 0.6rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-decoration: none;
+  color: var(--text);
+}
+
+/* --- comments --- */
+
+.comment-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.comment-list li {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.75rem;
+}
+
+.comment-meta {
+  margin: 0 0 0.25rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.comment-list p:last-child {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+/* --- suggestion prompt: docs/DOMAIN.md §5, deliberately quiet --- */
+
+.suggestion-prompt {
+  margin: 1rem 0;
+  padding: 1rem;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+}
+
+.suggestion-prompt h2 {
+  margin-top: 0;
+  font-size: 1rem;
+}
+
+.suggestion-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.suggestion-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.suggestion-item p {
+  margin: 0;
+  flex: 1 1 100%;
+}
+
+.suggestion-item form {
+  flex-direction: row;
+}
+
+.decline-link {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.tangle-indicator {
+  margin: 0.5rem 0;
+}
+
+.card-fields {
+  margin: 0;
+}

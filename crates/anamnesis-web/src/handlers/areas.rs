@@ -10,8 +10,8 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
 
 use anamnesis_app::{
-    AppError, AreaRepository, ProjectRepository, create_area, create_project, list_areas,
-    list_projects_in_area, transition_project_status, view_area,
+    AppError, create_area, create_project, list_areas, list_projects_in_area,
+    transition_project_status, view_area,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{AreaId, Project, ProjectStatus};
@@ -44,7 +44,11 @@ async fn list_areas_impl(state: &AppState, user: &CurrentUser) -> Result<Respons
     let admin = access::is_system_admin(state, &user.user_id).await?;
     let mut visible = Vec::with_capacity(areas.len());
     for area in areas {
-        if admin || access::area_role(state, &user.user_id, area.id).await?.is_some() {
+        if admin
+            || access::area_role(state, &user.user_id, area.id)
+                .await?
+                .is_some()
+        {
             visible.push(area);
         }
     }
@@ -123,7 +127,15 @@ async fn view_area_impl(
     let area = view_area(state.areas.as_ref(), role, area_id).await?;
     let projects = list_projects_in_area(state.projects.as_ref(), role, area_id).await?;
     let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
-    render_area_page(state, user, &area, &projects, can_manage, None, StatusCode::OK)
+    render_area_page(
+        state,
+        user,
+        &area,
+        &projects,
+        can_manage,
+        None,
+        StatusCode::OK,
+    )
 }
 
 pub async fn create_project_handler(
@@ -224,8 +236,7 @@ async fn transition_project_status_impl(
         Err(AppError::ActiveProjectLimitExceeded) | Err(AppError::Rule(_)) => {
             let area = view_area(state.areas.as_ref(), Some(Role::Member), area_id).await?;
             let projects =
-                list_projects_in_area(state.projects.as_ref(), Some(Role::Member), area_id)
-                    .await?;
+                list_projects_in_area(state.projects.as_ref(), Some(Role::Member), area_id).await?;
             let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
             render_area_page(
                 state,

@@ -27,8 +27,5 @@ pub async fn project_role(
     project: ProjectId,
     area: AreaId,
 ) -> Result<Option<Role>, WebError> {
-    Ok(state
-        .membership
-        .effective_role(user, project, area)
-        .await?)
+    Ok(state.membership.effective_role(user, project, area).await?)
 }

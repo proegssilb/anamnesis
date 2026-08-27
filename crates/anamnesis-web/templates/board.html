@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Board — Anamnesis{% endblock %}
+{% block content %}
+  <div class="board-toolbar">
+    <h1>Task board</h1>
+    <form method="post" action="/board/archive-all">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit">Archive all done</button>
+    </form>
+  </div>
+
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+  {% if tangles %}
+    <p class="hint tangle-indicator">
+      {{ tangles | length }} tangle{% if tangles | length != 1 %}s{% endif %} detected:
+      {% for t in tangles %}
+        <span class="badge">{{ t.size }} tasks ({% for id in t.task_ids %}<a href="/tasks/{{ id }}">{{ loop.index }}</a>{% if not loop.last %}, {% endif %}{% endfor %})</span>
+      {% endfor %}
+    </p>
+  {% endif %}
+
+  {# `docs/DOMAIN.md` §5: Outcome::Full renders nothing at all -- no banner,
+     no nudge. `suggestion` is already `None` for Full (and for no board
+     columns), so this block simply has nothing to say in that case. #}
+  {% if suggestion %}
+    <section class="suggestion-prompt">
+      {% if suggestion.kind == "stuck" %}
+        <h2>Nothing to suggest right now</h2>
+        <p>{{ suggestion.message }}</p>
+      {% elif suggestion.kind == "offer" %}
+        <h2>Worth picking up?</h2>
+        <ul class="suggestion-list">
+          {% for item in suggestion.items %}
+            <li class="suggestion-item">
+              {% if item.kind == "task" %}
+                {% if item.high_bounce %}
+                  <p>"{{ item.title }}" keeps coming back — want to break it up, or let it go?</p>
+                {% else %}
+                  <p>{{ item.title }}</p>
+                {% endif %}
+                <form method="post" action="/board/suggestion/accept">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input type="hidden" name="task_id" value="{{ item.task_id }}">
+                  <button type="submit">Accept</button>
+                </form>
+                <a class="decline-link" href="/board">Not now</a>
+              {% elif item.kind == "tangle" %}
+                <p>These {{ item.size }} tasks are knotted together — want to untie them?</p>
+                <p class="hint">
+                  {% for id in item.task_ids %}<a href="/tasks/{{ id }}">task {{ loop.index }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+                </p>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  <div class="board">
+    {% for c in columns %}
+      <section class="column">
+        <div class="column-header">
+          <h2 class="column-title">{{ c.title }}</h2>
+          {% if c.wip_limit %}<span class="wip-limit">{{ c.current_count }} / {{ c.wip_limit }}</span>{% endif %}
+        </div>
+        <div class="card-list">
+          {% for t in c.tasks %}
+            <div class="card">
+              <a class="card-title" href="/tasks/{{ t.id }}">{{ t.title }}</a>
+              {% if t.card_fields %}
+                <p class="card-fields">
+                  {% for f in t.card_fields %}<span class="badge">{{ f.name }}: {{ f.value }}</span>{% endfor %}
+                </p>
+              {% endif %}
+              {% if t.bounce_count > 0 %}<span class="badge">bounced {{ t.bounce_count }}x</span>{% endif %}
+            </div>
+          {% else %}
+            <p class="hint">Nothing here.</p>
+          {% endfor %}
+        </div>
+      </section>
+    {% endfor %}
+  </div>
+{% endblock %}

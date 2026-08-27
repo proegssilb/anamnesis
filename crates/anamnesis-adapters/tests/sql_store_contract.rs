@@ -416,9 +416,7 @@ async fn task_and_field_value_contract(store: &SqlStore) -> (ProjectId, Task, Ta
     TaskRepository::update(store, &archived, b.last_touched_at)
         .await
         .unwrap();
-    let after_archive = TaskRepository::list_by_project(store, p.id)
-        .await
-        .unwrap();
+    let after_archive = TaskRepository::list_by_project(store, p.id).await.unwrap();
     assert!(
         !after_archive.iter().any(|t| t.id == b.id),
         "list_by_project must exclude archived tasks"
