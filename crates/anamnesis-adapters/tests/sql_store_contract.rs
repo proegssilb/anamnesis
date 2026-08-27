@@ -423,6 +423,23 @@ async fn task_and_field_value_contract(store: &SqlStore) -> (ProjectId, Task, Ta
         "list_by_project must exclude archived tasks"
     );
 
+    // list_children must also exclude archived children -- an archived
+    // checklist item must not keep appearing in its parent's checklist.
+    // Mirrors the list_by_area fix for archived projects (Phase F3).
+    let archived_child = anamnesis_core::archive_task(&child_a, ts(998)).unwrap();
+    TaskRepository::update(store, &archived_child, child_a.last_touched_at)
+        .await
+        .unwrap();
+    let children_after_archive = TaskRepository::list_children(store, a.id).await.unwrap();
+    assert_eq!(
+        children_after_archive
+            .iter()
+            .map(|t| t.id)
+            .collect::<Vec<_>>(),
+        vec![child_b.id],
+        "list_children must exclude archived children"
+    );
+
     (p.id, a, b)
 }
 
