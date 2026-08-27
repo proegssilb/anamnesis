@@ -3,8 +3,11 @@
 
 use std::collections::HashMap;
 
-use anamnesis_app::{AppError, Board, BoardRepository};
-use anamnesis_core::{BoardId, CardId, ColumnId, UserId};
+use anamnesis_app::{AppError, Board, BoardRepository, Clock, IdGen};
+use anamnesis_core::{
+    BoardId, CardId, ColumnId, DetectedTangle, ProjectId, ProjectStatus, Reconciliation,
+    Relationship, RelationshipId, Tangle, TangleId, TaskId, TaskSummary, UserId,
+};
 
 use crate::support::{FixedClock, InMemoryBoardRepository, SequentialIdGen};
 
@@ -22,6 +25,32 @@ pub struct AppWorld {
     pub last_board: Option<Board>,
     /// The error returned by the most recent use-case call, if any.
     pub last_error: Option<AppError>,
+
+    // --- Phase B scenario state: tangles.feature / suggestions.feature.
+    //
+    // These scenarios exercise `anamnesis_core::tangle`/`suggest` directly —
+    // pure functions, no repository, no use case — so this state lives
+    // entirely in the `World` rather than behind a port.
+    /// Named tasks, by scenario name (e.g. "A"), all sharing one synthetic
+    /// project — the project boundary is irrelevant to tangle detection or
+    /// the suggestion engine's per-candidate fields.
+    core_tasks: HashMap<String, TaskId>,
+    /// `blocks` edges declared so far, by scenario task name.
+    pub relationships: Vec<Relationship>,
+    /// The raw result of the most recent `detect_tangles` call.
+    pub last_detected: Vec<DetectedTangle>,
+    /// Tangles treated as "already stored" going into the next detection
+    /// pass — what a real system would have persisted from a previous
+    /// `reconcile` call.
+    pub stored_tangles: Vec<Tangle>,
+    /// The result of the most recent `reconcile` call.
+    pub last_reconciliation: Option<Reconciliation>,
+    /// Suggestion-engine candidates, by scenario task name.
+    pub task_summaries: HashMap<String, TaskSummary>,
+    /// The board state the most recent `suggest` call used.
+    pub board_state: Option<anamnesis_core::BoardState>,
+    /// The result of the most recent `suggest` call.
+    pub last_outcome: Option<anamnesis_core::Outcome>,
 }
 
 impl AppWorld {
@@ -100,5 +129,91 @@ impl AppWorld {
             .await
             .unwrap()
             .expect("board vanished from the repository")
+    }
+
+    // --- Phase B: tangles.feature / suggestions.feature helpers. ---
+
+    /// The one synthetic project every scenario task in these two features
+    /// belongs to — an arbitrary fixed id, since neither `detect_tangles`
+    /// nor `suggest`'s own logic cares which project a task is in beyond its
+    /// `ProjectStatus`.
+    pub fn core_project_id(&self) -> ProjectId {
+        ProjectId::new(uuid::Uuid::from_u128(0xC0DE))
+    }
+
+    /// Returns the `TaskId` for a scenario task name, registering it (with a
+    /// fresh id) the first time it is mentioned — the same "first mention
+    /// creates it" convention as [`AppWorld::user`].
+    pub fn core_task(&mut self, name: &str) -> TaskId {
+        if let Some(id) = self.core_tasks.get(name) {
+            return *id;
+        }
+        let id = TaskId::new(self.ids.next());
+        self.core_tasks.insert(name.to_string(), id);
+        id
+    }
+
+    /// Records a `blocks` edge from `from` to `to` (both scenario task
+    /// names), creating either task if this is its first mention.
+    pub fn add_blocks_edge(&mut self, from: &str, to: &str) {
+        let from_id = self.core_task(from);
+        let to_id = self.core_task(to);
+        let project = self.core_project_id();
+        let relationship = anamnesis_core::create_relationship(
+            RelationshipId::new(self.ids.next()),
+            from_id,
+            project,
+            to_id,
+            project,
+            &anamnesis_core::builtin_blocks(),
+            self.clock.now(),
+        )
+        .expect("scenario setup: a blocks edge between two distinct tasks must be valid");
+        self.relationships.push(relationship);
+    }
+
+    /// Removes the `blocks` edge from `from` to `to`, panicking if no such
+    /// edge was ever declared — a scenario that references breaking a block
+    /// that was never there is a scenario bug, not a system behaviour.
+    pub fn remove_blocks_edge(&mut self, from: &str, to: &str) {
+        let from_id = self.core_task(from);
+        let to_id = self.core_task(to);
+        let before = self.relationships.len();
+        self.relationships
+            .retain(|r| !(r.from_task_id == from_id && r.to_task_id == to_id));
+        assert_eq!(
+            self.relationships.len(),
+            before - 1,
+            "scenario removed a blocks edge ({from:?} -> {to:?}) that was never declared"
+        );
+    }
+
+    /// Registers (or updates) the suggestion-engine candidate summary for a
+    /// scenario task name.
+    pub fn set_task_summary(
+        &mut self,
+        name: &str,
+        placement: anamnesis_core::Placement,
+        project_status: ProjectStatus,
+    ) {
+        let task_id = self.core_task(name);
+        self.task_summaries.insert(
+            name.to_string(),
+            TaskSummary {
+                task_id,
+                archived: false,
+                placement,
+                project_status,
+                last_touched_at: self.clock.now(),
+                last_offered_at: None,
+                bounce_count: 0,
+            },
+        );
+    }
+
+    /// A fresh `TangleId`, for scenario steps that need to hand one to
+    /// `reconcile`.
+    pub fn fresh_tangle_id(&self) -> TangleId {
+        TangleId::new(self.ids.next())
     }
 }

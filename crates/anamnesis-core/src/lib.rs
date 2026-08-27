@@ -37,8 +37,8 @@ pub use field::{
     set_show_on_card,
 };
 pub use ids::{
-    AreaId, BoardId, CardId, ColumnId, FieldId, KindId, ProjectId, RelationshipId, TaskId,
-    Timestamp, TimestampError, UserId,
+    AreaId, BoardId, CardId, ColumnId, FieldId, KindId, ProjectId, RelationshipId, TangleId,
+    TaskId, Timestamp, TimestampError, UserId,
 };
 pub use placement::Placement;
 pub use project::{
