@@ -149,6 +149,26 @@ impl Fakes {
             .project
             .clone()
     }
+
+    /// Replaces any existing entry for `(kind, id)` — mirrors the real
+    /// adapter's upsert semantics (`crates/anamnesis-adapters/src/sql/search.rs`:
+    /// SQLite's delete-then-insert, Postgres's `ON CONFLICT ... DO UPDATE`),
+    /// so a re-index (an edited title) actually replaces the stale entry
+    /// instead of leaving both findable.
+    fn upsert_search_entry(&self, kind: &'static str, id: String, title: String) {
+        let mut entries = self.search_entries.lock().unwrap();
+        entries.retain(|(k, entry_id, _)| !(*k == kind && *entry_id == id));
+        entries.push((kind, id, title));
+    }
+
+    /// Every `(kind, id, title)` currently indexed — the `SearchIndex` state
+    /// made directly observable for assertions that want to check exactly
+    /// what is indexed without going through `SearchQuery`'s substring
+    /// matching (e.g. asserting an entity is indexed *at all*, or asserting
+    /// on the exact count of entries).
+    pub fn search_entries(&self) -> Vec<(&'static str, String, String)> {
+        self.search_entries.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
@@ -521,26 +541,17 @@ impl BlobStore for Fakes {
 #[async_trait]
 impl SearchIndex for Fakes {
     async fn index_area(&self, id: AreaId, title: &str) -> Result<(), RepoError> {
-        self.search_entries
-            .lock()
-            .unwrap()
-            .push(("area", id.to_string(), title.to_string()));
+        self.upsert_search_entry("area", id.to_string(), title.to_string());
         Ok(())
     }
 
     async fn index_project(&self, id: ProjectId, title: &str) -> Result<(), RepoError> {
-        self.search_entries
-            .lock()
-            .unwrap()
-            .push(("project", id.to_string(), title.to_string()));
+        self.upsert_search_entry("project", id.to_string(), title.to_string());
         Ok(())
     }
 
     async fn index_task(&self, id: TaskId, title: &str) -> Result<(), RepoError> {
-        self.search_entries
-            .lock()
-            .unwrap()
-            .push(("task", id.to_string(), title.to_string()));
+        self.upsert_search_entry("task", id.to_string(), title.to_string());
         Ok(())
     }
 

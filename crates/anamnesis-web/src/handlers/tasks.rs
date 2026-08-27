@@ -101,6 +101,7 @@ async fn edit_task_impl(
     match edit_task(
         state.tasks.as_ref(),
         state.clock.as_ref(),
+        state.search_index.as_ref(),
         role,
         task_id,
         &form.title,
@@ -109,13 +110,8 @@ async fn edit_task_impl(
     .await
     {
         Ok(task) => {
-            // Keeps the search index in step with a title edit — see
-            // `crate::handlers::areas::create_area_impl`'s comment for why
-            // this happens here rather than inside the use case.
-            state
-                .search_index
-                .index_task(task.id, task.title.as_str())
-                .await?;
+            // Re-indexed inside `edit_task` itself — see
+            // `anamnesis_app::use_cases::indexing`'s module doc comment.
             render_task_page(state, user, task_id, &task, None, StatusCode::OK).await
         }
         Err(AppError::Rule(e)) => {

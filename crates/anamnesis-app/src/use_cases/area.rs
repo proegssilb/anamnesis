@@ -12,13 +12,22 @@ use anamnesis_core::{self as core, Area, AreaId};
 
 use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
-use crate::ports::{AreaRepository, Clock, IdGen};
+use crate::ports::{AreaRepository, Clock, IdGen, SearchIndex};
 
-/// Creates a new area.
+use super::indexing::log_index_failure;
+
+/// Creates a new area, then indexes it for global search
+/// (`docs/DOMAIN.md` §8). Indexing happens here, beside the repository
+/// write, rather than in a caller — see `crate::use_cases::indexing`'s
+/// module doc comment for why, and for what happens if the index write
+/// itself fails (logged, non-fatal: the area was already created
+/// successfully).
+#[allow(clippy::too_many_arguments)]
 pub async fn create_area(
     repo: &dyn AreaRepository,
     ids: &dyn IdGen,
     clock: &dyn Clock,
+    search: &dyn SearchIndex,
     role: Option<Role>,
     title: &str,
     description: &str,
@@ -35,6 +44,9 @@ pub async fn create_area(
         clock.now(),
     )?;
     repo.insert(&area).await?;
+    if let Err(err) = search.index_area(area.id, area.title.as_str()).await {
+        log_index_failure("create_area", err);
+    }
     Ok(area)
 }
 
@@ -61,10 +73,13 @@ pub async fn list_areas(
     Ok(repo.list().await?)
 }
 
-/// Replaces an area's title and description.
+/// Replaces an area's title and description, then re-indexes it — its
+/// title, the only field global search sees, may have just changed. See
+/// [`create_area`]'s doc comment for the indexing-failure policy.
 pub async fn edit_area(
     repo: &dyn AreaRepository,
     clock: &dyn Clock,
+    search: &dyn SearchIndex,
     role: Option<Role>,
     id: AreaId,
     title: &str,
@@ -76,6 +91,9 @@ pub async fn edit_area(
     let area = repo.load(id).await?.ok_or(AppError::NotFound)?;
     let edited = core::edit_area(&area, title, description, clock.now())?;
     repo.update(&edited).await?;
+    if let Err(err) = search.index_area(edited.id, edited.title.as_str()).await {
+        log_index_failure("edit_area", err);
+    }
     Ok(edited)
 }
 

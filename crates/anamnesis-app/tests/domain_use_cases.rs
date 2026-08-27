@@ -50,10 +50,10 @@ async fn create_area_requires_system_admin() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
 
-    let result = create_area(&fakes, &ids, &clock, member(), "Home", "", 0).await;
+    let result = create_area(&fakes, &ids, &clock, &fakes, member(), "Home", "", 0).await;
     assert!(matches!(result, Err(AppError::Forbidden)));
 
-    let area = create_area(&fakes, &ids, &clock, admin(), "Home", "", 0)
+    let area = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
         .await
         .unwrap();
     assert_eq!(area.title.as_str(), "Home");
@@ -65,10 +65,10 @@ async fn list_areas_is_gated_and_ordered_by_position() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
 
-    create_area(&fakes, &ids, &clock, admin(), "Work", "", 1)
+    create_area(&fakes, &ids, &clock, &fakes, admin(), "Work", "", 1)
         .await
         .unwrap();
-    create_area(&fakes, &ids, &clock, admin(), "Home", "", 0)
+    create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
         .await
         .unwrap();
 
@@ -91,19 +91,40 @@ async fn create_project_requires_project_admin_or_system_admin_in_the_area() {
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
 
-    let result = create_project(&fakes, &ids, &clock, none(), area_id, "Renovate", "").await;
+    let result = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        none(),
+        area_id,
+        "Renovate",
+        "",
+    )
+    .await;
     assert!(matches!(result, Err(AppError::Forbidden)));
 
     // A plain Member of the Area is not enough -- creating a Project is
     // structural, gated the same as `EditProject`/`ManageFieldDefinitions`,
     // not the same as ordinary task work.
-    let result = create_project(&fakes, &ids, &clock, member(), area_id, "Renovate", "").await;
+    let result = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        area_id,
+        "Renovate",
+        "",
+    )
+    .await;
     assert!(matches!(result, Err(AppError::Forbidden)));
 
     let ok = create_project(
         &fakes,
         &ids,
         &clock,
+        &fakes,
         project_admin(),
         area_id,
         "Renovate",
@@ -112,7 +133,17 @@ async fn create_project_requires_project_admin_or_system_admin_in_the_area() {
     .await;
     assert!(ok.is_ok());
 
-    let ok = create_project(&fakes, &ids, &clock, admin(), area_id, "Renovate 2", "").await;
+    let ok = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        admin(),
+        area_id,
+        "Renovate 2",
+        "",
+    )
+    .await;
     assert!(ok.is_ok());
 }
 
@@ -123,12 +154,30 @@ async fn transition_project_status_enforces_the_active_project_limit() {
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
 
-    let p1 = create_project(&fakes, &ids, &clock, project_admin(), area_id, "One", "")
-        .await
-        .unwrap();
-    let p2 = create_project(&fakes, &ids, &clock, project_admin(), area_id, "Two", "")
-        .await
-        .unwrap();
+    let p1 = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area_id,
+        "One",
+        "",
+    )
+    .await
+    .unwrap();
+    let p2 = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area_id,
+        "Two",
+        "",
+    )
+    .await
+    .unwrap();
 
     transition_project_status(
         &fakes,
@@ -165,9 +214,18 @@ async fn transition_project_status_excludes_self_from_the_active_count() {
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
 
-    let p1 = create_project(&fakes, &ids, &clock, project_admin(), area_id, "One", "")
-        .await
-        .unwrap();
+    let p1 = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area_id,
+        "One",
+        "",
+    )
+    .await
+    .unwrap();
     transition_project_status(
         &fakes,
         &clock,
@@ -198,9 +256,18 @@ async fn manage_field_definitions_requires_project_or_system_admin() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project = create_project(&fakes, &ids, &clock, project_admin(), area_id, "One", "")
-        .await
-        .unwrap();
+    let project = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area_id,
+        "One",
+        "",
+    )
+    .await
+    .unwrap();
 
     let result = add_field_definition(
         &fakes,
@@ -260,13 +327,22 @@ async fn create_task_starts_below_the_horizon() {
     let clock = FixedClock::at(0);
     let project_id = some_project_id(&ids);
 
-    let task = create_task(&fakes, &ids, &clock, member(), project_id, "Regrout", "")
-        .await
-        .unwrap();
+    let task = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Regrout",
+        "",
+    )
+    .await
+    .unwrap();
     assert_eq!(task.placement, Placement::Below);
 
     assert!(matches!(
-        create_task(&fakes, &ids, &clock, none(), project_id, "x", "").await,
+        create_task(&fakes, &ids, &clock, &fakes, none(), project_id, "x", "").await,
         Err(AppError::Forbidden)
     ));
 }
@@ -277,15 +353,32 @@ async fn edit_task_uses_optimistic_concurrency_and_rejects_a_stale_write() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let project_id = some_project_id(&ids);
-    let task = create_task(&fakes, &ids, &clock, member(), project_id, "Regrout", "")
-        .await
-        .unwrap();
+    let task = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Regrout",
+        "",
+    )
+    .await
+    .unwrap();
 
     // Someone else edits it first, moving last_touched_at forward.
     let later = FixedClock::at(100);
-    edit_task(&fakes, &later, member(), task.id, "Regrout (v2)", "")
-        .await
-        .unwrap();
+    edit_task(
+        &fakes,
+        &later,
+        &fakes,
+        member(),
+        task.id,
+        "Regrout (v2)",
+        "",
+    )
+    .await
+    .unwrap();
 
     // Now a stale in-hand copy tries to write against the *original*
     // last_touched_at it was loaded with — the repository fake still holds
@@ -308,16 +401,34 @@ async fn raise_task_is_refused_once_the_column_wip_limit_is_reached() {
     let column = make_column(&ids, "To-Do", 0, Some(1), false);
     fakes.seed_column(column.clone());
 
-    let occupant = create_task(&fakes, &ids, &clock, member(), project_id, "Occupant", "")
-        .await
-        .unwrap();
+    let occupant = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Occupant",
+        "",
+    )
+    .await
+    .unwrap();
     raise_task(&fakes, &fakes, &clock, member(), occupant.id, column.id, 0)
         .await
         .unwrap();
 
-    let newcomer = create_task(&fakes, &ids, &clock, member(), project_id, "Newcomer", "")
-        .await
-        .unwrap();
+    let newcomer = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Newcomer",
+        "",
+    )
+    .await
+    .unwrap();
     let result = raise_task(&fakes, &fakes, &clock, member(), newcomer.id, column.id, 0).await;
     assert!(matches!(result, Err(AppError::WipLimitExceeded)));
 }
@@ -331,9 +442,18 @@ async fn raise_task_allows_reordering_within_an_already_full_column() {
     let column = make_column(&ids, "To-Do", 0, Some(1), false);
     fakes.seed_column(column.clone());
 
-    let occupant = create_task(&fakes, &ids, &clock, member(), project_id, "Occupant", "")
-        .await
-        .unwrap();
+    let occupant = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Occupant",
+        "",
+    )
+    .await
+    .unwrap();
     raise_task(&fakes, &fakes, &clock, member(), occupant.id, column.id, 0)
         .await
         .unwrap();
@@ -353,9 +473,18 @@ async fn dropping_a_task_from_a_non_done_column_bounces_it() {
     let column = make_column(&ids, "Doing", 0, None, false);
     fakes.seed_column(column.clone());
 
-    let task = create_task(&fakes, &ids, &clock, member(), project_id, "Task", "")
-        .await
-        .unwrap();
+    let task = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Task",
+        "",
+    )
+    .await
+    .unwrap();
     raise_task(&fakes, &fakes, &clock, member(), task.id, column.id, 0)
         .await
         .unwrap();
@@ -377,9 +506,18 @@ async fn dropping_a_task_from_a_done_column_does_not_bounce_it() {
     let done_column = make_column(&ids, "Done", 0, None, true);
     fakes.seed_column(done_column.clone());
 
-    let task = create_task(&fakes, &ids, &clock, member(), project_id, "Task", "")
-        .await
-        .unwrap();
+    let task = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Task",
+        "",
+    )
+    .await
+    .unwrap();
     raise_task(&fakes, &fakes, &clock, member(), task.id, done_column.id, 0)
         .await
         .unwrap();
@@ -401,9 +539,18 @@ async fn dropping_a_task_that_is_already_below_the_horizon_does_not_bounce_it() 
     let clock = FixedClock::at(0);
     let project_id = some_project_id(&ids);
 
-    let task = create_task(&fakes, &ids, &clock, member(), project_id, "Task", "")
-        .await
-        .unwrap();
+    let task = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Task",
+        "",
+    )
+    .await
+    .unwrap();
     assert_eq!(task.placement, Placement::Below);
 
     let dropped = drop_task(&fakes, &clock, member(), task.id, false)
@@ -444,9 +591,18 @@ async fn set_task_parent_rejects_a_cycle_that_closes_five_levels_up() {
         project_id: ProjectId,
         name: &str,
     ) -> Task {
-        create_task(fakes, ids, clock, Some(Role::Member), project_id, name, "")
-            .await
-            .unwrap()
+        create_task(
+            fakes,
+            ids,
+            clock,
+            fakes,
+            Some(Role::Member),
+            project_id,
+            name,
+            "",
+        )
+        .await
+        .unwrap()
     }
 
     let root = task(&fakes, &ids, &clock, project_id, "root").await;
@@ -490,9 +646,18 @@ async fn set_task_parent_allows_a_non_cyclic_deep_reparent() {
         project_id: ProjectId,
         name: &str,
     ) -> Task {
-        create_task(fakes, ids, clock, Some(Role::Member), project_id, name, "")
-            .await
-            .unwrap()
+        create_task(
+            fakes,
+            ids,
+            clock,
+            fakes,
+            Some(Role::Member),
+            project_id,
+            name,
+            "",
+        )
+        .await
+        .unwrap()
     }
 
     let a = task(&fakes, &ids, &clock, project_id, "a").await;
@@ -524,10 +689,10 @@ async fn set_task_parent_terminates_against_an_already_corrupted_ancestor_chain(
     let clock = FixedClock::at(0);
     let project_id = some_project_id(&ids);
 
-    let a = create_task(&fakes, &ids, &clock, member(), project_id, "a", "")
+    let a = create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "a", "")
         .await
         .unwrap();
-    let b = create_task(&fakes, &ids, &clock, member(), project_id, "b", "")
+    let b = create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "b", "")
         .await
         .unwrap();
     // Bypass the use case entirely to corrupt the chain: a's parent is b,
@@ -541,7 +706,7 @@ async fn set_task_parent_terminates_against_an_already_corrupted_ancestor_chain(
         ..b.clone()
     });
 
-    let c = create_task(&fakes, &ids, &clock, member(), project_id, "c", "")
+    let c = create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "c", "")
         .await
         .unwrap();
     // No timeout wrapper needed here (the crate's `tokio` dev-dependency
@@ -573,9 +738,18 @@ async fn derive_seed_is_stable_for_an_unchanged_board_and_changes_when_it_change
     project.status = ProjectStatus::Active;
     fakes.seed_project(project);
 
-    let t1 = create_task(&fakes, &ids, &clock, member(), project_id, "One", "")
-        .await
-        .unwrap();
+    let t1 = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "One",
+        "",
+    )
+    .await
+    .unwrap();
 
     let candidates_before = fakes.suggestion_candidates_for_test().await;
     let seed_before_1 = derive_seed(&alice(), (2026, 100), &candidates_before);
@@ -587,9 +761,18 @@ async fn derive_seed_is_stable_for_an_unchanged_board_and_changes_when_it_change
 
     // Now change the board: add a second task. The candidate set differs,
     // so the fingerprint -- and thus the seed -- must differ too.
-    let _t2 = create_task(&fakes, &ids, &clock, member(), project_id, "Two", "")
-        .await
-        .unwrap();
+    let _t2 = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Two",
+        "",
+    )
+    .await
+    .unwrap();
     let candidates_after = fakes.suggestion_candidates_for_test().await;
     let seed_after = derive_seed(&alice(), (2026, 100), &candidates_after);
     assert_ne!(
@@ -614,9 +797,18 @@ async fn request_suggestion_stamps_last_offered_at_on_every_offered_task() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project = create_project(&fakes, &ids, &clock, project_admin(), area_id, "P", "")
-        .await
-        .unwrap();
+    let project = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area_id,
+        "P",
+        "",
+    )
+    .await
+    .unwrap();
     transition_project_status(
         &fakes,
         &clock,
@@ -632,6 +824,7 @@ async fn request_suggestion_stamps_last_offered_at_on_every_offered_task() {
         &fakes,
         &ids,
         &clock,
+        &fakes,
         member(),
         project.id,
         "Do the thing",
@@ -670,9 +863,18 @@ async fn request_suggestion_is_full_silence_at_the_wip_limit() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project = create_project(&fakes, &ids, &clock, project_admin(), area_id, "P", "")
-        .await
-        .unwrap();
+    let project = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area_id,
+        "P",
+        "",
+    )
+    .await
+    .unwrap();
     transition_project_status(
         &fakes,
         &clock,
@@ -686,16 +888,34 @@ async fn request_suggestion_is_full_silence_at_the_wip_limit() {
 
     let column = make_column(&ids, "To-Do", 0, Some(1), false);
     fakes.seed_column(column.clone());
-    let occupant = create_task(&fakes, &ids, &clock, member(), project.id, "Occupant", "")
-        .await
-        .unwrap();
+    let occupant = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project.id,
+        "Occupant",
+        "",
+    )
+    .await
+    .unwrap();
     raise_task(&fakes, &fakes, &clock, member(), occupant.id, column.id, 0)
         .await
         .unwrap();
 
-    let _below = create_task(&fakes, &ids, &clock, member(), project.id, "Below", "")
-        .await
-        .unwrap();
+    let _below = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project.id,
+        "Below",
+        "",
+    )
+    .await
+    .unwrap();
 
     let outcome = request_suggestion(
         &fakes,
@@ -736,10 +956,10 @@ async fn run_tangle_detection_surfaces_a_knot_and_resolves_it() {
     let clock = FixedClock::at(0);
     let project_id = some_project_id(&ids);
 
-    let a = create_task(&fakes, &ids, &clock, member(), project_id, "A", "")
+    let a = create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "A", "")
         .await
         .unwrap();
-    let b = create_task(&fakes, &ids, &clock, member(), project_id, "B", "")
+    let b = create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "B", "")
         .await
         .unwrap();
 
@@ -803,7 +1023,7 @@ async fn knotted_pair(
     clock: &FixedClock,
 ) -> (ProjectId, Task, Task, anamnesis_core::Tangle) {
     let area_id = AreaId::new(ids.next());
-    let project = create_project(fakes, ids, clock, project_admin(), area_id, "P", "")
+    let project = create_project(fakes, ids, clock, fakes, project_admin(), area_id, "P", "")
         .await
         .unwrap();
     transition_project_status(
@@ -817,10 +1037,10 @@ async fn knotted_pair(
     .await
     .unwrap();
     let project_id = project.id;
-    let a = create_task(fakes, ids, clock, member(), project_id, "A", "")
+    let a = create_task(fakes, ids, clock, fakes, member(), project_id, "A", "")
         .await
         .unwrap();
-    let b = create_task(fakes, ids, clock, member(), project_id, "B", "")
+    let b = create_task(fakes, ids, clock, fakes, member(), project_id, "B", "")
         .await
         .unwrap();
     create_relationship(
@@ -914,9 +1134,18 @@ async fn a_task_and_a_tangle_together_fill_a_wip_limit_of_two() {
     let (project_id, _, _, tangle) = knotted_pair(&fakes, &ids, &clock).await;
 
     // One task raised: the column now holds 1 of 2.
-    let occupant = create_task(&fakes, &ids, &clock, member(), project_id, "Occupant", "")
-        .await
-        .unwrap();
+    let occupant = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Occupant",
+        "",
+    )
+    .await
+    .unwrap();
     raise_task(&fakes, &fakes, &clock, member(), occupant.id, column.id, 0)
         .await
         .unwrap();
@@ -933,9 +1162,18 @@ async fn a_task_and_a_tangle_together_fill_a_wip_limit_of_two() {
 
     // A third item -- another task -- is now refused: the tangle already
     // occupies the slot that would have gone to it.
-    let newcomer = create_task(&fakes, &ids, &clock, member(), project_id, "Newcomer", "")
-        .await
-        .unwrap();
+    let newcomer = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Newcomer",
+        "",
+    )
+    .await
+    .unwrap();
     let result = raise_task(&fakes, &fakes, &clock, member(), newcomer.id, column.id, 1).await;
     assert!(matches!(result, Err(AppError::WipLimitExceeded)));
 }
@@ -949,9 +1187,18 @@ async fn placing_a_tangle_is_itself_refused_once_the_column_is_already_at_its_wi
     fakes.seed_column(column.clone());
     let (project_id, _, _, tangle) = knotted_pair(&fakes, &ids, &clock).await;
 
-    let occupant = create_task(&fakes, &ids, &clock, member(), project_id, "Occupant", "")
-        .await
-        .unwrap();
+    let occupant = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Occupant",
+        "",
+    )
+    .await
+    .unwrap();
     raise_task(&fakes, &fakes, &clock, member(), occupant.id, column.id, 0)
         .await
         .unwrap();
@@ -1066,7 +1313,7 @@ async fn a_tangle_already_on_the_board_is_not_offered_again_by_a_suggestion_requ
     // A third, wholly unrelated eligible task in the same active project,
     // so the engine has something to offer -- proving specifically that the
     // *tangle* is excluded, not merely that everything happens to be stuck.
-    create_task(&fakes, &ids, &clock, member(), project_id, "C", "")
+    create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "C", "")
         .await
         .unwrap();
 
@@ -1105,18 +1352,336 @@ async fn archive_done_tasks_archives_everything_in_an_is_done_column() {
     let done = make_column(&ids, "Done", 0, None, true);
     fakes.seed_column(done.clone());
 
-    let task = create_task(&fakes, &ids, &clock, member(), project_id, "Finished", "")
-        .await
-        .unwrap();
+    let task = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Finished",
+        "",
+    )
+    .await
+    .unwrap();
     raise_task(&fakes, &fakes, &clock, member(), task.id, done.id, 0)
         .await
         .unwrap();
 
-    let archived = archive_done_tasks(&fakes, &fakes, &clock, member())
+    let archived = archive_done_tasks(&fakes, &fakes, &clock, &fakes, member())
         .await
         .unwrap();
     assert_eq!(archived, vec![task.id]);
     assert!(fakes.task(task.id).archived_at.is_some());
+}
+
+// ============================ Search index ============================
+//
+// The Phase F2 regression: `SearchIndex` was called from the web handlers,
+// not from these use cases, so any caller that only ever goes through
+// `anamnesis-app` — a future MCP server or CLI, or these very tests — wrote
+// an area/project/task that global search could never find. These are the
+// tests that would have caught it: every one of them drives a use case
+// alone, with no web layer involved, and then asserts against
+// `SearchQuery::search` (`domain_fakes::Fakes` implements both the write
+// side, `SearchIndex`, and the read side, `SearchQuery`, against one shared
+// backing store — see that module's doc comment).
+
+#[tokio::test]
+async fn creating_an_area_through_the_use_case_alone_makes_it_findable_via_search() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+
+    create_area(&fakes, &ids, &clock, &fakes, admin(), "Homesteading", "", 0)
+        .await
+        .unwrap();
+
+    let hits = fakes.search("Homesteading").await.unwrap();
+    assert!(
+        hits.iter()
+            .any(|h| matches!(h, SearchHit::Area { title, .. } if title == "Homesteading")),
+        "an area created through the use case alone must be findable via search: {hits:?}"
+    );
+}
+
+#[tokio::test]
+async fn creating_a_project_through_the_use_case_alone_makes_it_findable_via_search() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let area = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
+        .await
+        .unwrap();
+
+    create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area.id,
+        "Renovation",
+        "",
+    )
+    .await
+    .unwrap();
+
+    let hits = fakes.search("Renovation").await.unwrap();
+    assert!(
+        hits.iter()
+            .any(|h| matches!(h, SearchHit::Project { title, .. } if title == "Renovation")),
+        "a project created through the use case alone must be findable via search: {hits:?}"
+    );
+}
+
+#[tokio::test]
+async fn creating_a_task_through_the_use_case_alone_makes_it_findable_via_search() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let project_id = some_project_id(&ids);
+
+    create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Regrout the shower",
+        "",
+    )
+    .await
+    .unwrap();
+
+    let hits = fakes.search("Regrout").await.unwrap();
+    assert!(
+        hits.iter()
+            .any(|h| matches!(h, SearchHit::Task { title, .. } if title == "Regrout the shower")),
+        "a task created through the use case alone must be findable via search: {hits:?}"
+    );
+}
+
+#[tokio::test]
+async fn editing_a_task_through_the_use_case_alone_updates_the_indexed_content() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let project_id = some_project_id(&ids);
+    let task = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Original title",
+        "",
+    )
+    .await
+    .unwrap();
+
+    edit_task(
+        &fakes,
+        &clock,
+        &fakes,
+        member(),
+        task.id,
+        "Renamed title",
+        "",
+    )
+    .await
+    .unwrap();
+
+    let stale = fakes.search("Original").await.unwrap();
+    assert!(
+        stale.is_empty(),
+        "the pre-edit title must no longer be findable: {stale:?}"
+    );
+    let fresh = fakes.search("Renamed").await.unwrap();
+    assert!(
+        fresh
+            .iter()
+            .any(|h| matches!(h, SearchHit::Task { title, .. } if title == "Renamed title")),
+        "the post-edit title must be findable: {fresh:?}"
+    );
+}
+
+#[tokio::test]
+async fn archiving_a_task_through_the_use_case_alone_removes_it_from_the_index() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let project_id = some_project_id(&ids);
+    let task = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Retired task",
+        "",
+    )
+    .await
+    .unwrap();
+    assert!(!fakes.search("Retired").await.unwrap().is_empty());
+
+    archive_task(&fakes, &clock, &fakes, member(), task.id)
+        .await
+        .unwrap();
+
+    let hits = fakes.search("Retired").await.unwrap();
+    assert!(
+        hits.is_empty(),
+        "docs/DOMAIN.md §2: archived is vanished from every view unless \
+         explicitly searched — an archived task must not surface in search: {hits:?}"
+    );
+}
+
+#[tokio::test]
+async fn unarchiving_a_task_through_the_use_case_alone_reindexes_it() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let project_id = some_project_id(&ids);
+    let task = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Reprieved task",
+        "",
+    )
+    .await
+    .unwrap();
+    archive_task(&fakes, &clock, &fakes, member(), task.id)
+        .await
+        .unwrap();
+    assert!(fakes.search("Reprieved").await.unwrap().is_empty());
+
+    unarchive_task(&fakes, &clock, &fakes, member(), task.id)
+        .await
+        .unwrap();
+
+    let hits = fakes.search("Reprieved").await.unwrap();
+    assert!(
+        hits.iter()
+            .any(|h| matches!(h, SearchHit::Task { title, .. } if title == "Reprieved task")),
+        "restoring an archived task must make it findable via search again: {hits:?}"
+    );
+}
+
+#[tokio::test]
+async fn archiving_a_project_through_the_use_case_alone_removes_it_from_the_index() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let area = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
+        .await
+        .unwrap();
+    let project = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area.id,
+        "Sunsetting saga",
+        "",
+    )
+    .await
+    .unwrap();
+    assert!(!fakes.search("Sunsetting").await.unwrap().is_empty());
+
+    archive_project(&fakes, &clock, &fakes, project_admin(), project.id)
+        .await
+        .unwrap();
+
+    let hits = fakes.search("Sunsetting").await.unwrap();
+    assert!(
+        hits.is_empty(),
+        "an archived project must not surface in search: {hits:?}"
+    );
+}
+
+#[tokio::test]
+async fn unarchiving_a_project_through_the_use_case_alone_reindexes_it() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let area = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
+        .await
+        .unwrap();
+    let project = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area.id,
+        "Revived saga",
+        "",
+    )
+    .await
+    .unwrap();
+    archive_project(&fakes, &clock, &fakes, project_admin(), project.id)
+        .await
+        .unwrap();
+    assert!(fakes.search("Revived").await.unwrap().is_empty());
+
+    unarchive_project(&fakes, &clock, &fakes, project_admin(), project.id)
+        .await
+        .unwrap();
+
+    let hits = fakes.search("Revived").await.unwrap();
+    assert!(
+        hits.iter()
+            .any(|h| matches!(h, SearchHit::Project { title, .. } if title == "Revived saga")),
+        "restoring an archived project must make it findable via search again: {hits:?}"
+    );
+}
+
+#[tokio::test]
+async fn archive_done_tasks_removes_every_swept_task_from_the_index() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let project_id = some_project_id(&ids);
+    let done = make_column(&ids, "Done", 0, None, true);
+    fakes.seed_column(done.clone());
+
+    let task = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_id,
+        "Swept away",
+        "",
+    )
+    .await
+    .unwrap();
+    raise_task(&fakes, &fakes, &clock, member(), task.id, done.id, 0)
+        .await
+        .unwrap();
+    assert!(!fakes.search("Swept").await.unwrap().is_empty());
+
+    let archived = archive_done_tasks(&fakes, &fakes, &clock, &fakes, member())
+        .await
+        .unwrap();
+    assert_eq!(archived, vec![task.id]);
+
+    let hits = fakes.search("Swept").await.unwrap();
+    assert!(
+        hits.is_empty(),
+        "the scheduled/manual sweep archive path must also drop the task from \
+         the index, not just the single-task archive_task path: {hits:?}"
+    );
 }
 
 // ============================== Comments ==============================
@@ -1127,7 +1692,7 @@ async fn a_member_can_edit_their_own_comment_but_not_someone_elses() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let project_id = some_project_id(&ids);
-    let task = create_task(&fakes, &ids, &clock, member(), project_id, "T", "")
+    let task = create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "T", "")
         .await
         .unwrap();
 
@@ -1161,7 +1726,7 @@ async fn list_comments_and_list_attachments_are_gated_read_paths() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let project_id = some_project_id(&ids);
-    let task = create_task(&fakes, &ids, &clock, member(), project_id, "T", "")
+    let task = create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "T", "")
         .await
         .unwrap();
 
@@ -1184,7 +1749,7 @@ async fn delete_comment_is_allowed_for_author_or_admin_only() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let project_id = some_project_id(&ids);
-    let task = create_task(&fakes, &ids, &clock, member(), project_id, "T", "")
+    let task = create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "T", "")
         .await
         .unwrap();
     let comment = add_comment(&fakes, &ids, &clock, member(), task.id, alice(), "hi")
@@ -1213,7 +1778,7 @@ async fn view_area_view_project_and_view_task_all_refuse_no_role() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
 
-    let area = create_area(&fakes, &ids, &clock, admin(), "Home", "", 0)
+    let area = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
         .await
         .unwrap();
     assert!(matches!(
@@ -1226,16 +1791,25 @@ async fn view_area_view_project_and_view_task_all_refuse_no_role() {
     assert!(view_area(&fakes, member(), area.id).await.is_ok());
     assert!(view_area(&fakes, admin(), area.id).await.is_ok());
 
-    let project = create_project(&fakes, &ids, &clock, project_admin(), area.id, "P", "")
-        .await
-        .unwrap();
+    let project = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area.id,
+        "P",
+        "",
+    )
+    .await
+    .unwrap();
     assert!(matches!(
         view_project(&fakes, none(), project.id).await,
         Err(AppError::Forbidden)
     ));
     assert!(view_project(&fakes, member(), project.id).await.is_ok());
 
-    let task = create_task(&fakes, &ids, &clock, member(), project.id, "T", "")
+    let task = create_task(&fakes, &ids, &clock, &fakes, member(), project.id, "T", "")
         .await
         .unwrap();
     assert!(matches!(
@@ -1252,17 +1826,25 @@ async fn edit_area_and_reposition_area_require_area_admin_or_system_admin() {
     let fakes = Fakes::new();
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
-    let area = create_area(&fakes, &ids, &clock, admin(), "Home", "", 0)
+    let area = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
         .await
         .unwrap();
 
     assert!(matches!(
-        edit_area(&fakes, &clock, member(), area.id, "Renamed", "").await,
+        edit_area(&fakes, &clock, &fakes, member(), area.id, "Renamed", "").await,
         Err(AppError::Forbidden)
     ));
-    let edited = edit_area(&fakes, &clock, project_admin(), area.id, "Renamed", "")
-        .await
-        .unwrap();
+    let edited = edit_area(
+        &fakes,
+        &clock,
+        &fakes,
+        project_admin(),
+        area.id,
+        "Renamed",
+        "",
+    )
+    .await
+    .unwrap();
     assert_eq!(edited.title.as_str(), "Renamed");
 
     assert!(matches!(
@@ -1281,17 +1863,36 @@ async fn edit_project_archive_and_unarchive_require_project_admin() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project = create_project(&fakes, &ids, &clock, project_admin(), area_id, "P", "")
-        .await
-        .unwrap();
+    let project = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area_id,
+        "P",
+        "",
+    )
+    .await
+    .unwrap();
 
     assert!(matches!(
-        edit_project_fields(&fakes, &clock, member(), project.id, Some("New"), None).await,
+        edit_project_fields(
+            &fakes,
+            &clock,
+            &fakes,
+            member(),
+            project.id,
+            Some("New"),
+            None
+        )
+        .await,
         Err(AppError::Forbidden)
     ));
     let edited = edit_project_fields(
         &fakes,
         &clock,
+        &fakes,
         project_admin(),
         project.id,
         Some("New"),
@@ -1304,15 +1905,15 @@ async fn edit_project_archive_and_unarchive_require_project_admin() {
     assert_eq!(edited.description, "");
 
     assert!(matches!(
-        archive_project(&fakes, &clock, member(), project.id).await,
+        archive_project(&fakes, &clock, &fakes, member(), project.id).await,
         Err(AppError::Forbidden)
     ));
-    let archived = archive_project(&fakes, &clock, project_admin(), project.id)
+    let archived = archive_project(&fakes, &clock, &fakes, project_admin(), project.id)
         .await
         .unwrap();
     assert!(archived.archived_at.is_some());
 
-    let restored = unarchive_project(&fakes, &clock, project_admin(), project.id)
+    let restored = unarchive_project(&fakes, &clock, &fakes, project_admin(), project.id)
         .await
         .unwrap();
     assert!(restored.archived_at.is_none());
@@ -1324,9 +1925,18 @@ async fn rename_field_definition_requires_project_admin() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project = create_project(&fakes, &ids, &clock, project_admin(), area_id, "P", "")
-        .await
-        .unwrap();
+    let project = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area_id,
+        "P",
+        "",
+    )
+    .await
+    .unwrap();
     let definition = add_field_definition(
         &fakes,
         &ids,
@@ -1364,9 +1974,18 @@ async fn set_task_field_value_rejects_a_kind_mismatch() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project = create_project(&fakes, &ids, &clock, project_admin(), area_id, "P", "")
-        .await
-        .unwrap();
+    let project = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area_id,
+        "P",
+        "",
+    )
+    .await
+    .unwrap();
     let definition = add_field_definition(
         &fakes,
         &ids,
@@ -1379,7 +1998,7 @@ async fn set_task_field_value_rejects_a_kind_mismatch() {
     )
     .await
     .unwrap();
-    let task = create_task(&fakes, &ids, &clock, member(), project.id, "T", "")
+    let task = create_task(&fakes, &ids, &clock, &fakes, member(), project.id, "T", "")
         .await
         .unwrap();
 
@@ -1413,7 +2032,7 @@ async fn set_checklist_position_reorders_a_task() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let project_id = some_project_id(&ids);
-    let task = create_task(&fakes, &ids, &clock, member(), project_id, "T", "")
+    let task = create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "T", "")
         .await
         .unwrap();
 
@@ -1464,9 +2083,18 @@ async fn resolve_kind_recognises_all_three_builtins_and_falls_back_to_the_reposi
 
     let area_id = AreaId::new(ids.next());
     let clock = FixedClock::at(0);
-    let project = create_project(&fakes, &ids, &clock, project_admin(), area_id, "P", "")
-        .await
-        .unwrap();
+    let project = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area_id,
+        "P",
+        "",
+    )
+    .await
+    .unwrap();
     let custom = add_relationship_kind(
         &fakes,
         &ids,
@@ -1486,12 +2114,30 @@ async fn create_relationship_use_case_rejects_a_custom_kind_across_projects() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project_a = create_project(&fakes, &ids, &clock, project_admin(), area_id, "A", "")
-        .await
-        .unwrap();
-    let project_b = create_project(&fakes, &ids, &clock, project_admin(), area_id, "B", "")
-        .await
-        .unwrap();
+    let project_a = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area_id,
+        "A",
+        "",
+    )
+    .await
+    .unwrap();
+    let project_b = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area_id,
+        "B",
+        "",
+    )
+    .await
+    .unwrap();
     let custom = add_relationship_kind(
         &fakes,
         &ids,
@@ -1503,12 +2149,30 @@ async fn create_relationship_use_case_rejects_a_custom_kind_across_projects() {
     .await
     .unwrap();
 
-    let a = create_task(&fakes, &ids, &clock, member(), project_a.id, "A-task", "")
-        .await
-        .unwrap();
-    let b = create_task(&fakes, &ids, &clock, member(), project_b.id, "B-task", "")
-        .await
-        .unwrap();
+    let a = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_a.id,
+        "A-task",
+        "",
+    )
+    .await
+    .unwrap();
+    let b = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        member(),
+        project_b.id,
+        "B-task",
+        "",
+    )
+    .await
+    .unwrap();
 
     let result = create_relationship(
         &fakes,
@@ -1551,10 +2215,10 @@ async fn delete_relationship_requires_a_role_and_removes_the_edge() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let project_id = some_project_id(&ids);
-    let a = create_task(&fakes, &ids, &clock, member(), project_id, "A", "")
+    let a = create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "A", "")
         .await
         .unwrap();
-    let b = create_task(&fakes, &ids, &clock, member(), project_id, "B", "")
+    let b = create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "B", "")
         .await
         .unwrap();
     let relationship = create_relationship(
@@ -1593,7 +2257,7 @@ async fn add_link_and_file_attachments_and_delete_cleans_up_the_blob() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let project_id = some_project_id(&ids);
-    let task = create_task(&fakes, &ids, &clock, member(), project_id, "T", "")
+    let task = create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "T", "")
         .await
         .unwrap();
 
@@ -1952,7 +2616,7 @@ async fn a_user_with_only_an_area_role_can_view_that_area_and_create_a_project_i
     let clock = FixedClock::at(0);
     let priya = UserId::new("priya");
 
-    let area = create_area(&fakes, &ids, &clock, admin(), "Home", "", 0)
+    let area = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
         .await
         .unwrap();
     fakes.set_area_role(&priya, area.id, Role::ProjectAdmin);
@@ -1962,7 +2626,7 @@ async fn a_user_with_only_an_area_role_can_view_that_area_and_create_a_project_i
         .unwrap();
     assert!(view_area(&fakes, role, area.id).await.is_ok());
     assert!(
-        create_project(&fakes, &ids, &clock, role, area.id, "Renovate", "")
+        create_project(&fakes, &ids, &clock, &fakes, role, area.id, "Renovate", "")
             .await
             .is_ok()
     );
@@ -1975,15 +2639,33 @@ async fn a_user_with_only_a_project_role_cannot_see_a_sibling_project_or_the_are
     let clock = FixedClock::at(0);
     let bob = UserId::new("bob");
 
-    let area = create_area(&fakes, &ids, &clock, admin(), "Home", "", 0)
+    let area = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
         .await
         .unwrap();
-    let p1 = create_project(&fakes, &ids, &clock, project_admin(), area.id, "One", "")
-        .await
-        .unwrap();
-    let p2 = create_project(&fakes, &ids, &clock, project_admin(), area.id, "Two", "")
-        .await
-        .unwrap();
+    let p1 = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area.id,
+        "One",
+        "",
+    )
+    .await
+    .unwrap();
+    let p2 = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area.id,
+        "Two",
+        "",
+    )
+    .await
+    .unwrap();
     fakes.set_project_role(&bob, p1.id, Role::Member);
 
     // Bob can see the project he actually holds a role on...
@@ -2018,12 +2700,21 @@ async fn a_lower_explicit_project_role_does_not_demote_area_role_through_the_use
     let clock = FixedClock::at(0);
     let priya = UserId::new("priya");
 
-    let area = create_area(&fakes, &ids, &clock, admin(), "Home", "", 0)
+    let area = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
         .await
         .unwrap();
-    let project = create_project(&fakes, &ids, &clock, project_admin(), area.id, "One", "")
-        .await
-        .unwrap();
+    let project = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        project_admin(),
+        area.id,
+        "One",
+        "",
+    )
+    .await
+    .unwrap();
 
     // Priya administers the whole Area...
     fakes.set_area_role(&priya, area.id, Role::ProjectAdmin);

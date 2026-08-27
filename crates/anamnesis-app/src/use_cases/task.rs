@@ -26,13 +26,21 @@ use anamnesis_core::{
 
 use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
-use crate::ports::{BoardQuery, Clock, IdGen, TaskAggregate, TaskRepository};
+use crate::ports::{BoardQuery, Clock, IdGen, SearchIndex, TaskAggregate, TaskRepository};
 
-/// Creates a new task, below the horizon, with no parent.
+use super::indexing::log_index_failure;
+
+/// Creates a new task, below the horizon, with no parent, then indexes it
+/// for global search. See `crate::use_cases::area::create_area`'s doc
+/// comment (and `crate::use_cases::indexing`) for why indexing happens here
+/// — beside the repository write, in the use case, not in a caller — and
+/// what happens if the index write itself fails.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_task(
     repo: &dyn TaskRepository,
     ids: &dyn IdGen,
     clock: &dyn Clock,
+    search: &dyn SearchIndex,
     role: Option<Role>,
     project_id: ProjectId,
     title: &str,
@@ -49,6 +57,9 @@ pub async fn create_task(
         clock.now(),
     )?;
     repo.insert(&task).await?;
+    if let Err(err) = search.index_task(task.id, task.title.as_str()).await {
+        log_index_failure("create_task", err);
+    }
     Ok(task)
 }
 
@@ -64,10 +75,13 @@ pub async fn view_task(
     repo.load(id).await?.ok_or(AppError::NotFound)
 }
 
-/// Replaces a task's title and description.
+/// Replaces a task's title and description, then re-indexes it — its title,
+/// what global search matches against, may have just changed. See
+/// [`create_task`]'s doc comment for the indexing-failure policy.
 pub async fn edit_task(
     repo: &dyn TaskRepository,
     clock: &dyn Clock,
+    search: &dyn SearchIndex,
     role: Option<Role>,
     id: TaskId,
     title: &str,
@@ -79,13 +93,22 @@ pub async fn edit_task(
     let aggregate = repo.load(id).await?.ok_or(AppError::NotFound)?;
     let edited = core::edit_task(&aggregate.task, title, description, clock.now())?;
     repo.update(&edited, aggregate.task.last_touched_at).await?;
+    if let Err(err) = search.index_task(edited.id, edited.title.as_str()).await {
+        log_index_failure("edit_task", err);
+    }
     Ok(edited)
 }
 
-/// Archives a task.
+/// Archives a task, then drops it from the search index —
+/// `docs/DOMAIN.md` §2's "vanished from every view unless explicitly
+/// searched" does not extend to *plain, unqualified* global search, which
+/// has no archived-vs-not-archived toggle of its own; leaving a stale entry
+/// indexed would surface an archived task as an ordinary hit. See
+/// [`create_task`]'s doc comment for the indexing-failure policy.
 pub async fn archive_task(
     repo: &dyn TaskRepository,
     clock: &dyn Clock,
+    search: &dyn SearchIndex,
     role: Option<Role>,
     id: TaskId,
 ) -> Result<Task, AppError> {
@@ -96,13 +119,19 @@ pub async fn archive_task(
     let archived = core::archive_task(&aggregate.task, clock.now())?;
     repo.update(&archived, aggregate.task.last_touched_at)
         .await?;
+    if let Err(err) = search.remove_task(archived.id).await {
+        log_index_failure("archive_task", err);
+    }
     Ok(archived)
 }
 
-/// Restores an archived task.
+/// Restores an archived task, then re-indexes it — see [`archive_task`] for
+/// why it was removed, and [`create_task`]'s doc comment for the
+/// indexing-failure policy.
 pub async fn unarchive_task(
     repo: &dyn TaskRepository,
     clock: &dyn Clock,
+    search: &dyn SearchIndex,
     role: Option<Role>,
     id: TaskId,
 ) -> Result<Task, AppError> {
@@ -113,6 +142,12 @@ pub async fn unarchive_task(
     let restored = core::unarchive_task(&aggregate.task, clock.now())?;
     repo.update(&restored, aggregate.task.last_touched_at)
         .await?;
+    if let Err(err) = search
+        .index_task(restored.id, restored.title.as_str())
+        .await
+    {
+        log_index_failure("unarchive_task", err);
+    }
     Ok(restored)
 }
 

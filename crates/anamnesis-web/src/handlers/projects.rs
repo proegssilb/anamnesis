@@ -81,6 +81,7 @@ async fn create_task_impl(
         state.tasks.as_ref(),
         state.id_gen.as_ref(),
         state.clock.as_ref(),
+        state.search_index.as_ref(),
         role,
         project_id,
         &form.title,
@@ -89,10 +90,8 @@ async fn create_task_impl(
     .await
     {
         Ok(task) => {
-            state
-                .search_index
-                .index_task(task.id, task.title.as_str())
-                .await?;
+            // Indexed inside `create_task` itself — see
+            // `anamnesis_app::use_cases::indexing`'s module doc comment.
             Ok(Redirect::to(&format!("/tasks/{}", task.id)).into_response())
         }
         Err(AppError::Rule(e)) => {
