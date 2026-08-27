@@ -159,26 +159,55 @@ Files need a new `BlobStore` port (local filesystem first, S3-shaped later).
 ### Tangle
 A knot of mutually-blocking tasks, detected by the system.
 
-`id, task_ids: Set<TaskId>, fingerprint, detected_at, resolved_at: Option<_>`
+```rust
+Tangle {
+    id: TangleId,              // STABLE IDENTITY — survives membership changes
+    task_ids: Set<TaskId>,     // content, not identity
+    fingerprint: Fingerprint,  // content hash, for matching detections
+    placement: Placement,      // tangles sit on the board like tasks
+    frozen: bool,              // set when placed; detection stops rewriting it
+    detected_at: Timestamp,
+    resolved_at: Option<Timestamp>,
+}
+```
 
 **One tangle per strongly-connected component** of the blocking graph, not per
 distinct cycle. Tarjan's algorithm is linear; enumerating elementary cycles is
 combinatorial and would flood the board with near-duplicates from one knot.
-Identity is a fingerprint over the sorted task-id set, so a tangle survives
-unrelated edits and auto-resolves when the cluster breaks up.
 
-A Tangle is **its own entity rendered as a card, not a Task row** — the system
-never creates, deletes or mutates rows in the user's own task table, detection
-stays a pure function (`graph → Set<Tangle>`) reconciled against stored state,
-and a tangle never inherits an edit surface that makes no sense (reassigning it
-to a project, editing its title).
+A Tangle is **its own entity, not a Task row.** That is precisely what makes the
+rest of this safe: the system creates, updates and deletes tangles freely
+without ever touching the user's own tasks table, and detection stays a pure
+function (`graph → Set<DetectedTangle>`) reconciled against stored state.
 
-**Resolving a tangle is itself a suggestable item.** Tangled tasks are excluded
-from suggestions (a knotted task is not actionable), but the tangle is offered
-in their place — "these four are knotted, want to untie them?". Accepting it
-puts it on the board where it costs a notch like any other work, because
-untangling *is* work. Tangles also remain visible as a quiet indicator so they
-are discoverable without waiting for an offer.
+**Untangling is work, so a tangle can be placed on the board** — raised above
+the horizon, occupying a column slot and counting against that column's WIP
+limit exactly like a task. It is offered by the suggestion engine in place of
+its knotted member tasks (which are themselves never offered, being
+unactionable), and accepting the offer places it.
+
+#### Identity is the id, not the task set
+
+Earlier drafts made the fingerprint the effective identity, which broke under
+use: untangling *is* edge-editing, so the moment you make progress the task set
+changes, the fingerprint changes, and the card you were working on would
+dissolve and reappear as a stranger. Hence:
+
+- **`TangleId` is the identity** and persists across membership changes.
+  `fingerprint` is a content hash used to match a fresh detection to an
+  existing tangle — never to decide what a tangle *is*.
+- **A tangle below the horizon is ephemeral.** Detection refreshes it freely;
+  its task set and fingerprint may change, or it may dissolve.
+- **Placing a tangle freezes its membership.** A placed tangle is a commitment
+  to untangle *that specific set*. Detection no longer rewrites it, so the
+  goalposts cannot move while the user is working.
+- **A frozen tangle resolves when its frozen task set no longer contains a
+  cycle** — checked against the live graph, not against re-detection. On
+  resolving while on the board it moves to the `is_done` column, so the user
+  sees the knot closed rather than the card silently vanishing; the archive
+  sweep then treats it like anything else.
+- **No duplicate cards for one knot**: a freshly detected knot already fully
+  covered by an active tangle is suppressed rather than creating a second.
 
 ### Column (global, task board)
 `id, title, position, wip_limit: Option<u32>, is_done: bool`
