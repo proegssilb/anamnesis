@@ -603,10 +603,38 @@ button:hover {
 
 .search-form {
   flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
   max-width: 32rem;
 }
 
-.search-form input {
+.search-form input[type="search"] {
   flex: 1;
   min-width: 0;
+}
+
+/* --- checkboxes: `docs/DOMAIN.md` §3's field-definition "show on card"
+   flag and §8's search "include archived" affordance. The blanket
+   `input, textarea, select, button` rule above forces a 44px min-height and
+   generous padding meant for text inputs -- excluded here so the checkbox
+   itself renders at its native size, while `.checkbox-label` (the whole
+   clickable row, box plus its own text) still meets the 44px touch target
+   by sizing the row itself rather than the box. --- */
+
+input[type="checkbox"] {
+  min-height: 0;
+  min-width: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: var(--touch);
+  color: var(--text);
+  font-size: 1rem;
 }
