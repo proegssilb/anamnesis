@@ -911,5 +911,25 @@ async fn postgres_store_contract() {
         .await
         .expect("connect + migrate postgres store");
 
+    // Unlike the SQLite test (a fresh temp file every run), a Postgres URL
+    // usually names a persistent scratch database that survives between
+    // test runs. Wipe every domain table first so the contract's global
+    // assertions (`count_active(None)`, `blocking_graph`'s system-wide
+    // scan, ...) see only what this run inserts, not leftovers from a
+    // previous run against the same database.
+    let raw = sqlx::PgPool::connect(&url)
+        .await
+        .expect("connect a raw pool to reset the schema");
+    sqlx::query(
+        "TRUNCATE TABLE tangle_tasks, tangles, field_values, relationships, comments, \
+         attachments, search_documents, tasks, field_definitions, relationship_kinds, \
+         area_members, project_members, system_admins, projects, areas, board_columns \
+         RESTART IDENTITY CASCADE",
+    )
+    .execute(&raw)
+    .await
+    .expect("truncate domain tables before the contract run");
+    raw.close().await;
+
     contract(&store).await;
 }
