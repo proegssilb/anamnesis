@@ -8,7 +8,7 @@
 //! - [`SqlStore`] — every Phase E port for the real domain model: the
 //!   per-entity repositories, `BoardQuery`, `SearchQuery`/`SearchIndex`, and
 //!   `MembershipQuery` (`crate::sql`), plus [`FsBlobStore`] (local
-//!   filesystem attachments) and [`TableTimezoneResolver`] (IANA zone name
+//!   filesystem attachments) and [`TzTimezoneResolver`] (a real IANA tzdb
 //!   lookup) standing alone since neither touches the SQL schema.
 //!
 //! `SystemClock`, `UuidIdGen`, and `OidcIdentityProvider` are shared
@@ -28,4 +28,4 @@ pub use clock::SystemClock;
 pub use id_gen::UuidIdGen;
 pub use identity::OidcIdentityProvider;
 pub use sql::SqlStore;
-pub use timezone::TableTimezoneResolver;
+pub use timezone::TzTimezoneResolver;

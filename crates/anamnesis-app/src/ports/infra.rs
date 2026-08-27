@@ -1,12 +1,13 @@
 //! New infrastructure ports named in `docs/DOMAIN.md` §7: `BlobStore`
 //! (attachment files) and `SearchIndex` (keeping global search current).
-//! Plus `TimezoneResolver`, needed by Phase C's `next_run` but not itself
-//! named as a port in §7 — see the doc comment on the trait for why it
-//! exists.
+//! Plus `TimezoneResolver`, needed to drive `anamnesis_core::next_run` and
+//! the sweep but not itself named as a port in §7 — see the doc comment on
+//! the trait for why it exists.
 
 use async_trait::async_trait;
 
-use anamnesis_core::Timezone;
+use anamnesis_core::Timestamp;
+use time::{Date, Time};
 
 use crate::error::RepoError;
 
@@ -41,29 +42,48 @@ pub trait SearchIndex: Send + Sync {
     async fn remove_task(&self, id: anamnesis_core::TaskId) -> Result<(), RepoError>;
 }
 
-/// Resolves an IANA time zone name (e.g. `"America/New_York"`) to
-/// [`anamnesis_core`]'s pure `Timezone` rule data (a standard offset plus an
-/// optional DST rule — see `anamnesis_core::recurrence`'s module doc
-/// comment).
+/// Converts between UTC instants and local wall-clock calendar values in a
+/// named IANA time zone (e.g. `"America/New_York"`), for whatever real tzdb
+/// an adapter embeds.
 ///
 /// **Why this port exists**: `anamnesis-core` deliberately carries no IANA
-/// time zone database (`serde`, `thiserror`, `time`, `uuid` only — see the
-/// `recurrence` module's doc comment on what Phase C did and did not add as
-/// a dependency). Its `Timezone` type is pure rule data by design, but
-/// hand-constructing one — a standard `UtcOffset` plus a `DstRule` spelled
-/// out as "the Nth (or last) weekday of a month, at a given local time",
-/// twice, once for the start and once for the end of daylight saving — is
-/// roughly eighteen lines of Rust. No administrator can type that into a
-/// settings field. This port is the seam: an adapter (Phase E) backed by a
-/// real tzdata source does the lookup and hands back the finished value,
-/// while `anamnesis-core` stays free of a timezone-database dependency and
-/// `anamnesis-app` stays free of a *concrete* one (this is a trait, not an
-/// implementation — "Define the port here; do not implement it").
+/// time zone database (`serde`, `thiserror`, `time`, `uuid` only —
+/// `anamnesis_core::recurrence`'s module doc comment explains why: real DST
+/// rules change by government decree, sometimes with only weeks of notice,
+/// and a rule reapplied to a historical timestamp must use whichever rule
+/// was in force *then*, not today's — both are exactly what a full tzdb
+/// gets right and a hand-rolled rule table cannot). So `anamnesis_core`'s
+/// `next_run` works purely in local calendar terms (a [`Date`] in, a
+/// [`Date`] out) and never sees an offset. Turning a UTC instant into "what
+/// local date is it" to get `next_run`'s input, and turning its answer (at
+/// local midnight) back into a UTC instant to actually schedule the sweep,
+/// needs a real tzdb — this port is that seam. An adapter backed by one
+/// (Phase E) does the lookup and conversion; `anamnesis-core` stays free of
+/// a timezone-database dependency and `anamnesis-app` stays free of a
+/// *concrete* one (this is a trait, not an implementation).
 ///
-/// Not `async`: every real implementation (an embedded tzdata table, e.g.
-/// via `tzdb`) is an in-memory lookup, not I/O.
+/// The two methods are exactly the two conversions a sweep needs:
+/// [`local_date`](Self::local_date) turns `Clock::now` into the `from` date
+/// `next_run` wants, and [`to_utc`](Self::to_utc) turns the local midnight
+/// `next_run` returns back into a [`Timestamp`] to schedule against and
+/// compare `now` to.
+///
+/// Not `async`: every real implementation (an embedded tzdb) is an
+/// in-memory lookup, not I/O.
 pub trait TimezoneResolver: Send + Sync {
-    /// Resolves `iana_name` (e.g. `"America/New_York"`, `"Europe/Berlin"`)
-    /// to its `Timezone` rule data, or `None` if the name is not recognised.
-    fn resolve(&self, iana_name: &str) -> Option<Timezone>;
+    /// The local calendar date `instant` falls on in the zone named
+    /// `iana_name`. `Err` if `iana_name` is not a recognised zone.
+    fn local_date(&self, iana_name: &str, instant: Timestamp) -> Result<Date, RepoError>;
+
+    /// The UTC instant corresponding to local wall-clock `date` at `time` in
+    /// the zone named `iana_name`. `Err` if `iana_name` is not a recognised
+    /// zone, or if the given local date/time cannot be resolved to an
+    /// instant there (e.g. it falls in a spring-forward gap that skips that
+    /// wall-clock hour entirely).
+    ///
+    /// A local time that is *ambiguous* rather than nonexistent (the
+    /// repeated hour of a fall-back transition) resolves to the earlier of
+    /// the two matching instants — an adapter's doc comment should say so
+    /// explicitly, since it is a real, if rare, choice.
+    fn to_utc(&self, iana_name: &str, date: Date, time: Time) -> Result<Timestamp, RepoError>;
 }
