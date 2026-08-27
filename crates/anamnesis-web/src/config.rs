@@ -18,6 +18,14 @@ pub struct Config {
     pub oidc_scopes: Vec<String>,
     pub session_secret: String,
     pub dev_auth_bypass: bool,
+    /// An IANA time zone name (e.g. `"America/New_York"`), required once
+    /// scheduled sweeps exist (`docs/DOMAIN.md` §6: "'every other Monday' is
+    /// meaningless without one"). Validated for real against a `TimezoneResolver`
+    /// at startup in `main.rs`, not here — this crate has no tzdb of its own.
+    pub timezone: String,
+    /// The subject (OIDC `sub`, or the dev-bypass user id) granted System
+    /// Admin on first boot of an empty database — see `crate::bootstrap`.
+    pub bootstrap_admin: String,
 }
 
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
@@ -92,6 +100,9 @@ impl Config {
             )
         };
 
+        let timezone = require(&get, "ANAMNESIS_TIMEZONE")?;
+        let bootstrap_admin = require(&get, "ANAMNESIS_BOOTSTRAP_ADMIN")?;
+
         Ok(Config {
             database_url,
             bind_addr,
@@ -102,6 +113,8 @@ impl Config {
             oidc_scopes,
             session_secret,
             dev_auth_bypass,
+            timezone,
+            bootstrap_admin,
         })
     }
 
@@ -152,6 +165,8 @@ mod tests {
                 "ANAMNESIS_SESSION_SECRET",
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             ),
+            ("ANAMNESIS_TIMEZONE", "America/New_York"),
+            ("ANAMNESIS_BOOTSTRAP_ADMIN", "alice"),
         ]
     }
 
@@ -235,6 +250,29 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn resolves_the_timezone_and_bootstrap_admin() {
+        let cfg = Config::from_source(env(&full_valid_env())).unwrap();
+        assert_eq!(cfg.timezone, "America/New_York");
+        assert_eq!(cfg.bootstrap_admin, "alice");
+    }
+
+    #[test]
+    fn missing_timezone_names_the_variable() {
+        let mut pairs = full_valid_env();
+        pairs.retain(|(k, _)| *k != "ANAMNESIS_TIMEZONE");
+        let err = Config::from_source(env(&pairs)).unwrap_err();
+        assert_eq!(err, ConfigError::Missing("ANAMNESIS_TIMEZONE"));
+    }
+
+    #[test]
+    fn missing_bootstrap_admin_names_the_variable() {
+        let mut pairs = full_valid_env();
+        pairs.retain(|(k, _)| *k != "ANAMNESIS_BOOTSTRAP_ADMIN");
+        let err = Config::from_source(env(&pairs)).unwrap_err();
+        assert_eq!(err, ConfigError::Missing("ANAMNESIS_BOOTSTRAP_ADMIN"));
     }
 
     #[test]

@@ -1,21 +1,47 @@
 //! [`AppState`]: everything a handler needs, cloned cheaply per request
 //! (`Arc` all the way down). Built once at startup in `main.rs`; integration
-//! tests build one directly against fake or temp-file-backed ports.
+//! tests build one directly against a temp-file `SqlStore` (see
+//! `tests/support`).
+//!
+//! Every port field is a trait object (`Arc<dyn Trait>`), per
+//! `docs/DOMAIN.md` §7's per-entity repository split — even though, in this
+//! crate, every one of them happens to be backed by the same
+//! `anamnesis_adapters::SqlStore` under the hood (constructed once in
+//! `main.rs`/`tests/support` and coerced into each field). Keeping them as
+//! separate ports rather than one concrete `Arc<SqlStore>` field is what
+//! keeps `anamnesis-web` depending only on `anamnesis-app`'s ports, exactly
+//! as every other crate boundary in this workspace does.
 
 use std::sync::Arc;
 
-use anamnesis_app::{BoardRepository, Clock, IdGen, IdentityProvider};
+use anamnesis_app::{
+    AreaRepository, AttachmentRepository, BoardQuery, Clock, CommentRepository, IdGen,
+    IdentityProvider, MembershipQuery, ProjectRepository, RelationshipRepository,
+    TangleRepository, TaskRepository, TimezoneResolver,
+};
 use axum::extract::FromRef;
 use axum_extra::extract::cookie::Key;
 use minijinja::Environment;
 
+use crate::settings::AppSettings;
+
 /// The application's shared state. Every field is `pub` on purpose: tests
 /// build this struct directly (rather than through [`crate::config::Config`]
-/// and real adapters) so they can inject fakes and a fixed CSRF token
-/// without going through environment variables or a live database.
+/// and real adapters) so they can inject a temp-file store and a fixed CSRF
+/// token without going through environment variables or a live deployment
+/// database.
 #[derive(Clone)]
 pub struct AppState {
-    pub repo: Arc<dyn BoardRepository>,
+    pub areas: Arc<dyn AreaRepository>,
+    pub projects: Arc<dyn ProjectRepository>,
+    pub tasks: Arc<dyn TaskRepository>,
+    pub relationships: Arc<dyn RelationshipRepository>,
+    pub tangles: Arc<dyn TangleRepository>,
+    pub comments: Arc<dyn CommentRepository>,
+    pub attachments: Arc<dyn AttachmentRepository>,
+    pub board: Arc<dyn BoardQuery>,
+    pub membership: Arc<dyn MembershipQuery>,
+    pub timezone: Arc<dyn TimezoneResolver>,
     pub clock: Arc<dyn Clock>,
     pub id_gen: Arc<dyn IdGen>,
     /// `None` only when dev-auth-bypass is on and no OIDC provider was
@@ -39,6 +65,10 @@ pub struct AppState {
     /// Whether the session cookie gets the `Secure` attribute — true when
     /// `ANAMNESIS_BASE_URL` is `https://`.
     pub secure_cookies: bool,
+    /// The knobs `docs/DOMAIN.md` §3 assigns to a `Settings` entity that no
+    /// port in `anamnesis-app` reads or writes (`crate::settings`'s module
+    /// doc comment explains the gap) — config-sourced for this phase.
+    pub settings: AppSettings,
 }
 
 impl FromRef<AppState> for Key {

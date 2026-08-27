@@ -115,6 +115,15 @@ pub trait TaskRepository: Send + Sync {
     /// A task's immediate checklist children (`parent_task_id == id`), not
     /// the full subtree.
     async fn list_children(&self, parent_id: TaskId) -> Result<Vec<Task>, RepoError>;
+    /// Every non-archived task belonging to `project_id` — the "project as a
+    /// flat list" view (`docs/DOMAIN.md` §8), which needs every task
+    /// regardless of placement (`Below` and `OnBoard` alike), unlike
+    /// `crate::ports::BoardQuery` (only `OnBoard` tasks) or
+    /// `crate::ports::BoardQuery::suggestion_candidates` (system-wide, no
+    /// per-project filter). Phase D defined no port for this — the same kind
+    /// of design-doc gap `SqlStore::seed_board_column`'s doc comment already
+    /// names for column creation — so this method fills it.
+    async fn list_by_project(&self, project_id: ProjectId) -> Result<Vec<Task>, RepoError>;
     async fn insert(&self, task: &Task) -> Result<(), RepoError>;
     /// Writes `task`, but only if the stored row's `last_touched_at` still
     /// equals `expected_last_touched_at` — the value the caller read `task`

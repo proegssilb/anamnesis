@@ -396,6 +396,34 @@ async fn task_and_field_value_contract(store: &SqlStore) -> (ProjectId, Task, Ta
         "children must list ordered by checklist_position, not insertion order"
     );
 
+    // `list_by_project`: every non-archived task in the project, regardless
+    // of placement or checklist depth — the "project as a flat list" query.
+    let mut in_project = TaskRepository::list_by_project(store, p.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.id)
+        .collect::<Vec<_>>();
+    in_project.sort_by_key(|id| id.as_uuid());
+    let mut expected = vec![a.id, b.id, child_a.id, child_b.id];
+    expected.sort_by_key(|id| id.as_uuid());
+    assert_eq!(
+        in_project, expected,
+        "list_by_project must return every task in the project, including checklist children"
+    );
+
+    let archived = anamnesis_core::archive_task(&b, ts(999)).unwrap();
+    TaskRepository::update(store, &archived, b.last_touched_at)
+        .await
+        .unwrap();
+    let after_archive = TaskRepository::list_by_project(store, p.id)
+        .await
+        .unwrap();
+    assert!(
+        !after_archive.iter().any(|t| t.id == b.id),
+        "list_by_project must exclude archived tasks"
+    );
+
     (p.id, a, b)
 }
 

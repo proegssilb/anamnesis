@@ -26,7 +26,7 @@ pub async fn login_handler(State(state): State<AppState>, jar: SignedCookieJar<K
     if state.dev_auth_bypass {
         // Dev bypass already authenticates every request as the fixed user;
         // there is nothing for a real login round trip to do.
-        return Redirect::to("/boards").into_response();
+        return Redirect::to("/areas").into_response();
     }
 
     let Some(identity) = &state.identity else {
@@ -75,7 +75,7 @@ pub async fn callback_handler(
     Query(query): Query<CallbackQuery>,
 ) -> Response {
     if state.dev_auth_bypass {
-        return Redirect::to("/boards").into_response();
+        return Redirect::to("/areas").into_response();
     }
 
     let Some(identity) = &state.identity else {
@@ -124,7 +124,7 @@ pub async fn callback_handler(
                 csrf_token: session::generate_csrf_token(),
             };
             let jar = jar.add(session_cookie(&session, state.secure_cookies));
-            (jar, Redirect::to("/boards")).into_response()
+            (jar, Redirect::to("/areas")).into_response()
         }
         Err(err) => (
             jar,
