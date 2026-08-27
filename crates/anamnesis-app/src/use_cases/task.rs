@@ -94,7 +94,8 @@ pub async fn archive_task(
     }
     let aggregate = repo.load(id).await?.ok_or(AppError::NotFound)?;
     let archived = core::archive_task(&aggregate.task, clock.now())?;
-    repo.update(&archived, aggregate.task.last_touched_at).await?;
+    repo.update(&archived, aggregate.task.last_touched_at)
+        .await?;
     Ok(archived)
 }
 
@@ -110,7 +111,8 @@ pub async fn unarchive_task(
     }
     let aggregate = repo.load(id).await?.ok_or(AppError::NotFound)?;
     let restored = core::unarchive_task(&aggregate.task, clock.now())?;
-    repo.update(&restored, aggregate.task.last_touched_at).await?;
+    repo.update(&restored, aggregate.task.last_touched_at)
+        .await?;
     Ok(restored)
 }
 
@@ -143,7 +145,11 @@ pub async fn raise_task(
         }
     }
     let now = clock.now();
-    let moved = core::move_placement(&aggregate.task, Placement::OnBoard { column, position }, now)?;
+    let moved = core::move_placement(
+        &aggregate.task,
+        Placement::OnBoard { column, position },
+        now,
+    )?;
     task_repo
         .update(&moved, aggregate.task.last_touched_at)
         .await?;
@@ -229,7 +235,10 @@ pub async fn set_task_parent(
 /// be unreachable if every write went through [`set_task_parent`], but
 /// costs nothing to guard): stops and returns what has been collected so far
 /// the moment a task id is seen a second time, rather than looping forever.
-async fn walk_ancestors(task_repo: &dyn TaskRepository, start: TaskId) -> Result<Vec<TaskId>, AppError> {
+async fn walk_ancestors(
+    task_repo: &dyn TaskRepository,
+    start: TaskId,
+) -> Result<Vec<TaskId>, AppError> {
     let mut chain = Vec::new();
     let mut seen = HashSet::new();
     let mut current = Some(start);

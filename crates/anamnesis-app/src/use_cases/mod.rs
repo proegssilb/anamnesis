@@ -21,8 +21,8 @@ pub use attachment::{
 pub use comment::{add_comment, delete_comment, edit_comment, list_comments};
 pub use project::{
     add_field_definition, add_relationship_kind, archive_project, create_project, edit_project,
-    edit_project_fields, list_projects_in_area, rename_field_definition,
-    transition_project_status, unarchive_project, view_project,
+    edit_project_fields, list_projects_in_area, rename_field_definition, transition_project_status,
+    unarchive_project, view_project,
 };
 pub use relationship::{create_relationship, delete_relationship, resolve_kind};
 pub use suggestion::{derive_seed, request_suggestion};

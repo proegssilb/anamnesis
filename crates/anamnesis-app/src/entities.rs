@@ -101,7 +101,9 @@ pub fn edit_comment(
 /// [`crate::ports::BlobStore`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttachmentKind {
-    Link { url: String },
+    Link {
+        url: String,
+    },
     File {
         blob_key: String,
         filename: String,

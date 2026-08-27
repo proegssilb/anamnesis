@@ -2,6 +2,7 @@
 //! target so `cargo test --workspace` runs it. Feature files live in
 //! `crates/anamnesis-app/features/`; steps live in `tests/steps/`.
 
+mod domain_fakes;
 mod steps;
 mod support;
 

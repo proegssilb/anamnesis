@@ -4,7 +4,9 @@
 //! than resolving them from a single project-scoped role check.
 
 use anamnesis_core::policy::Role;
-use anamnesis_core::{self as core, KindId, Relationship, RelationshipId, RelationshipKind, TaskId};
+use anamnesis_core::{
+    self as core, KindId, Relationship, RelationshipId, RelationshipKind, TaskId,
+};
 
 use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
