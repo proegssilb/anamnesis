@@ -17,5 +17,6 @@ pub use membership::MembershipQuery;
 pub use query::{BoardColumn, BoardItem, BoardQuery, SearchHit, SearchQuery};
 pub use repository::{
     AreaRepository, AttachmentRepository, CommentRepository, ProjectAggregate, ProjectRepository,
-    RelationshipRepository, TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
+    RelationshipRepository, SettingsRepository, TangleRepository, TaskAggregate, TaskRepository,
+    TaskUpdateError,
 };

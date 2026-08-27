@@ -22,7 +22,8 @@ use anamnesis_app::{
     AreaRepository, Attachment, AttachmentId, AttachmentRepository, BlobStore, BoardColumn,
     BoardItem, BoardQuery, Comment, CommentId, CommentRepository, MembershipQuery,
     ProjectAggregate, ProjectRepository, RelationshipRepository, RepoError, SearchHit, SearchIndex,
-    SearchQuery, TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
+    SearchQuery, Settings, SettingsRepository, TangleRepository, TaskAggregate, TaskRepository,
+    TaskUpdateError,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
@@ -52,6 +53,7 @@ pub struct Fakes {
     /// comment), so this is good enough for `support_doubles`-style
     /// assertions on `SearchIndex` too.
     search_entries: Mutex<Vec<(&'static str, String, String, bool)>>,
+    settings: Mutex<Settings>,
 }
 
 impl Fakes {
@@ -88,6 +90,10 @@ impl Fakes {
 
     pub fn seed_column(&self, column: Column) {
         self.columns.lock().unwrap().push(column);
+    }
+
+    pub fn seed_settings(&self, settings: Settings) {
+        *self.settings.lock().unwrap() = settings;
     }
 
     pub fn seed_relationship(&self, relationship: Relationship) {
@@ -527,6 +533,29 @@ impl AttachmentRepository for Fakes {
 
     async fn delete(&self, id: AttachmentId) -> Result<(), RepoError> {
         self.attachments.lock().unwrap().remove(&id);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl SettingsRepository for Fakes {
+    async fn load(&self) -> Result<Settings, RepoError> {
+        Ok(*self.settings.lock().unwrap())
+    }
+
+    async fn update(&self, settings: &Settings) -> Result<(), RepoError> {
+        let mut guard = self.settings.lock().unwrap();
+        // Mirrors the real adapter's targeted `UPDATE` (`crate::settings`'s
+        // module doc comment): every field except `last_swept_at`, which
+        // only `record_sweep` may touch.
+        let last_swept_at = guard.last_swept_at;
+        *guard = *settings;
+        guard.last_swept_at = last_swept_at;
+        Ok(())
+    }
+
+    async fn record_sweep(&self, swept_at: Timestamp) -> Result<(), RepoError> {
+        self.settings.lock().unwrap().last_swept_at = Some(swept_at);
         Ok(())
     }
 }

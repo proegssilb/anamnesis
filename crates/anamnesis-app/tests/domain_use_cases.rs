@@ -2742,3 +2742,140 @@ async fn a_lower_explicit_project_role_does_not_demote_area_role_through_the_use
     .await;
     assert!(result.is_ok());
 }
+
+// ============================== Settings ==============================
+//
+// `view_settings`/`update_settings` (`crate::use_cases::settings`): the
+// port-and-use-case half of the runtime settings gap. Both directions are
+// System-Admin-only, including the read path — see that module's doc
+// comment for why there is no `Action::ViewSettings` open to a Member the
+// way `view_area`/`view_project`/`view_task` are.
+
+#[tokio::test]
+async fn view_settings_requires_system_admin() {
+    let fakes = Fakes::new();
+
+    assert!(matches!(
+        view_settings(&fakes, none()).await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(matches!(
+        view_settings(&fakes, member()).await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(matches!(
+        view_settings(&fakes, project_admin()).await,
+        Err(AppError::Forbidden)
+    ));
+
+    let settings = view_settings(&fakes, admin()).await.unwrap();
+    assert_eq!(settings.active_project_limit, DEFAULT_ACTIVE_PROJECT_LIMIT);
+}
+
+#[tokio::test]
+async fn update_settings_requires_system_admin() {
+    let fakes = Fakes::new();
+    let new_settings = Settings {
+        active_project_limit: 9,
+        ..Settings::default()
+    };
+
+    assert!(matches!(
+        update_settings(&fakes, none(), new_settings).await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(matches!(
+        update_settings(&fakes, member(), new_settings).await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(matches!(
+        update_settings(&fakes, project_admin(), new_settings).await,
+        Err(AppError::Forbidden)
+    ));
+
+    let stored = update_settings(&fakes, admin(), new_settings)
+        .await
+        .unwrap();
+    assert_eq!(stored.active_project_limit, 9);
+}
+
+#[tokio::test]
+async fn update_settings_changes_the_active_project_limit_that_transition_status_enforces() {
+    // The point of a `SettingsRepository` at all: editing the stored value
+    // must actually change what `transition_project_status` enforces, not
+    // just what `view_settings` echoes back.
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let area = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
+        .await
+        .unwrap();
+    let one = create_project(&fakes, &ids, &clock, &fakes, admin(), area.id, "One", "")
+        .await
+        .unwrap();
+    let two = create_project(&fakes, &ids, &clock, &fakes, admin(), area.id, "Two", "")
+        .await
+        .unwrap();
+
+    update_settings(
+        &fakes,
+        admin(),
+        Settings {
+            active_project_limit: 1,
+            ..Settings::default()
+        },
+    )
+    .await
+    .unwrap();
+    let limit = view_settings(&fakes, admin())
+        .await
+        .unwrap()
+        .active_project_limit;
+
+    transition_project_status(
+        &fakes,
+        &clock,
+        admin(),
+        one.id,
+        ProjectStatus::Active,
+        limit,
+    )
+    .await
+    .unwrap();
+    let result = transition_project_status(
+        &fakes,
+        &clock,
+        admin(),
+        two.id,
+        ProjectStatus::Active,
+        limit,
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(AppError::ActiveProjectLimitExceeded) | Err(AppError::Rule(_))
+    ));
+}
+
+#[tokio::test]
+async fn update_settings_never_touches_last_swept_at() {
+    let fakes = Fakes::new();
+    let swept_at = anamnesis_core::Timestamp::from_unix_seconds(1_000).unwrap();
+    SettingsRepository::record_sweep(&fakes, swept_at)
+        .await
+        .unwrap();
+
+    let stored = update_settings(
+        &fakes,
+        admin(),
+        Settings {
+            active_project_limit: 42,
+            ..Settings::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(stored.active_project_limit, 42);
+    assert_eq!(stored.last_swept_at, Some(swept_at));
+}

@@ -20,6 +20,7 @@ use anamnesis_core::{
 
 use crate::entities::{Attachment, AttachmentId, Comment, CommentId};
 use crate::error::RepoError;
+use crate::settings::Settings;
 
 /// Loads, lists, and writes [`Area`]s. Tiny aggregate, no children, no
 /// archival (`docs/DOMAIN.md` §3 gives `Area` no `archived_at`).
@@ -197,4 +198,28 @@ pub trait AttachmentRepository: Send + Sync {
     async fn load(&self, id: AttachmentId) -> Result<Option<Attachment>, RepoError>;
     async fn insert(&self, attachment: &Attachment) -> Result<(), RepoError>;
     async fn delete(&self, id: AttachmentId) -> Result<(), RepoError>;
+}
+
+/// Loads and writes the singleton [`Settings`] row (`docs/DOMAIN.md` §3).
+///
+/// There is exactly one row in this system, so unlike every other port here
+/// this one takes no id anywhere — [`Self::load`] and [`Self::update`]
+/// always mean "the one settings row." See `crate::settings`'s module doc
+/// comment for why `last_swept_at` gets its own targeted
+/// [`Self::record_sweep`] instead of going through [`Self::update`].
+#[async_trait]
+pub trait SettingsRepository: Send + Sync {
+    /// Loads the current settings. Bootstrap
+    /// (`anamnesis-web::bootstrap::run`) seeds a default row idempotently on
+    /// every startup, so by the time any use case or the sweep ticker calls
+    /// this, a row always exists.
+    async fn load(&self) -> Result<Settings, RepoError>;
+    /// Replaces `active_project_limit`, `suggestion`, and `sweep_recurrence`
+    /// with the given values — the admin settings form's one write. Never
+    /// touches `last_swept_at`.
+    async fn update(&self, settings: &Settings) -> Result<(), RepoError>;
+    /// Stamps `last_swept_at`, and only that field — the sweep ticker's one
+    /// write, isolated from [`Self::update`] to avoid a read-modify-write
+    /// race between the ticker and a concurrent admin edit.
+    async fn record_sweep(&self, swept_at: Timestamp) -> Result<(), RepoError>;
 }
