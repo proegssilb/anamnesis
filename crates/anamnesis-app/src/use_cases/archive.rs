@@ -11,11 +11,16 @@ use anamnesis_core::{self as core, TaskId};
 
 use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
-use crate::ports::{BoardQuery, Clock, TaskRepository};
+use crate::ports::{BoardItem, BoardQuery, Clock, TaskRepository};
 
 /// Archives every task currently sitting in an `is_done` column. Called by a
 /// scheduled sweep ticker (Phase F) on its own schedule, or directly by a
 /// user pressing "Archive all" — identical operation either way.
+///
+/// `anamnesis_core::sweep_done` only ever knows about `Task`s (a `Tangle`
+/// carries no `archived_at` of its own to sweep — see `docs/DOMAIN.md`'s
+/// Tangle section), so a resolved tangle sitting in the `is_done` column is
+/// filtered out of `tasks` here rather than passed in.
 pub async fn archive_done_tasks(
     board: &dyn BoardQuery,
     task_repo: &dyn TaskRepository,
@@ -25,11 +30,15 @@ pub async fn archive_done_tasks(
     if !is_allowed(role, Action::RunArchiveAll) {
         return Err(AppError::Forbidden);
     }
-    let board_columns = board.columns_with_tasks().await?;
+    let board_columns = board.columns_with_items().await?;
     let columns: Vec<_> = board_columns.iter().map(|bc| bc.column.clone()).collect();
     let tasks: Vec<_> = board_columns
         .iter()
-        .flat_map(|bc| bc.tasks.iter().cloned())
+        .flat_map(|bc| bc.items.iter())
+        .filter_map(|item| match item {
+            BoardItem::Task(t) => Some(t.clone()),
+            BoardItem::Tangle(_) => None,
+        })
         .collect();
 
     let now = clock.now();

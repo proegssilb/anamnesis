@@ -9,20 +9,52 @@
 use async_trait::async_trait;
 
 use anamnesis_core::{
-    AreaId, BlockingGraph, BoardState, Column, ColumnId, ProjectId, Task, TaskId, TaskSummary,
+    AreaId, BlockingGraph, BoardState, Column, ColumnId, ProjectId, Tangle, Task, TaskId,
+    TaskSummary,
 };
 
 use crate::error::RepoError;
 
-/// One global task-board column, with the tasks currently placed in it
-/// (`docs/DOMAIN.md` §3: "Column *is* status"), ordered by
-/// [`anamnesis_core::Task::checklist_position`]... no — by board position,
-/// i.e. the `position` carried in each task's
-/// [`anamnesis_core::Placement::OnBoard`].
+/// One item occupying a column slot: a task, or a tangle placed on the
+/// board (`docs/DOMAIN.md`'s Tangle section: "untangling is work, so a
+/// tangle can be placed on the board... occupying a column slot and
+/// counting against that column's WIP limit exactly like a task").
+///
+/// A heterogeneous enum ordered by `position`, rather than a `Task` list plus
+/// a parallel `Tangle` list, is the honest shape: tasks and tangles share one
+/// ordering within a column, and a card list is genuinely interleaved by
+/// position, not "tasks, then tangles" — a pair of parallel lists cannot
+/// express that without the caller re-deriving the interleaving itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoardItem {
+    Task(Task),
+    Tangle(Tangle),
+}
+
+impl BoardItem {
+    /// This item's board position — `u32::MAX` for the (should-be
+    /// unreachable, defensive-only) case of an item this query returned that
+    /// somehow is not actually `OnBoard`.
+    pub fn position(&self) -> u32 {
+        let placement = match self {
+            BoardItem::Task(t) => t.placement,
+            BoardItem::Tangle(t) => t.placement,
+        };
+        match placement {
+            anamnesis_core::Placement::OnBoard { position, .. } => position,
+            anamnesis_core::Placement::Below => u32::MAX,
+        }
+    }
+}
+
+/// One global task-board column, with the tasks and placed tangles currently
+/// in it (`docs/DOMAIN.md` §3: "Column *is* status"), interleaved and
+/// ordered by [`BoardItem::position`] — the `position` carried in each
+/// item's [`anamnesis_core::Placement::OnBoard`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardColumn {
     pub column: Column,
-    pub tasks: Vec<Task>,
+    pub items: Vec<BoardItem>,
 }
 
 /// The global task board and the suggestion engine's view of the world —
@@ -30,12 +62,16 @@ pub struct BoardColumn {
 /// never owned by any single aggregate (`docs/DOMAIN.md` §7).
 #[async_trait]
 pub trait BoardQuery: Send + Sync {
-    /// Every column, each with the tasks currently placed in it, in column
-    /// `position` order. The whole-board rendering query.
-    async fn columns_with_tasks(&self) -> Result<Vec<BoardColumn>, RepoError>;
+    /// Every column, each with the tasks and placed tangles currently in it,
+    /// interleaved in position order, in column `position` order. The
+    /// whole-board rendering query.
+    async fn columns_with_items(&self) -> Result<Vec<BoardColumn>, RepoError>;
 
-    /// How many tasks currently sit in `column` — what a placement move
-    /// checks against the column's `wip_limit` before it is allowed to land.
+    /// How many tasks *and placed tangles* currently sit in `column` — what
+    /// a placement move checks against the column's `wip_limit` before it is
+    /// allowed to land, and the next open `position` a new item lands at
+    /// (`docs/DOMAIN.md`: a tangle "occupies a column slot... exactly like a
+    /// task").
     async fn count_on_column(&self, column: ColumnId) -> Result<u32, RepoError>;
 
     /// `column`'s [`BoardState`] (its WIP limit and current occupancy) —

@@ -106,6 +106,7 @@ async fn contract(store: &SqlStore) {
     relationship_contract(store, &task_a, &task_b).await;
     tangle_contract(store).await;
     board_and_suggestion_contract(store, task_contract_project).await;
+    tangle_on_board_contract(store, task_contract_project).await;
     comment_contract(store, &task_a).await;
     attachment_contract(store, &task_a).await;
     membership_contract(store).await;
@@ -554,6 +555,8 @@ async fn tangle_contract(store: &SqlStore) {
         id: TangleId::new(Uuid::new_v4()),
         fingerprint: anamnesis_core::Fingerprint::of(&task_ids),
         task_ids: task_ids.clone(),
+        placement: Placement::Below,
+        frozen: false,
         detected_at: ts(7_000),
         resolved_at: None,
     };
@@ -567,6 +570,53 @@ async fn tangle_contract(store: &SqlStore) {
         anamnesis_core::Fingerprint::of(&task_ids),
         "fingerprint is recomputed from the stored task_ids, not persisted directly"
     );
+    assert_eq!(found.placement, Placement::Below);
+    assert!(!found.frozen);
+
+    let loaded = TangleRepository::load(store, tangle.id)
+        .await
+        .unwrap()
+        .expect("load must find the tangle just inserted");
+    assert_eq!(loaded.task_ids, task_ids);
+    assert_eq!(loaded.placement, Placement::Below);
+
+    assert!(
+        TangleRepository::load(store, TangleId::new(Uuid::new_v4()))
+            .await
+            .unwrap()
+            .is_none(),
+        "load must return None for a tangle id that does not exist"
+    );
+
+    // Placing freezes it: `placement`/`frozen` round-trip through storage
+    // exactly as `Task`'s do (`docs/DOMAIN.md`'s Tangle section).
+    let holding_column = column(9, None, false);
+    store.seed_board_column(&holding_column).await.unwrap();
+    let column_id = holding_column.id;
+    let placed = anamnesis_core::place_tangle(&tangle, column_id, 4).unwrap();
+    TangleRepository::update(store, &placed).await.unwrap();
+    let reloaded = TangleRepository::load(store, tangle.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reloaded.placement,
+        Placement::OnBoard {
+            column: column_id,
+            position: 4
+        }
+    );
+    assert!(reloaded.frozen);
+
+    // Dropping it unfreezes it and moves it back below the horizon.
+    let dropped = anamnesis_core::drop_tangle(&reloaded).unwrap();
+    TangleRepository::update(store, &dropped).await.unwrap();
+    let reloaded = TangleRepository::load(store, tangle.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reloaded.placement, Placement::Below);
+    assert!(!reloaded.frozen);
 
     let mut resolved = tangle.clone();
     resolved.resolved_at = Some(ts(7_500));
@@ -632,10 +682,18 @@ async fn board_and_suggestion_contract(store: &SqlStore, project_id: ProjectId) 
     assert_eq!(state.wip_limit, Some(1));
     assert_eq!(state.current_count, 2);
 
-    let columns = BoardQuery::columns_with_tasks(store).await.unwrap();
+    let columns = BoardQuery::columns_with_items(store).await.unwrap();
     let todo_column = columns.iter().find(|c| c.column.id == todo.id).unwrap();
+    let todo_task_ids: Vec<TaskId> = todo_column
+        .items
+        .iter()
+        .map(|item| match item {
+            anamnesis_app::BoardItem::Task(t) => t.id,
+            anamnesis_app::BoardItem::Tangle(t) => panic!("expected only tasks here, got {t:?}"),
+        })
+        .collect();
     assert_eq!(
-        todo_column.tasks.iter().map(|t| t.id).collect::<Vec<_>>(),
+        todo_task_ids,
         vec![on_todo_second.id, on_todo_first.id],
         "tasks on a column must be ordered by board position"
     );
@@ -665,6 +723,70 @@ async fn board_and_suggestion_contract(store: &SqlStore, project_id: ProjectId) 
         .expect("suggestion_candidates must include every non-archived task");
     assert_eq!(candidate.project_status, ProjectStatus::Active);
     assert_eq!(candidate.placement, Placement::Below);
+}
+
+// --- A placed tangle interleaves with tasks and counts against WIP
+// (`docs/DOMAIN.md`'s Tangle section) ---
+
+async fn tangle_on_board_contract(store: &SqlStore, project_id: ProjectId) {
+    // A fresh, dedicated WIP-2 column so this test's counts cannot be
+    // confused with `board_and_suggestion_contract`'s own column.
+    let lane = column(50, Some(2), false);
+    store.seed_board_column(&lane).await.unwrap();
+
+    let mut solo_task = task(project_id);
+    solo_task.placement = Placement::OnBoard {
+        column: lane.id,
+        position: 1,
+    };
+    TaskRepository::insert(store, &solo_task).await.unwrap();
+
+    let x = task(project_id);
+    let y = task(project_id);
+    TaskRepository::insert(store, &x).await.unwrap();
+    TaskRepository::insert(store, &y).await.unwrap();
+    let knot: BTreeSet<TaskId> = [x.id, y.id].into_iter().collect();
+    let tangle = anamnesis_core::place_tangle(
+        &Tangle {
+            id: TangleId::new(Uuid::new_v4()),
+            fingerprint: anamnesis_core::Fingerprint::of(&knot),
+            task_ids: knot,
+            placement: Placement::Below,
+            frozen: false,
+            detected_at: ts(9_000),
+            resolved_at: None,
+        },
+        lane.id,
+        0, // placed before the task, at position 0
+    )
+    .unwrap();
+    TangleRepository::insert(store, &tangle).await.unwrap();
+
+    // A placed tangle occupies a column slot and counts against the
+    // column's WIP limit exactly like a task: one task + one tangle fills a
+    // limit of 2.
+    let count = BoardQuery::count_on_column(store, lane.id).await.unwrap();
+    assert_eq!(
+        count, 2,
+        "a placed tangle must count against the column's WIP limit like a task"
+    );
+    let state = BoardQuery::board_state(store, lane.id).await.unwrap();
+    assert_eq!(state.wip_limit, Some(2));
+    assert_eq!(state.current_count, 2);
+
+    // Tasks and tangles interleave correctly by position, not grouped by
+    // kind: the tangle (position 0) comes before the task (position 1).
+    let columns = BoardQuery::columns_with_items(store).await.unwrap();
+    let lane_column = columns.iter().find(|c| c.column.id == lane.id).unwrap();
+    assert_eq!(lane_column.items.len(), 2);
+    match &lane_column.items[0] {
+        anamnesis_app::BoardItem::Tangle(t) => assert_eq!(t.id, tangle.id),
+        other => panic!("expected the tangle at position 0, got {other:?}"),
+    }
+    match &lane_column.items[1] {
+        anamnesis_app::BoardItem::Task(t) => assert_eq!(t.id, solo_task.id),
+        other => panic!("expected the task at position 1, got {other:?}"),
+    }
 }
 
 // --- Comment ---

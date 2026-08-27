@@ -20,15 +20,15 @@ use async_trait::async_trait;
 
 use anamnesis_app::{
     AreaRepository, Attachment, AttachmentId, AttachmentRepository, BlobStore, BoardColumn,
-    BoardQuery, Comment, CommentId, CommentRepository, MembershipQuery, ProjectAggregate,
-    ProjectRepository, RelationshipRepository, RepoError, SearchHit, SearchIndex, SearchQuery,
-    TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
+    BoardItem, BoardQuery, Comment, CommentId, CommentRepository, MembershipQuery,
+    ProjectAggregate, ProjectRepository, RelationshipRepository, RepoError, SearchHit, SearchIndex,
+    SearchQuery, TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
     Area, AreaId, BlockingGraph, BoardState, Column, ColumnId, FieldDefinition, FieldValue, KindId,
-    Project, ProjectId, ProjectStatus, Relationship, RelationshipId, RelationshipKind, Tangle,
-    Task, TaskId, TaskSummary, Timestamp, UserId,
+    Placement, Project, ProjectId, ProjectStatus, Relationship, RelationshipId, RelationshipKind,
+    Tangle, TangleId, Task, TaskId, TaskSummary, Timestamp, UserId,
 };
 
 /// Shared in-memory backing store implementing every real-domain-model port.
@@ -402,6 +402,10 @@ impl TangleRepository for Fakes {
             .collect())
     }
 
+    async fn load(&self, id: TangleId) -> Result<Option<Tangle>, RepoError> {
+        Ok(self.tangles.lock().unwrap().get(&id).cloned())
+    }
+
     async fn insert(&self, tangle: &Tangle) -> Result<(), RepoError> {
         self.tangles
             .lock()
@@ -630,31 +634,43 @@ impl MembershipQuery for Fakes {
 
 #[async_trait]
 impl BoardQuery for Fakes {
-    async fn columns_with_tasks(&self) -> Result<Vec<BoardColumn>, RepoError> {
+    async fn columns_with_items(&self) -> Result<Vec<BoardColumn>, RepoError> {
         let columns = self.columns.lock().unwrap().clone();
         let tasks = self.tasks.lock().unwrap();
+        let tangles = self.tangles.lock().unwrap();
         let mut result: Vec<BoardColumn> = columns
             .into_iter()
             .map(|column| {
-                let mut on_column: Vec<Task> = tasks
+                let mut items: Vec<BoardItem> = tasks
                     .values()
                     .map(|agg| agg.task.clone())
                     .filter(|t| t.archived_at.is_none())
                     .filter(|t| {
                         matches!(
                             t.placement,
-                            anamnesis_core::Placement::OnBoard { column: c, .. } if c == column.id
+                            Placement::OnBoard { column: c, .. } if c == column.id
                         )
                     })
+                    .map(BoardItem::Task)
+                    // Tangles: NOT filtered on `is_active` here, on purpose —
+                    // a just-resolved tangle stays visible in its (now
+                    // `is_done`) column rather than vanish the instant it
+                    // resolves (`docs/DOMAIN.md`'s Tangle section).
+                    .chain(
+                        tangles
+                            .values()
+                            .filter(|t| {
+                                matches!(
+                                    t.placement,
+                                    Placement::OnBoard { column: c, .. } if c == column.id
+                                )
+                            })
+                            .cloned()
+                            .map(BoardItem::Tangle),
+                    )
                     .collect();
-                on_column.sort_by_key(|t| match t.placement {
-                    anamnesis_core::Placement::OnBoard { position, .. } => position,
-                    anamnesis_core::Placement::Below => u32::MAX,
-                });
-                BoardColumn {
-                    column,
-                    tasks: on_column,
-                }
+                items.sort_by_key(BoardItem::position);
+                BoardColumn { column, items }
             })
             .collect();
         result.sort_by_key(|bc| bc.column.position);
@@ -662,7 +678,7 @@ impl BoardQuery for Fakes {
     }
 
     async fn count_on_column(&self, column: ColumnId) -> Result<u32, RepoError> {
-        Ok(self
+        let task_count = self
             .tasks
             .lock()
             .unwrap()
@@ -671,10 +687,29 @@ impl BoardQuery for Fakes {
             .filter(|agg| {
                 matches!(
                     agg.task.placement,
-                    anamnesis_core::Placement::OnBoard { column: c, .. } if c == column
+                    Placement::OnBoard { column: c, .. } if c == column
                 )
             })
-            .count() as u32)
+            .count() as u32;
+        // A placed, still-active tangle counts against the column's WIP
+        // limit exactly like a task (`docs/DOMAIN.md`'s Tangle section); a
+        // resolved one no longer does (see `columns_with_items`'s doc
+        // comment on why it still *renders*, just no longer occupies a
+        // work-in-progress slot).
+        let tangle_count = self
+            .tangles
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|t| t.is_active())
+            .filter(|t| {
+                matches!(
+                    t.placement,
+                    Placement::OnBoard { column: c, .. } if c == column
+                )
+            })
+            .count() as u32;
+        Ok(task_count + tangle_count)
     }
 
     async fn board_state(&self, column: ColumnId) -> Result<BoardState, RepoError> {

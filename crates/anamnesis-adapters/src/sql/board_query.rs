@@ -12,16 +12,37 @@
 
 use std::collections::BTreeSet;
 
-use anamnesis_app::{BoardColumn, BoardQuery, RepoError};
+use anamnesis_app::{BoardColumn, BoardItem, BoardQuery, RepoError};
 use anamnesis_core::{
     BlockingGraph, BoardState, Column, ColumnId, KindId, Tangle, Task, TaskSummary,
 };
 use async_trait::async_trait;
 use sqlx::{PgPool, Row, SqlitePool};
 
-use super::tangle::{list_active_postgres, list_active_sqlite};
+use super::tangle::{
+    list_active_postgres, list_active_sqlite, list_by_column_postgres, list_by_column_sqlite,
+};
 use super::task::{TASK_COLUMNS, assemble_task};
 use super::{Backend, SqlStore, parse_uuid, project_status_from_text, title_from_text};
+
+/// Merges a column's tasks and placed tangles into one position-ordered
+/// list — the "honest shape" `docs/DOMAIN.md` calls for: a heterogeneous
+/// [`BoardItem`] list, not two parallel ones a caller would have to
+/// re-interleave itself. Both inputs are individually well-ordered already
+/// (`ORDER BY board_position`), and — since every placement in this phase
+/// only ever *appends* at the column's current combined count
+/// (`crate::use_cases::task::raise_task` / `tangle::place_tangle`, both via
+/// `BoardQuery::count_on_column`) — positions across tasks and tangles in
+/// the same column never collide, so a plain sort by position is enough.
+fn interleave(tasks: Vec<Task>, tangles: Vec<Tangle>) -> Vec<BoardItem> {
+    let mut items: Vec<BoardItem> = tasks
+        .into_iter()
+        .map(BoardItem::Task)
+        .chain(tangles.into_iter().map(BoardItem::Tangle))
+        .collect();
+    items.sort_by_key(BoardItem::position);
+    items
+}
 
 fn assemble_column(
     id: uuid::Uuid,
@@ -68,7 +89,7 @@ mod sqlite_impl {
         )
     }
 
-    pub(super) async fn columns_with_tasks(
+    pub(super) async fn columns_with_items(
         pool: &SqlitePool,
     ) -> Result<Vec<BoardColumn>, RepoError> {
         let column_rows = sqlx::query(
@@ -99,7 +120,11 @@ mod sqlite_impl {
                 .iter()
                 .map(task_from_row)
                 .collect::<Result<Vec<_>, _>>()?;
-            result.push(BoardColumn { column, tasks });
+            let tangles_here = list_by_column_sqlite(pool, column.id.as_uuid()).await?;
+            result.push(BoardColumn {
+                column,
+                items: interleave(tasks, tangles_here),
+            });
         }
         Ok(result)
     }
@@ -108,14 +133,25 @@ mod sqlite_impl {
         pool: &SqlitePool,
         column: ColumnId,
     ) -> Result<u32, RepoError> {
-        let row: (i64,) = sqlx::query_as(
+        let column_text = column.as_uuid().to_string();
+        let tasks: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM tasks WHERE column_id = ? AND archived_at IS NULL",
         )
-        .bind(column.as_uuid().to_string())
+        .bind(&column_text)
         .fetch_one(pool)
         .await
         .map_err(|e| RepoError::from_source("failed to count tasks on column", e))?;
-        u32::try_from(row.0).map_err(|e| RepoError::from_source("task count out of range", e))
+        // A placed tangle counts against the column's WIP limit exactly
+        // like a task (`docs/DOMAIN.md`'s Tangle section).
+        let tangles: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM tangles WHERE column_id = ? AND resolved_at IS NULL",
+        )
+        .bind(&column_text)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| RepoError::from_source("failed to count tangles on column", e))?;
+        u32::try_from(tasks.0 + tangles.0)
+            .map_err(|e| RepoError::from_source("board item count out of range", e))
     }
 
     pub(super) async fn board_state(
@@ -258,7 +294,7 @@ mod postgres_impl {
         )
     }
 
-    pub(super) async fn columns_with_tasks(pool: &PgPool) -> Result<Vec<BoardColumn>, RepoError> {
+    pub(super) async fn columns_with_items(pool: &PgPool) -> Result<Vec<BoardColumn>, RepoError> {
         let column_rows = sqlx::query(
             "SELECT id, title, position, wip_limit, is_done FROM board_columns ORDER BY position",
         )
@@ -287,20 +323,32 @@ mod postgres_impl {
                 .iter()
                 .map(task_from_row)
                 .collect::<Result<Vec<_>, _>>()?;
-            result.push(BoardColumn { column, tasks });
+            let tangles_here = list_by_column_postgres(pool, column.id.as_uuid()).await?;
+            result.push(BoardColumn {
+                column,
+                items: interleave(tasks, tangles_here),
+            });
         }
         Ok(result)
     }
 
     pub(super) async fn count_on_column(pool: &PgPool, column: ColumnId) -> Result<u32, RepoError> {
-        let row: (i64,) = sqlx::query_as(
+        let tasks: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM tasks WHERE column_id = $1 AND archived_at IS NULL",
         )
         .bind(column.as_uuid())
         .fetch_one(pool)
         .await
         .map_err(|e| RepoError::from_source("failed to count tasks on column", e))?;
-        u32::try_from(row.0).map_err(|e| RepoError::from_source("task count out of range", e))
+        let tangles: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM tangles WHERE column_id = $1 AND resolved_at IS NULL",
+        )
+        .bind(column.as_uuid())
+        .fetch_one(pool)
+        .await
+        .map_err(|e| RepoError::from_source("failed to count tangles on column", e))?;
+        u32::try_from(tasks.0 + tangles.0)
+            .map_err(|e| RepoError::from_source("board item count out of range", e))
     }
 
     pub(super) async fn board_state(
@@ -417,10 +465,10 @@ mod postgres_impl {
 
 #[async_trait]
 impl BoardQuery for SqlStore {
-    async fn columns_with_tasks(&self) -> Result<Vec<BoardColumn>, RepoError> {
+    async fn columns_with_items(&self) -> Result<Vec<BoardColumn>, RepoError> {
         match &self.backend {
-            Backend::Sqlite(pool) => sqlite_impl::columns_with_tasks(pool).await,
-            Backend::Postgres(pool) => postgres_impl::columns_with_tasks(pool).await,
+            Backend::Sqlite(pool) => sqlite_impl::columns_with_items(pool).await,
+            Backend::Postgres(pool) => postgres_impl::columns_with_items(pool).await,
         }
     }
 

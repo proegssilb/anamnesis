@@ -100,3 +100,12 @@ pub struct AcceptSuggestionForm {
     pub csrf_token: String,
     pub task_id: uuid::Uuid,
 }
+
+/// Accepts one suggested tangle from the board's suggestion prompt, placing
+/// it on the entry column (`docs/DOMAIN.md`'s Tangle section: "accepting the
+/// offer places it").
+#[derive(Debug, Deserialize)]
+pub struct AcceptTangleForm {
+    pub csrf_token: String,
+    pub tangle_id: uuid::Uuid,
+}

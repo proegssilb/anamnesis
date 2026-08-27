@@ -14,7 +14,7 @@ pub use common::{Clock, IdGen};
 pub use identity::{IdentityProvider, LoginCallback, LoginRedirect};
 pub use infra::{BlobStore, SearchIndex, TimezoneResolver};
 pub use membership::MembershipQuery;
-pub use query::{BoardColumn, BoardQuery, SearchHit, SearchQuery};
+pub use query::{BoardColumn, BoardItem, BoardQuery, SearchHit, SearchQuery};
 pub use repository::{
     AreaRepository, AttachmentRepository, CommentRepository, ProjectAggregate, ProjectRepository,
     RelationshipRepository, TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,

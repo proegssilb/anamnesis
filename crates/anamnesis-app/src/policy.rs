@@ -90,6 +90,10 @@ pub enum Action {
     DeleteAttachment,
     RunArchiveAll,
     RequestSuggestion,
+    /// Placing a tangle on the board, or dropping it back below the horizon
+    /// — the same tier as `MoveTaskPlacement`: ordinary work, any assigned
+    /// role (`docs/DOMAIN.md` Tangle section: "untangling is work").
+    PlaceTangle,
 
     // --- System: System Admin only. ---
     ManageSystemSettings,
@@ -134,7 +138,7 @@ pub fn is_allowed(role: Option<Role>, action: Action) -> bool {
 
         ViewTask | CreateTask | EditTask | ArchiveTask | MoveTaskPlacement | SetTaskParent
         | SetTaskFieldValue | CreateRelationship | DeleteRelationship | CreateComment
-        | CreateAttachment | DeleteAttachment | RunArchiveAll | RequestSuggestion => {
+        | CreateAttachment | DeleteAttachment | RunArchiveAll | RequestSuggestion | PlaceTangle => {
             can_view_project(role)
         }
     }
@@ -240,6 +244,7 @@ mod tests {
     #[case(Action::DeleteAttachment)]
     #[case(Action::RunArchiveAll)]
     #[case(Action::RequestSuggestion)]
+    #[case(Action::PlaceTangle)]
     fn ordinary_task_work_is_open_to_every_assigned_role(#[case] action: Action) {
         assert!(is_allowed(admin(), action));
         assert!(is_allowed(project_admin(), action));

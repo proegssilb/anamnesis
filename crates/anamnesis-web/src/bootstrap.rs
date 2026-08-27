@@ -17,7 +17,7 @@
 //! System Admin exists"; on every later boot the named subject already holds
 //! it, so the grant call — itself idempotent, `SqlStore::grant_system_admin`
 //! upserts — is skipped entirely and nothing is logged. Column seeding is
-//! symmetric: seed only when `BoardQuery::columns_with_tasks` reports zero
+//! symmetric: seed only when `BoardQuery::columns_with_items` reports zero
 //! columns.
 //!
 //! **Column defaults.** `docs/DOMAIN.md` §3 names the three default columns
@@ -52,7 +52,7 @@ pub async fn run(
         );
     }
 
-    let existing = store.columns_with_tasks().await?;
+    let existing: Vec<_> = store.columns_with_items().await?;
     if existing.is_empty() {
         let columns = [
             ("To-Do", Some(DEFAULT_TODO_WIP_LIMIT), false),
@@ -99,7 +99,7 @@ mod tests {
         run(&store, &ids, "alice").await.unwrap();
 
         assert!(store.is_system_admin(&UserId::new("alice")).await.unwrap());
-        let columns = store.columns_with_tasks().await.unwrap();
+        let columns = store.columns_with_items().await.unwrap();
         let titles: Vec<&str> = columns.iter().map(|c| c.column.title.as_str()).collect();
         assert_eq!(titles, vec!["To-Do", "Doing", "Done"]);
         assert_eq!(
@@ -121,7 +121,7 @@ mod tests {
         run(&store, &ids, "alice").await.unwrap();
         run(&store, &ids, "alice").await.unwrap();
 
-        let columns = store.columns_with_tasks().await.unwrap();
+        let columns = store.columns_with_items().await.unwrap();
         assert_eq!(
             columns.len(),
             3,
@@ -147,7 +147,7 @@ mod tests {
 
         assert!(store.is_system_admin(&UserId::new("alice")).await.unwrap());
         assert!(store.is_system_admin(&UserId::new("bob")).await.unwrap());
-        let columns = store.columns_with_tasks().await.unwrap();
+        let columns = store.columns_with_items().await.unwrap();
         assert_eq!(columns.len(), 3);
     }
 }

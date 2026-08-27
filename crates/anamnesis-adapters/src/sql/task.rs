@@ -160,7 +160,9 @@ fn decode_field_data(
 
 // --- Placement <-> (placement_kind, column_id, board_position). ---
 
-fn encode_placement(placement: &Placement) -> (&'static str, Option<uuid::Uuid>, Option<i64>) {
+pub(super) fn encode_placement(
+    placement: &Placement,
+) -> (&'static str, Option<uuid::Uuid>, Option<i64>) {
     match placement {
         Placement::Below => ("below", None, None),
         Placement::OnBoard { column, position } => (

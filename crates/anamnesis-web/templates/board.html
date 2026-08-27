@@ -50,6 +50,12 @@
                 <p class="hint">
                   {% for id in item.task_ids %}<a href="/tasks/{{ id }}">task {{ loop.index }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
                 </p>
+                <form method="post" action="/board/suggestion/accept-tangle">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input type="hidden" name="tangle_id" value="{{ item.tangle_id }}">
+                  <button type="submit">Untangle it</button>
+                </form>
+                <a class="decline-link" href="/board">Not now</a>
               {% endif %}
             </li>
           {% endfor %}
@@ -66,16 +72,36 @@
           {% if c.wip_limit %}<span class="wip-limit">{{ c.current_count }} / {{ c.wip_limit }}</span>{% endif %}
         </div>
         <div class="card-list">
-          {% for t in c.tasks %}
-            <div class="card">
-              <a class="card-title" href="/tasks/{{ t.id }}">{{ t.title }}</a>
-              {% if t.card_fields %}
-                <p class="card-fields">
-                  {% for f in t.card_fields %}<span class="badge">{{ f.name }}: {{ f.value }}</span>{% endfor %}
+          {% for item in c.items %}
+            {% if item.kind == "task" %}
+              <div class="card">
+                <a class="card-title" href="/tasks/{{ item.id }}">{{ item.title }}</a>
+                {% if item.card_fields %}
+                  <p class="card-fields">
+                    {% for f in item.card_fields %}<span class="badge">{{ f.name }}: {{ f.value }}</span>{% endfor %}
+                  </p>
+                {% endif %}
+                {% if item.bounce_count > 0 %}<span class="badge">bounced {{ item.bounce_count }}x</span>{% endif %}
+              </div>
+            {% elif item.kind == "tangle" %}
+              {# A tangle placed on the board -- occupies a column slot and
+                 counts against the WIP limit exactly like a task
+                 (`docs/DOMAIN.md`'s Tangle section). #}
+              <div class="card tangle-card{% if item.resolved %} tangle-resolved{% endif %}">
+                <p class="card-title">
+                  {% if item.resolved %}Untangled{% else %}Tangle{% endif %}: {{ item.size }} tasks
                 </p>
-              {% endif %}
-              {% if t.bounce_count > 0 %}<span class="badge">bounced {{ t.bounce_count }}x</span>{% endif %}
-            </div>
+                <p class="card-fields">
+                  {% for id in item.task_ids %}<a href="/tasks/{{ id }}">task {{ loop.index }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+                </p>
+                {% if not item.resolved %}
+                  <form method="post" action="/tangles/{{ item.id }}/drop">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit">Drop back</button>
+                  </form>
+                {% endif %}
+              </div>
+            {% endif %}
           {% else %}
             <p class="hint">Nothing here.</p>
           {% endfor %}

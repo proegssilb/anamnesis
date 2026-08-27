@@ -198,7 +198,7 @@ async fn drop_task_impl(
     let aggregate = state.tasks.load(task_id).await?.ok_or(AppError::NotFound)?;
     let left_a_done_column = match aggregate.task.placement {
         Placement::OnBoard { column, .. } => {
-            let columns = state.board.columns_with_tasks().await?;
+            let columns = state.board.columns_with_items().await?;
             column_is_done(&columns, column).unwrap_or(false)
         }
         Placement::Below => false,
@@ -453,7 +453,7 @@ async fn render_task_page(
         relationships.push(context! { label => label, other_id => other_id.to_string(), other_title => other_title });
     }
 
-    let columns = state.board.columns_with_tasks().await?;
+    let columns = state.board.columns_with_items().await?;
     let column_options: Vec<_> = columns
         .iter()
         .map(|c| context! { id => c.column.id.to_string(), title => c.column.title.as_str() })

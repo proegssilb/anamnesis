@@ -26,7 +26,7 @@ pub use project::{
 };
 pub use relationship::{create_relationship, delete_relationship, resolve_kind};
 pub use suggestion::{derive_seed, request_suggestion};
-pub use tangle::run_tangle_detection;
+pub use tangle::{drop_tangle, place_tangle, resolve_frozen_tangles, run_tangle_detection};
 pub use task::{
     archive_task, create_task, drop_task, edit_task, raise_task, set_checklist_position,
     set_task_field_value, set_task_parent, unarchive_task, view_task,

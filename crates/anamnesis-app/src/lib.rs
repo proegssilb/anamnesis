@@ -26,7 +26,7 @@ pub use entities::{
 };
 pub use error::{AppError, IdentityError, RepoError};
 pub use ports::{
-    AreaRepository, AttachmentRepository, BlobStore, BoardColumn, BoardQuery, Clock,
+    AreaRepository, AttachmentRepository, BlobStore, BoardColumn, BoardItem, BoardQuery, Clock,
     CommentRepository, IdGen, IdentityProvider, LoginCallback, LoginRedirect, MembershipQuery,
     ProjectAggregate, ProjectRepository, RelationshipRepository, SearchHit, SearchIndex,
     SearchQuery, TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
@@ -36,10 +36,10 @@ pub use use_cases::{
     add_comment, add_field_definition, add_file_attachment, add_link_attachment,
     add_relationship_kind, archive_done_tasks, archive_project, archive_task, create_area,
     create_project, create_relationship, create_task, delete_attachment, delete_comment,
-    delete_relationship, derive_seed, drop_task, edit_area, edit_comment, edit_project,
-    edit_project_fields, edit_task, list_areas, list_attachments, list_comments,
-    list_projects_in_area, raise_task, rename_field_definition, reposition_area,
-    request_suggestion, resolve_kind, run_tangle_detection, set_checklist_position,
-    set_task_field_value, set_task_parent, transition_project_status, unarchive_project,
-    unarchive_task, view_area, view_project, view_task,
+    delete_relationship, derive_seed, drop_tangle, drop_task, edit_area, edit_comment,
+    edit_project, edit_project_fields, edit_task, list_areas, list_attachments, list_comments,
+    list_projects_in_area, place_tangle, raise_task, rename_field_definition, reposition_area,
+    request_suggestion, resolve_frozen_tangles, resolve_kind, run_tangle_detection,
+    set_checklist_position, set_task_field_value, set_task_parent, transition_project_status,
+    unarchive_project, unarchive_task, view_area, view_project, view_task,
 };
