@@ -4,9 +4,6 @@
 //! grouping here is organisational only.
 
 mod access_control;
-mod authorization;
-mod board_management;
-mod card_movement;
 mod placement;
 mod suggestions;
 mod tangles;
