@@ -173,6 +173,97 @@ async fn raising_a_task_onto_the_board_and_dropping_it_back() {
 }
 
 #[tokio::test]
+async fn double_submitting_a_drop_only_bounces_once() {
+    // Regression: a double-submitted form (or a browser re-POST on
+    // refresh) sends the same `/tasks/{id}/drop` twice. The first POST is
+    // a genuine `OnBoard -> Below` transition and must bounce; the second
+    // POST hits a task that is already `Below` and must be a no-op.
+    let app = TestApp::new(true).await;
+    let cookie: Option<&str> = None;
+
+    let area_path = location_of(
+        &app.post_form(
+            "/areas",
+            &[
+                ("csrf_token", support::DEV_CSRF_TOKEN),
+                ("title", "Home"),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string();
+    let project_path = location_of(
+        &app.post_form(
+            &format!("{area_path}/projects"),
+            &[
+                ("csrf_token", support::DEV_CSRF_TOKEN),
+                ("title", "Kitchen remodel"),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string();
+    let task_path = location_of(
+        &app.post_form(
+            &format!("{project_path}/tasks"),
+            &[
+                ("csrf_token", support::DEV_CSRF_TOKEN),
+                ("title", "Regrout the shower"),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string();
+
+    let todo_column = app.store.columns_with_tasks().await.unwrap()[0].column.id;
+
+    app.post_form(
+        &format!("{task_path}/raise"),
+        &[
+            ("csrf_token", support::DEV_CSRF_TOKEN),
+            ("column_id", &todo_column.to_string()),
+        ],
+        cookie,
+    )
+    .await;
+
+    let first_drop = app
+        .post_form(
+            &format!("{task_path}/drop"),
+            &[("csrf_token", support::DEV_CSRF_TOKEN)],
+            cookie,
+        )
+        .await;
+    assert_eq!(first_drop.status(), StatusCode::SEE_OTHER);
+
+    let second_drop = app
+        .post_form(
+            &format!("{task_path}/drop"),
+            &[("csrf_token", support::DEV_CSRF_TOKEN)],
+            cookie,
+        )
+        .await;
+    assert_eq!(second_drop.status(), StatusCode::SEE_OTHER);
+
+    let after_both_drops = body_text(app.get(&task_path, cookie).await).await;
+    assert!(after_both_drops.contains("below the horizon"));
+    assert!(
+        after_both_drops.contains("bounced 1x"),
+        "a double-submitted drop must not double the bounce count"
+    );
+    assert!(
+        !after_both_drops.contains("bounced 2x"),
+        "a double-submitted drop must not double the bounce count"
+    );
+}
+
+#[tokio::test]
 async fn moving_a_task_between_columns_does_not_bounce_it() {
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None;

@@ -520,6 +520,12 @@ pub fn mark_offered(task: &Task, now: Timestamp) -> Task {
 /// `docs/DOMAIN.md` §5: "moving `OnBoard -> Below` without reaching an
 /// `is_done` column increments `bounce_count` and stamps `last_bounced_at`."
 ///
+/// The rule is specifically an `OnBoard -> Below` transition: a task that is
+/// already `Below` (never raised, or already dropped — e.g. a
+/// double-submitted form, or any idempotent retry) is a **no-op**. It is
+/// returned unchanged — no bounce, no `last_bounced_at`, no `last_touched_at`
+/// stamp, nothing for the caller to bother writing back.
+///
 /// `left_a_done_column` is supplied by the caller (this module loads no
 /// `Column`), and should be `false` for a task pulled back down mid-flight
 /// and `true` for one leaving a `Done`-like column — though in the latter
@@ -530,6 +536,9 @@ pub fn bounce_to_below(
     left_a_done_column: bool,
     now: Timestamp,
 ) -> Result<Task, crate::error::DomainError> {
+    if task.placement == Placement::Below {
+        return Ok(task.clone());
+    }
     let moved = crate::task::move_placement(task, Placement::Below, now)?;
     if left_a_done_column {
         Ok(moved)
@@ -1220,5 +1229,30 @@ mod tests {
             current = bounce_to_below(&on_board, false, ts(20 + i)).unwrap();
         }
         assert_eq!(current.bounce_count, 3);
+    }
+
+    #[test]
+    fn bounce_to_below_is_a_no_op_for_a_task_already_below() {
+        // A task that was never raised (or was already dropped) is already
+        // `Below` — dropping it again (a double-submitted form, a retried
+        // request) must not fabricate a bounce. `docs/DOMAIN.md` §5's rule
+        // is specifically an `OnBoard -> Below` transition.
+        let task = crate::task::create_task(
+            tid(1),
+            ProjectId::new(Uuid::from_u128(1)),
+            "Task",
+            "",
+            ts(0),
+        )
+        .unwrap();
+        assert_eq!(task.placement, Placement::Below);
+
+        let result = bounce_to_below(&task, false, ts(99)).unwrap();
+        assert_eq!(result.bounce_count, 0);
+        assert_eq!(result.last_bounced_at, None);
+        assert_eq!(result.placement, Placement::Below);
+        // No pointless write: the task comes back byte-for-byte identical,
+        // `last_touched_at` included.
+        assert_eq!(result, task);
     }
 }
