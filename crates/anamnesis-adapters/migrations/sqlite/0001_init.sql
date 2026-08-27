@@ -221,8 +221,18 @@ CREATE TABLE settings (
 -- `SearchIndex` and read by `SearchQuery`. `entity_kind`/`entity_id` are
 -- stored as plain columns (not `UNINDEXED` is fine here too, but they are
 -- never the match target) alongside the indexed `title`.
+--
+-- `archived` (0/1, UNINDEXED): docs/DOMAIN.md §2 says an archived entity is
+-- "vanished from every view unless explicitly searched" -- so archiving must
+-- not delete the row outright (that would make the "explicitly searched"
+-- exception impossible to honour), only flag it. `SearchIndex::remove_*`
+-- sets this to 1 rather than deleting; `SearchIndex::index_*` (the upsert
+-- create/edit/unarchive path) always resets it to 0. Plain `SearchQuery::search`
+-- filters `archived = 0`; `SearchQuery::search_archived` is the explicit-search
+-- path and filters `archived = 1`.
 CREATE VIRTUAL TABLE search_documents USING fts5(
     entity_kind UNINDEXED,
     entity_id UNINDEXED,
+    archived UNINDEXED,
     title
 );

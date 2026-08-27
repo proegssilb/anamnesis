@@ -201,10 +201,20 @@ CREATE TABLE settings (
 
 -- Global search (docs/DOMAIN.md §7): a generated `tsvector` column plus a
 -- GIN index, kept current by `SearchIndex` and read by `SearchQuery`.
+--
+-- `archived`: docs/DOMAIN.md §2 says an archived entity is "vanished from
+-- every view unless explicitly searched" -- so archiving must not delete the
+-- row outright (that would make the "explicitly searched" exception
+-- impossible to honour), only flag it. `SearchIndex::remove_*` sets this to
+-- true rather than deleting; `SearchIndex::index_*` (the upsert
+-- create/edit/unarchive path) always resets it to false. Plain
+-- `SearchQuery::search` filters `archived = false`; `SearchQuery::search_archived`
+-- is the explicit-search path and filters `archived = true`.
 CREATE TABLE search_documents (
     entity_kind TEXT NOT NULL,
     entity_id UUID NOT NULL,
     title TEXT NOT NULL,
+    archived BOOLEAN NOT NULL DEFAULT FALSE,
     tsv TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', title)) STORED,
     PRIMARY KEY (entity_kind, entity_id)
 );

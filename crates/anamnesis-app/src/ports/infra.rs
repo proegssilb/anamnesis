@@ -28,6 +28,24 @@ pub trait BlobStore: Send + Sync {
 /// and tasks change. Split from `SearchQuery` (the read side) because the
 /// two backends' write paths diverge as much as their read paths do
 /// (`docs/DOMAIN.md` §7: "SQLite FTS5 vs Postgres `tsvector`/GIN").
+///
+/// **`remove_*` archives an entry, it does not delete it.** Earlier drafts of
+/// this port had `remove_*` delete the row outright when a task/project was
+/// archived. That broke `docs/DOMAIN.md` §2's own contract for archived
+/// entities — "vanished from every view unless explicitly searched" promises
+/// an *explicit-search* path back to them, and a deleted row cannot be found
+/// by any query. So `remove_*` now flags the entry as archived instead
+/// (`crate::ports::SearchQuery::search` filters archived entries out;
+/// `crate::ports::SearchQuery::search_archived` is the explicit-search path
+/// that finds only them). There is still no real *deletion* of areas,
+/// projects, or tasks anywhere in this domain model — `remove_*` is only ever
+/// called from an archive use case (`crate::use_cases::task::archive_task`,
+/// `crate::use_cases::project::archive_project`,
+/// `crate::use_cases::archive::archive_done_tasks`), never from a hard
+/// delete — so this is a rename of what the same call sites always meant, not
+/// a new capability. `index_*` (the upsert path — create, edit, or
+/// *unarchive*) always resets the flag to "not archived": an unarchived
+/// entity re-indexes through the exact same call as a fresh create/edit.
 #[async_trait]
 pub trait SearchIndex: Send + Sync {
     async fn index_area(&self, id: anamnesis_core::AreaId, title: &str) -> Result<(), RepoError>;
@@ -37,8 +55,12 @@ pub trait SearchIndex: Send + Sync {
         title: &str,
     ) -> Result<(), RepoError>;
     async fn index_task(&self, id: anamnesis_core::TaskId, title: &str) -> Result<(), RepoError>;
+    /// Flags the area's search entry as archived — see the trait doc comment.
     async fn remove_area(&self, id: anamnesis_core::AreaId) -> Result<(), RepoError>;
+    /// Flags the project's search entry as archived — see the trait doc
+    /// comment.
     async fn remove_project(&self, id: anamnesis_core::ProjectId) -> Result<(), RepoError>;
+    /// Flags the task's search entry as archived — see the trait doc comment.
     async fn remove_task(&self, id: anamnesis_core::TaskId) -> Result<(), RepoError>;
 }
 

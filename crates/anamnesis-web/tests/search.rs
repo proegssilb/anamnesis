@@ -123,3 +123,152 @@ async fn an_empty_query_returns_no_results_and_no_error() {
     let response = app.get("/search", cookie).await;
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+/// The full archive round trip through HTTP (`docs/DOMAIN.md` §2): archive a
+/// task, confirm it leaves the normal views *and* plain search, confirm it
+/// is findable via the "include archived" affordance, then unarchive it and
+/// confirm it is back to normal — the search-index half of this phase's
+/// audit finding (`SearchIndex::remove_task` archives the index entry rather
+/// than deleting it, specifically so this round trip is possible at all).
+#[tokio::test]
+async fn archiving_a_task_removes_it_from_plain_search_but_leaves_it_findable_archived() {
+    let app = TestApp::new(true).await;
+    let cookie: Option<&str> = None;
+
+    let area_path = location_of(
+        &app.post_form(
+            "/areas",
+            &[
+                ("csrf_token", support::DEV_CSRF_TOKEN),
+                ("title", "Home hunting"),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string();
+    let project_path = location_of(
+        &app.post_form(
+            &format!("{area_path}/projects"),
+            &[
+                ("csrf_token", support::DEV_CSRF_TOKEN),
+                ("title", "House shopping"),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string();
+    let task_path = location_of(
+        &app.post_form(
+            &format!("{project_path}/tasks"),
+            &[
+                ("csrf_token", support::DEV_CSRF_TOKEN),
+                ("title", "Retire the fixer-upper"),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string();
+
+    // Findable before archiving.
+    let hits = body_text(app.get("/search?q=fixer-upper", cookie).await).await;
+    assert!(hits.contains("Retire the fixer-upper"));
+
+    // Archive it.
+    let archive = app
+        .post_form(
+            &format!("{task_path}/archive"),
+            &[("csrf_token", support::DEV_CSRF_TOKEN)],
+            cookie,
+        )
+        .await;
+    assert_eq!(archive.status(), StatusCode::SEE_OTHER);
+
+    // Vanished from plain search.
+    let hits = body_text(app.get("/search?q=fixer-upper", cookie).await).await;
+    assert!(
+        !hits.contains("Retire the fixer-upper"),
+        "an archived task must not appear in plain search: {hits}"
+    );
+
+    // Findable via the explicit "include archived" affordance.
+    let archived_hits = body_text(app.get("/search?q=fixer-upper&archived=1", cookie).await).await;
+    assert!(
+        archived_hits.contains("Retire the fixer-upper"),
+        "an archived task must be findable via the include-archived search: {archived_hits}"
+    );
+    assert!(archived_hits.contains("archived"));
+
+    // Without the affordance, still not found even though it exists.
+    let hits = body_text(app.get("/search?q=fixer-upper", cookie).await).await;
+    assert!(!hits.contains("Retire the fixer-upper"));
+
+    // Unarchive it: back to normal.
+    let unarchive = app
+        .post_form(
+            &format!("{task_path}/unarchive"),
+            &[("csrf_token", support::DEV_CSRF_TOKEN)],
+            cookie,
+        )
+        .await;
+    assert_eq!(unarchive.status(), StatusCode::SEE_OTHER);
+
+    let hits = body_text(app.get("/search?q=fixer-upper", cookie).await).await;
+    assert!(
+        hits.contains("Retire the fixer-upper"),
+        "unarchiving must restore it to plain search: {hits}"
+    );
+}
+
+/// Same round trip for a project, plus confirming an archived project no
+/// longer appears in plain search while its child task (still active) does.
+#[tokio::test]
+async fn archiving_a_project_is_findable_only_via_the_include_archived_search() {
+    let app = TestApp::new(true).await;
+    let cookie: Option<&str> = None;
+
+    let area_path = location_of(
+        &app.post_form(
+            "/areas",
+            &[
+                ("csrf_token", support::DEV_CSRF_TOKEN),
+                ("title", "Home hunting"),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string();
+    let project_path = location_of(
+        &app.post_form(
+            &format!("{area_path}/projects"),
+            &[
+                ("csrf_token", support::DEV_CSRF_TOKEN),
+                ("title", "Sunsetting renovation"),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string();
+
+    app.post_form(
+        &format!("{project_path}/archive"),
+        &[("csrf_token", support::DEV_CSRF_TOKEN)],
+        cookie,
+    )
+    .await;
+
+    let hits = body_text(app.get("/search?q=Sunsetting", cookie).await).await;
+    assert!(!hits.contains("Sunsetting renovation"));
+
+    let archived_hits = body_text(app.get("/search?q=Sunsetting&archived=1", cookie).await).await;
+    assert!(archived_hits.contains("Sunsetting renovation"));
+}

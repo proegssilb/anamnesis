@@ -1047,10 +1047,55 @@ async fn search_contract(store: &SqlStore) {
         .unwrap();
     SearchIndex::remove_area(store, area_id).await.unwrap();
     let hits = SearchQuery::search(store, "zylophone").await.unwrap();
-    assert!(hits.is_empty(), "removed entities must no longer be found");
+    assert!(
+        hits.is_empty(),
+        "archived entities must not appear in plain search"
+    );
 
-    // A blank query returns no hits rather than every row.
+    // But `remove_*` archives rather than deletes (`SearchIndex`'s trait doc
+    // comment: docs/DOMAIN.md §2's "vanished... unless explicitly searched"
+    // requires an explicit path back to them) -- `search_archived` is that
+    // path, and finds exactly the three entries just archived.
+    let archived_hits = SearchQuery::search_archived(store, "zylophone")
+        .await
+        .unwrap();
+    assert_eq!(
+        archived_hits.len(),
+        3,
+        "search_archived must find all three archived entities: {archived_hits:?}"
+    );
+    assert!(archived_hits.contains(&SearchHit::Area {
+        id: area_id,
+        title: "Zylophone practice area".to_string()
+    }));
+    assert!(archived_hits.contains(&SearchHit::Project {
+        id: project_id,
+        title: "Zylophone repair project".to_string()
+    }));
+    assert!(archived_hits.contains(&SearchHit::Task {
+        id: task_id,
+        title: "Buy zylophone stands".to_string()
+    }));
+
+    // Re-indexing (the unarchive path) clears the archived flag: the entity
+    // moves back from `search_archived` to plain `search`.
+    SearchIndex::index_task(store, task_id, "Buy zylophone stands")
+        .await
+        .unwrap();
+    let hits = SearchQuery::search(store, "stands").await.unwrap();
+    assert_eq!(hits.len(), 1, "unarchiving must restore it to plain search");
+    let archived_hits = SearchQuery::search_archived(store, "stands").await.unwrap();
+    assert!(
+        archived_hits.is_empty(),
+        "an unarchived entity must no longer appear in search_archived"
+    );
+
+    // A blank query returns no hits rather than every row, for both paths.
     assert_eq!(SearchQuery::search(store, "").await.unwrap(), Vec::new());
+    assert_eq!(
+        SearchQuery::search_archived(store, "").await.unwrap(),
+        Vec::new()
+    );
 }
 
 #[tokio::test]

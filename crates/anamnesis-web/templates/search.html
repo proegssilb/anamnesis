@@ -3,11 +3,16 @@
 {% block content %}
   <h1>Search</h1>
   <form class="search-form" method="get" action="/search"
-        hx-get="/search" hx-trigger="submit, keyup changed delay:400ms from:#q"
-        hx-target="#search-results" hx-swap="outerHTML" hx-push-url="true">
+        hx-get="/search" hx-trigger="submit, keyup changed delay:400ms from:#q, change from:#archived"
+        hx-target="#search-results" hx-swap="outerHTML" hx-push-url="true"
+        hx-include="#archived">
     <label class="visually-hidden" for="q">Search areas, projects, and tasks</label>
     <input id="q" name="q" type="search" value="{{ query }}"
            placeholder="Search areas, projects, tasks…" autocomplete="off">
+    <label class="checkbox-label" for="archived">
+      <input id="archived" type="checkbox" name="archived" value="1"{% if include_archived %} checked{% endif %}>
+      Include archived
+    </label>
     <button type="submit">Search</button>
   </form>
   {% include "_search_results.html" %}
