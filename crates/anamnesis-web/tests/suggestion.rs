@@ -63,7 +63,7 @@ async fn a_full_board_renders_no_suggestion_prompt_at_all() {
     )
     .await;
 
-    let todo_column = app.store.columns_with_tasks().await.unwrap()[0].column.id;
+    let todo_column = app.store.columns_with_items().await.unwrap()[0].column.id;
 
     // Fill the To-Do column to its WIP limit by raising that many tasks.
     for n in 0..DEFAULT_TODO_WIP_LIMIT {

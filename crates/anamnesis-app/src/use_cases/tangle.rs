@@ -7,10 +7,12 @@
 //! Real deployments would run this from a scheduled job, the same way a
 //! sweep ticker runs `crate::use_cases::archive_done_tasks`.
 
-use anamnesis_core::{self as core, Reconciliation, TangleId};
+use anamnesis_core::policy::Role;
+use anamnesis_core::{self as core, ColumnId, Reconciliation, Tangle, TangleId};
 
 use crate::error::AppError;
-use crate::ports::{Clock, IdGen, RelationshipRepository, TangleRepository};
+use crate::policy::{Action, is_allowed};
+use crate::ports::{BoardQuery, Clock, IdGen, RelationshipRepository, TangleRepository};
 
 /// Detects every tangle in the current blocking graph and reconciles it
 /// against what is already stored: newly detected tangles are inserted,
@@ -42,4 +44,95 @@ pub async fn run_tangle_detection(
     }
 
     Ok(reconciliation)
+}
+
+/// Places a tangle on the board at `column`, freezing its membership
+/// (`anamnesis_core::place_tangle`) — "untangling is work, so a tangle can
+/// be placed on the board... occupying a column slot and counting against
+/// that column's WIP limit exactly like a task."
+///
+/// The WIP-limit check mirrors `crate::use_cases::task::raise_task`:
+/// `column`'s *real* current occupancy (tasks and tangles both, via
+/// `BoardQuery::board_state`) is what `anamnesis_core` is handed to check
+/// against — core itself only ever checks a count it is given.
+pub async fn place_tangle(
+    tangle_repo: &dyn TangleRepository,
+    board: &dyn BoardQuery,
+    role: Option<Role>,
+    tangle_id: TangleId,
+    column: ColumnId,
+) -> Result<Tangle, AppError> {
+    if !is_allowed(role, Action::PlaceTangle) {
+        return Err(AppError::Forbidden);
+    }
+    let tangle = tangle_repo
+        .load(tangle_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let state = board.board_state(column).await?;
+    if let Some(limit) = state.wip_limit
+        && state.current_count >= limit
+    {
+        return Err(AppError::WipLimitExceeded);
+    }
+    let placed = core::place_tangle(&tangle, column, state.current_count)?;
+    tangle_repo.update(&placed).await?;
+    Ok(placed)
+}
+
+/// Drops a tangle back below the horizon, unfreezing it
+/// (`anamnesis_core::drop_tangle`) — detection is free to refresh or
+/// dissolve it again, same as any other below-the-horizon tangle.
+pub async fn drop_tangle(
+    tangle_repo: &dyn TangleRepository,
+    role: Option<Role>,
+    tangle_id: TangleId,
+) -> Result<Tangle, AppError> {
+    if !is_allowed(role, Action::PlaceTangle) {
+        return Err(AppError::Forbidden);
+    }
+    let tangle = tangle_repo
+        .load(tangle_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let dropped = core::drop_tangle(&tangle)?;
+    tangle_repo.update(&dropped).await?;
+    Ok(dropped)
+}
+
+/// Resolves every frozen, on-board tangle whose frozen task set no longer
+/// contains a cycle in the live blocking graph (`anamnesis_core::
+/// resolve_frozen_tangle`) — checked directly against the graph, never
+/// against a fresh [`run_tangle_detection`] pass, which never touches a
+/// frozen tangle at all.
+///
+/// `done_column` names the board's `is_done` column, if one is configured
+/// (`docs/DOMAIN.md`: a resolving tangle "moves to the `is_done` column so
+/// the user sees the knot closed"); `None` still resolves every qualifying
+/// tangle, just without moving it anywhere.
+pub async fn resolve_frozen_tangles(
+    relationship_repo: &dyn RelationshipRepository,
+    tangle_repo: &dyn TangleRepository,
+    board: &dyn BoardQuery,
+    clock: &dyn Clock,
+    done_column: Option<ColumnId>,
+) -> Result<Vec<Tangle>, AppError> {
+    let relationships = relationship_repo.list_blocking().await?;
+    let kinds = [core::builtin_blocks()];
+    let now = clock.now();
+    let active = tangle_repo.list_active().await?;
+
+    let mut resolved = Vec::new();
+    for tangle in active.iter().filter(|t| t.frozen) {
+        let done = match done_column {
+            Some(column) => Some((column, board.count_on_column(column).await?)),
+            None => None,
+        };
+        if let Some(closed) = core::resolve_frozen_tangle(tangle, &relationships, &kinds, now, done)
+        {
+            tangle_repo.update(&closed).await?;
+            resolved.push(closed);
+        }
+    }
+    Ok(resolved)
 }

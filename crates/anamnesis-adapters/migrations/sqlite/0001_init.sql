@@ -132,11 +132,22 @@ CREATE INDEX relationships_kind_id_idx ON relationships (kind_id);
 -- accessor to its inner u64 (only `Fingerprint::of`, a pure function over a
 -- task-id set), so it is recomputed from `tangle_tasks` on every load
 -- instead of persisted redundantly.
+--
+-- `placement_kind`/`column_id`/`board_position` mirror `tasks`' own
+-- placement encoding exactly (a tangle occupies a column slot just like a
+-- task, docs/DOMAIN.md's Tangle section); `frozen` is set the moment a
+-- tangle is placed and cleared when it drops back below the horizon.
 CREATE TABLE tangles (
     id TEXT PRIMARY KEY,
     detected_at INTEGER NOT NULL,
-    resolved_at INTEGER
+    resolved_at INTEGER,
+    placement_kind TEXT NOT NULL DEFAULT 'below',
+    column_id TEXT REFERENCES board_columns (id) ON DELETE SET NULL,
+    board_position INTEGER,
+    frozen INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX tangles_column_id_idx ON tangles (column_id);
 
 CREATE TABLE tangle_tasks (
     tangle_id TEXT NOT NULL REFERENCES tangles (id) ON DELETE CASCADE,

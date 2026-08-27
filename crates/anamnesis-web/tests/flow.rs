@@ -126,7 +126,7 @@ async fn raising_a_task_onto_the_board_and_dropping_it_back() {
     )
     .to_string();
 
-    let todo_column = app.store.columns_with_tasks().await.unwrap()[0].column.id;
+    let todo_column = app.store.columns_with_items().await.unwrap()[0].column.id;
 
     let raise = app
         .post_form(
@@ -221,7 +221,7 @@ async fn double_submitting_a_drop_only_bounces_once() {
     )
     .to_string();
 
-    let todo_column = app.store.columns_with_tasks().await.unwrap()[0].column.id;
+    let todo_column = app.store.columns_with_items().await.unwrap()[0].column.id;
 
     app.post_form(
         &format!("{task_path}/raise"),
@@ -308,7 +308,7 @@ async fn moving_a_task_between_columns_does_not_bounce_it() {
     )
     .to_string();
 
-    let columns = app.store.columns_with_tasks().await.unwrap();
+    let columns = app.store.columns_with_items().await.unwrap();
     let todo = columns[0].column.id;
     let doing = columns[1].column.id;
 

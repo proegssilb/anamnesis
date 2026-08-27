@@ -18,7 +18,10 @@ pub use areas::{
     create_area_handler, create_project_handler, list_areas_handler,
     transition_project_status_handler, view_area_handler,
 };
-pub use board::{accept_suggestion_handler, archive_all_handler, view_board_handler};
+pub use board::{
+    accept_suggestion_handler, accept_tangle_offer_handler, archive_all_handler,
+    drop_tangle_handler, view_board_handler,
+};
 pub use login::{callback_handler, login_handler, logout_handler};
 pub use misc::{healthz_handler, root_handler};
 pub use projects::{create_task_handler, view_project_handler};

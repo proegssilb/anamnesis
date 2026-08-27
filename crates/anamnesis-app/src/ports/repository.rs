@@ -15,7 +15,7 @@ use async_trait::async_trait;
 
 use anamnesis_core::{
     Area, AreaId, FieldDefinition, FieldValue, KindId, Project, ProjectId, Relationship,
-    RelationshipId, RelationshipKind, Tangle, Task, TaskId, Timestamp,
+    RelationshipId, RelationshipKind, Tangle, TangleId, Task, TaskId, Timestamp,
 };
 
 use crate::entities::{Attachment, AttachmentId, Comment, CommentId};
@@ -162,10 +162,14 @@ pub trait TangleRepository: Send + Sync {
     /// Every tangle with `resolved_at: None` — the `previous` input
     /// `anamnesis_core::reconcile` needs.
     async fn list_active(&self) -> Result<Vec<Tangle>, RepoError>;
+    /// Loads one tangle by id — what [`crate::use_cases::tangle::place_tangle`]
+    /// and [`crate::use_cases::tangle::drop_tangle`] need before applying a
+    /// placement transition to it.
+    async fn load(&self, id: TangleId) -> Result<Option<Tangle>, RepoError>;
     async fn insert(&self, tangle: &Tangle) -> Result<(), RepoError>;
-    /// Persists a tangle whose `resolved_at` has just been stamped (or,
-    /// defensively, any other field `reconcile` may have changed on an
-    /// already-stored tangle).
+    /// Persists a tangle whose `resolved_at`, `placement`, or `frozen` has
+    /// just changed (or, defensively, any other field `reconcile` may have
+    /// changed on an already-stored tangle).
     async fn update(&self, tangle: &Tangle) -> Result<(), RepoError>;
 }
 
