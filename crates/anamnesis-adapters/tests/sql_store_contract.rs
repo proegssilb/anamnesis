@@ -14,14 +14,15 @@ use anamnesis_adapters::SqlStore;
 use anamnesis_app::{
     AreaRepository, Attachment, AttachmentId, AttachmentKind, AttachmentRepository, BoardQuery,
     Comment, CommentId, CommentRepository, MembershipQuery, ProjectAggregate, ProjectRepository,
-    RelationshipRepository, SearchHit, SearchIndex, SearchQuery, TangleRepository, TaskAggregate,
-    TaskRepository, TaskUpdateError,
+    RelationshipRepository, SearchHit, SearchIndex, SearchQuery, Settings, SettingsRepository,
+    TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
     Area, BlockingGraph, Column, CurrencyAmount, CurrencyCode, FieldData, FieldDefinition,
     FieldKind, FieldValue, KindId, NumberValue, Placement, Project, ProjectId, ProjectStatus,
-    Relationship, RelationshipKind, Tangle, TangleId, Task, TaskId, Timestamp, Title, UserId,
+    Recurrence, Relationship, RelationshipKind, SuggestionSettings, Tangle, TangleId, Task, TaskId,
+    Timestamp, Title, UserId,
 };
 use uuid::Uuid;
 
@@ -111,6 +112,7 @@ async fn contract(store: &SqlStore) {
     attachment_contract(store, &task_a).await;
     membership_contract(store).await;
     search_contract(store).await;
+    settings_contract(store).await;
 }
 
 // --- Area ---
@@ -1115,6 +1117,102 @@ async fn search_contract(store: &SqlStore) {
     );
 }
 
+// --- Settings ---
+
+async fn settings_contract(store: &SqlStore) {
+    let defaults = Settings {
+        active_project_limit: 5,
+        suggestion: SuggestionSettings {
+            cooldown_seconds: 259_200,
+            high_bounce_threshold: 3,
+        },
+        sweep_recurrence: Recurrence::Never,
+        last_swept_at: None,
+    };
+
+    // Seeding is idempotent: a second seed call must not clobber a value
+    // already changed by `update` in between (mirrors
+    // `anamnesis-web::bootstrap`'s own idempotency requirement).
+    store
+        .seed_settings_if_missing(&defaults, "UTC")
+        .await
+        .unwrap();
+    let loaded = SettingsRepository::load(store).await.unwrap();
+    assert_eq!(loaded, defaults);
+
+    // `update` round-trips every editable field, including a real
+    // `EveryNWeeks` recurrence (exercising the weekday encode/decode path,
+    // not just `Never`/`DayOfMonth`).
+    let edited = Settings {
+        active_project_limit: 11,
+        suggestion: SuggestionSettings {
+            cooldown_seconds: 42,
+            high_bounce_threshold: 9,
+        },
+        sweep_recurrence: Recurrence::EveryNWeeks {
+            n: 2,
+            weekday: time::Weekday::Monday,
+        },
+        last_swept_at: None, // `update` must never write this field.
+    };
+    SettingsRepository::update(store, &edited).await.unwrap();
+    let reloaded = SettingsRepository::load(store).await.unwrap();
+    assert_eq!(reloaded.active_project_limit, 11);
+    assert_eq!(reloaded.suggestion.cooldown_seconds, 42);
+    assert_eq!(reloaded.suggestion.high_bounce_threshold, 9);
+    assert_eq!(
+        reloaded.sweep_recurrence,
+        Recurrence::EveryNWeeks {
+            n: 2,
+            weekday: time::Weekday::Monday
+        }
+    );
+    assert_eq!(
+        reloaded.last_swept_at, None,
+        "update must not touch last_swept_at"
+    );
+
+    // A `DayOfMonth` recurrence round-trips too.
+    let day_of_month = Settings {
+        sweep_recurrence: Recurrence::DayOfMonth { day: 15 },
+        ..edited
+    };
+    SettingsRepository::update(store, &day_of_month)
+        .await
+        .unwrap();
+    let reloaded = SettingsRepository::load(store).await.unwrap();
+    assert_eq!(
+        reloaded.sweep_recurrence,
+        Recurrence::DayOfMonth { day: 15 }
+    );
+
+    // `record_sweep` writes only `last_swept_at`, leaving every other field
+    // exactly as `update` last left it.
+    let swept_at = ts(123_456);
+    SettingsRepository::record_sweep(store, swept_at)
+        .await
+        .unwrap();
+    let after_sweep = SettingsRepository::load(store).await.unwrap();
+    assert_eq!(after_sweep.last_swept_at, Some(swept_at));
+    assert_eq!(after_sweep.active_project_limit, 11);
+    assert_eq!(
+        after_sweep.sweep_recurrence,
+        Recurrence::DayOfMonth { day: 15 }
+    );
+
+    // Seeding again now that a real row (and a real edit) exists must be a
+    // pure no-op -- the whole point of "if missing".
+    store
+        .seed_settings_if_missing(&defaults, "UTC")
+        .await
+        .unwrap();
+    let still_after_sweep = SettingsRepository::load(store).await.unwrap();
+    assert_eq!(
+        still_after_sweep, after_sweep,
+        "seeding a second time must not overwrite an already-edited settings row"
+    );
+}
+
 #[tokio::test]
 async fn sqlite_store_contract() {
     let dir = tempfile::tempdir().expect("create temp dir");
@@ -1152,7 +1250,8 @@ async fn postgres_store_contract() {
     sqlx::query(
         "TRUNCATE TABLE tangle_tasks, tangles, field_values, relationships, comments, \
          attachments, search_documents, tasks, field_definitions, relationship_kinds, \
-         area_members, project_members, system_admins, projects, areas, board_columns \
+         area_members, project_members, system_admins, projects, areas, board_columns, \
+         settings \
          RESTART IDENTITY CASCADE",
     )
     .execute(&raw)
