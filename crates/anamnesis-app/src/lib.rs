@@ -18,6 +18,7 @@ mod entities;
 mod error;
 pub mod policy;
 mod ports;
+mod settings;
 mod use_cases;
 
 pub use entities::{
@@ -29,8 +30,12 @@ pub use ports::{
     AreaRepository, AttachmentRepository, BlobStore, BoardColumn, BoardItem, BoardQuery, Clock,
     CommentRepository, IdGen, IdentityProvider, LoginCallback, LoginRedirect, MembershipQuery,
     ProjectAggregate, ProjectRepository, RelationshipRepository, SearchHit, SearchIndex,
-    SearchQuery, TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
-    TimezoneResolver,
+    SearchQuery, SettingsRepository, TangleRepository, TaskAggregate, TaskRepository,
+    TaskUpdateError, TimezoneResolver,
+};
+pub use settings::{
+    DEFAULT_ACTIVE_PROJECT_LIMIT, DEFAULT_HIGH_BOUNCE_THRESHOLD,
+    DEFAULT_SUGGESTION_COOLDOWN_SECONDS, Settings,
 };
 pub use use_cases::{
     BoardItemKind, add_comment, add_field_definition, add_file_attachment, add_link_attachment,
@@ -41,6 +46,6 @@ pub use use_cases::{
     list_projects_in_area, place_tangle, raise_task, rename_field_definition, reposition_area,
     reposition_board_item, request_suggestion, resolve_frozen_tangles, resolve_kind,
     run_tangle_detection, set_checklist_position, set_task_field_value, set_task_parent,
-    transition_project_status, unarchive_project, unarchive_task, view_area, view_project,
-    view_task,
+    transition_project_status, unarchive_project, unarchive_task, update_settings, view_area,
+    view_project, view_settings, view_task,
 };

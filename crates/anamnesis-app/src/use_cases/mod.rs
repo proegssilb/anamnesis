@@ -11,6 +11,7 @@ mod comment;
 mod indexing;
 mod project;
 mod relationship;
+mod settings;
 mod suggestion;
 mod tangle;
 mod task;
@@ -28,6 +29,7 @@ pub use project::{
     unarchive_project, view_project,
 };
 pub use relationship::{create_relationship, delete_relationship, resolve_kind};
+pub use settings::{update_settings, view_settings};
 pub use suggestion::{derive_seed, request_suggestion};
 pub use tangle::{drop_tangle, place_tangle, resolve_frozen_tangles, run_tangle_detection};
 pub use task::{
