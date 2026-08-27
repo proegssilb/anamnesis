@@ -27,37 +27,212 @@ use std::collections::HashMap;
 
 use axum::Form;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
 
 use anamnesis_app::{
-    AppError, BoardItem, archive_done_tasks, drop_tangle, place_tangle, raise_task,
-    request_suggestion, resolve_frozen_tangles, run_tangle_detection,
+    AppError, BoardItem, BoardItemKind, archive_done_tasks, drop_tangle, place_tangle,
+    raise_task, reposition_board_item, request_suggestion, resolve_frozen_tangles,
+    run_tangle_detection,
 };
 use anamnesis_core::policy::Role;
-use anamnesis_core::{Blockage, OfferItem, Outcome, ProjectId, Tangle, TangleId, TaskId};
+use anamnesis_core::{Blockage, ColumnId, OfferItem, Outcome, ProjectId, Tangle, TangleId, TaskId};
 
 use crate::auth::CurrentUser;
 use crate::error::WebError;
+use crate::hx::is_hx_request;
 use crate::session::csrf_tokens_match;
 use crate::state::AppState;
 
 use super::format::format_field_data;
-use super::forms::{AcceptSuggestionForm, AcceptTangleForm, CsrfOnlyForm};
+use super::forms::{AcceptSuggestionForm, AcceptTangleForm, CsrfOnlyForm, RepositionForm};
 use super::tasks::role_for_task;
 
-pub async fn view_board_handler(State(state): State<AppState>, user: CurrentUser) -> Response {
-    match view_board_impl(&state, &user, None, StatusCode::OK).await {
+pub async fn view_board_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    headers: HeaderMap,
+) -> Response {
+    match view_board_impl(&state, &user, &headers, None, StatusCode::OK).await {
         Ok(response) => response,
         Err(err) => err.into_response_with(&state.templates),
     }
 }
 
+/// No `HX-Request` header exists on these mutation handlers' own incoming
+/// request in the same way a page navigation carries one — they redirect on
+/// success, and only fall through to re-rendering the board (with an error
+/// banner) when the underlying use case rejects the request. That
+/// re-render always wants the full page: none of these three actions are
+/// reachable from an htmx-driven partial request in this phase's UI.
+fn full_page_headers() -> HeaderMap {
+    HeaderMap::new()
+}
+
+/// Moves a board card (a task or a placed tangle) — the htmx drag endpoint
+/// and its plain-form fallback both post here (`docs/DOMAIN.md` §8:
+/// "Sortable drags, htmx persists"; see `static/app.js` and
+/// `templates/_reposition_form.html`).
+///
+/// **One endpoint, two representations.** An `HX-Request` gets back just
+/// the column(s) the move actually touched, each as an out-of-band fragment
+/// (`templates/_column.html`'s `oob` flag) so htmx can swap them in place;
+/// a plain form submit gets the usual redirect-after-POST, since a no-JS
+/// browser is about to reload the page anyway.
+pub async fn reposition_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    headers: HeaderMap,
+    Form(form): Form<RepositionForm>,
+) -> Response {
+    match reposition_impl(&state, &user, &headers, form).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn reposition_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    headers: &HeaderMap,
+    form: RepositionForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let item = match form.item_kind.as_str() {
+        "task" => BoardItemKind::Task(TaskId::new(form.item_id)),
+        "tangle" => BoardItemKind::Tangle(TangleId::new(form.item_id)),
+        other => {
+            return Err(WebError::BadRequest(format!(
+                "{other:?} is not a known board item kind"
+            )));
+        }
+    };
+    let role = match item {
+        BoardItemKind::Task(id) => role_for_task(state, &user.user_id, id).await?.1,
+        BoardItemKind::Tangle(id) => role_for_tangle(state, &user.user_id, id).await?,
+    };
+    let column = ColumnId::new(form.column_id);
+
+    // The source column (if any), read *before* the move, so its fragment
+    // can be re-rendered too when the card changed columns — after the
+    // move, this is no longer discoverable from the item itself.
+    let previous_column = current_column_of(state, item).await?;
+
+    match reposition_board_item(
+        state.tasks.as_ref(),
+        state.tangles.as_ref(),
+        state.board.as_ref(),
+        state.clock.as_ref(),
+        role,
+        item,
+        column,
+        form.position,
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(AppError::WipLimitExceeded) => {
+            return view_board_impl(
+                state,
+                user,
+                headers,
+                Some("That column is already at its work-in-progress limit."),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            )
+            .await;
+        }
+        Err(err) => return Err(WebError::from(err)),
+    }
+
+    if is_hx_request(headers) {
+        return render_reposition_fragment(state, user, column, previous_column).await;
+    }
+    Ok(Redirect::to("/board").into_response())
+}
+
+/// `item`'s current column, if it is on the board at all — `None` for a
+/// task/tangle below the horizon, which `reposition_board_item` (being
+/// asked to raise it) treats as having no "old column" to renumber.
+async fn current_column_of(
+    state: &AppState,
+    item: BoardItemKind,
+) -> Result<Option<ColumnId>, WebError> {
+    use anamnesis_core::Placement;
+    let placement = match item {
+        BoardItemKind::Task(id) => {
+            state
+                .tasks
+                .load(id)
+                .await?
+                .ok_or(AppError::NotFound)?
+                .task
+                .placement
+        }
+        BoardItemKind::Tangle(id) => {
+            state
+                .tangles
+                .load(id)
+                .await?
+                .ok_or(AppError::NotFound)?
+                .placement
+        }
+    };
+    Ok(match placement {
+        Placement::OnBoard { column, .. } => Some(column),
+        Placement::Below => None,
+    })
+}
+
+/// Renders one or two `_column.html` fragments, each marked
+/// `hx-swap-oob="true"`, for the columns a reposition actually touched —
+/// just `column` when the card stayed put, both `column` and
+/// `previous_column` when it crossed columns.
+async fn render_reposition_fragment(
+    state: &AppState,
+    user: &CurrentUser,
+    column: ColumnId,
+    previous_column: Option<ColumnId>,
+) -> Result<Response, WebError> {
+    let columns = state.board.columns_with_items().await?;
+    let column_views = build_column_views(state, &columns).await?;
+
+    let mut targets = vec![column];
+    if let Some(prev) = previous_column
+        && prev != column
+    {
+        targets.push(prev);
+    }
+
+    let tmpl = state
+        .templates
+        .get_template("_column.html")
+        .map_err(WebError::template)?;
+    let mut body = String::new();
+    for target in targets {
+        let Some(idx) = columns.iter().position(|bc| bc.column.id == target) else {
+            continue;
+        };
+        body.push_str(
+            &tmpl
+                .render(context! {
+                    c => column_views[idx].clone(),
+                    columns => column_views,
+                    csrf_token => user.csrf_token,
+                    oob => true,
+                })
+                .map_err(WebError::template)?,
+        );
+    }
+    Ok(Html(body).into_response())
+}
+
 /// Resolves the role to authorize a placement action on `tangle_id` against
 /// — see the module doc comment for why "the project of its lowest task id"
 /// is the (documented) rule.
-async fn role_for_tangle(
+pub(super) async fn role_for_tangle(
     state: &AppState,
     user_id: &anamnesis_core::UserId,
     tangle_id: TangleId,
@@ -79,6 +254,7 @@ async fn role_for_tangle(
 async fn view_board_impl(
     state: &AppState,
     user: &CurrentUser,
+    headers: &HeaderMap,
     error: Option<&str>,
     status: StatusCode,
 ) -> Result<Response, WebError> {
@@ -127,6 +303,22 @@ async fn view_board_impl(
         Some(entry) => Some(fetch_suggestion(state, user, entry.column.id).await?),
         None => None,
     };
+
+    // `docs/DOMAIN.md` §8: "one endpoint, two representations" — an
+    // `HX-Request` gets just the columns fragment (useful for an
+    // htmx-driven refresh that never wants the surrounding page again),
+    // everything else gets the full page.
+    if is_hx_request(headers) {
+        let column_views = build_column_views(state, &columns).await?;
+        let tmpl = state
+            .templates
+            .get_template("_board_columns.html")
+            .map_err(WebError::template)?;
+        let body = tmpl
+            .render(context! { columns => column_views, csrf_token => user.csrf_token })
+            .map_err(WebError::template)?;
+        return Ok((status, Html(body)).into_response());
+    }
 
     render_board_page(
         state,
@@ -206,6 +398,7 @@ async fn accept_suggestion_impl(
             view_board_impl(
                 state,
                 user,
+                &full_page_headers(),
                 Some("The entry column filled up before that suggestion could be accepted."),
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
@@ -258,6 +451,7 @@ async fn accept_tangle_offer_impl(
             view_board_impl(
                 state,
                 user,
+                &full_page_headers(),
                 Some("The entry column filled up before that tangle could be accepted."),
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
@@ -334,15 +528,15 @@ fn blockage_message(blockage: Blockage) -> &'static str {
     }
 }
 
-async fn render_board_page(
+/// Builds the per-column template context `board.html` (the full page) and
+/// `render_reposition_fragment` (the htmx reposition response) both render
+/// from — factored out so a reposition's fragment response reflects the
+/// exact same card content (including `show_on_card` fields) as a full
+/// board load, not a stripped-down copy of it.
+async fn build_column_views(
     state: &AppState,
-    user: &CurrentUser,
     columns: &[anamnesis_app::BoardColumn],
-    active_tangles: &[Tangle],
-    suggestion: Option<&Outcome>,
-    error: Option<&str>,
-    status: StatusCode,
-) -> Result<Response, WebError> {
+) -> Result<Vec<minijinja::Value>, WebError> {
     let mut field_def_cache: HashMap<ProjectId, Vec<anamnesis_core::FieldDefinition>> =
         HashMap::new();
     let mut column_views = Vec::with_capacity(columns.len());
@@ -418,6 +612,19 @@ async fn render_board_page(
             items => item_views,
         });
     }
+    Ok(column_views)
+}
+
+async fn render_board_page(
+    state: &AppState,
+    user: &CurrentUser,
+    columns: &[anamnesis_app::BoardColumn],
+    active_tangles: &[Tangle],
+    suggestion: Option<&Outcome>,
+    error: Option<&str>,
+    status: StatusCode,
+) -> Result<Response, WebError> {
+    let column_views = build_column_views(state, columns).await?;
 
     let tangle_views: Vec<_> = active_tangles
         .iter()

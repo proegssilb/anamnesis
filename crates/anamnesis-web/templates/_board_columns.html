@@ -1,0 +1,10 @@
+{# The board's columns, standalone: what `GET /board` renders inside
+   `board.html`'s full page, and also exactly what it returns on its own
+   (wrapped in nothing else) when the request carries `HX-Request`
+   (`docs/DOMAIN.md` §8: "one endpoint, two representations"). Needs
+   `columns` and `csrf_token`. #}
+<div class="board" id="board-columns">
+  {% for c in columns %}
+    {% include "_column.html" %}
+  {% endfor %}
+</div>

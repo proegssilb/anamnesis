@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use anamnesis_app::{
     AreaRepository, AttachmentRepository, BoardQuery, Clock, CommentRepository, IdGen,
-    IdentityProvider, MembershipQuery, ProjectRepository, RelationshipRepository, TangleRepository,
-    TaskRepository, TimezoneResolver,
+    IdentityProvider, MembershipQuery, ProjectRepository, RelationshipRepository, SearchIndex,
+    SearchQuery, TangleRepository, TaskRepository, TimezoneResolver,
 };
 use axum::extract::FromRef;
 use axum_extra::extract::cookie::Key;
@@ -40,6 +40,14 @@ pub struct AppState {
     pub comments: Arc<dyn CommentRepository>,
     pub attachments: Arc<dyn AttachmentRepository>,
     pub board: Arc<dyn BoardQuery>,
+    /// The read side of global search (`docs/DOMAIN.md` §8). `search_index`
+    /// is the write side — kept as a separate field (rather than one
+    /// combined trait object) because the two ports genuinely diverge at the
+    /// call sites that use them: handlers rendering a result list only ever
+    /// need `SearchQuery`, and handlers writing an area/project/task only
+    /// ever need `SearchIndex`, exactly mirroring the port split itself.
+    pub search: Arc<dyn SearchQuery>,
+    pub search_index: Arc<dyn SearchIndex>,
     pub membership: Arc<dyn MembershipQuery>,
     pub timezone: Arc<dyn TimezoneResolver>,
     pub clock: Arc<dyn Clock>,

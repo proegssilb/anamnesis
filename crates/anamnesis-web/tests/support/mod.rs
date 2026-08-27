@@ -86,6 +86,8 @@ impl TestApp {
             comments: store.clone(),
             attachments: store.clone(),
             board: store.clone(),
+            search: store.clone(),
+            search_index: store.clone(),
             membership: store.clone(),
             timezone: Arc::new(TzTimezoneResolver::new()),
             clock: Arc::new(SystemClock),
@@ -123,9 +125,23 @@ impl TestApp {
     }
 
     pub async fn get(&self, path: &str, cookie: Option<&str>) -> Response<Body> {
+        self.get_maybe_hx(path, cookie, false).await
+    }
+
+    /// As [`TestApp::get`], but with `HX-Request: true` set — what a real
+    /// htmx-driven navigation sends, and what a handler branches on to
+    /// return a fragment instead of a full page (`docs/DOMAIN.md` §8).
+    pub async fn get_hx(&self, path: &str, cookie: Option<&str>) -> Response<Body> {
+        self.get_maybe_hx(path, cookie, true).await
+    }
+
+    async fn get_maybe_hx(&self, path: &str, cookie: Option<&str>, hx: bool) -> Response<Body> {
         let mut builder = Request::builder().method("GET").uri(path);
         if let Some(cookie) = cookie {
             builder = builder.header(header::COOKIE, cookie);
+        }
+        if hx {
+            builder = builder.header("HX-Request", "true");
         }
         let request = builder.body(Body::empty()).unwrap();
         self.router.clone().oneshot(request).await.unwrap()
@@ -137,6 +153,28 @@ impl TestApp {
         form: &[(&str, &str)],
         cookie: Option<&str>,
     ) -> Response<Body> {
+        self.post_form_maybe_hx(path, form, cookie, false).await
+    }
+
+    /// As [`TestApp::post_form`], but with `HX-Request: true` set — the same
+    /// request an htmx-driven form submit (or `htmx.ajax`, as
+    /// `static/app.js`'s drag handler uses) sends.
+    pub async fn post_form_hx(
+        &self,
+        path: &str,
+        form: &[(&str, &str)],
+        cookie: Option<&str>,
+    ) -> Response<Body> {
+        self.post_form_maybe_hx(path, form, cookie, true).await
+    }
+
+    async fn post_form_maybe_hx(
+        &self,
+        path: &str,
+        form: &[(&str, &str)],
+        cookie: Option<&str>,
+        hx: bool,
+    ) -> Response<Body> {
         let body = serde_urlencoded::to_string(form).unwrap();
         let mut builder = Request::builder()
             .method("POST")
@@ -144,6 +182,9 @@ impl TestApp {
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
         if let Some(cookie) = cookie {
             builder = builder.header(header::COOKIE, cookie);
+        }
+        if hx {
+            builder = builder.header("HX-Request", "true");
         }
         let request = builder.body(Body::from(body)).unwrap();
         self.router.clone().oneshot(request).await.unwrap()

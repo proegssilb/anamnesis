@@ -88,7 +88,13 @@ async fn create_task_impl(
     )
     .await
     {
-        Ok(task) => Ok(Redirect::to(&format!("/tasks/{}", task.id)).into_response()),
+        Ok(task) => {
+            state
+                .search_index
+                .index_task(task.id, task.title.as_str())
+                .await?;
+            Ok(Redirect::to(&format!("/tasks/{}", task.id)).into_response())
+        }
         Err(AppError::Rule(e)) => {
             let aggregate = view_project(state.projects.as_ref(), role, project_id).await?;
             let tasks = state.tasks.list_by_project(project_id).await?;

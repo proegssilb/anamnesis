@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Search — Anamnesis{% endblock %}
+{% block content %}
+  <h1>Search</h1>
+  <form class="search-form" method="get" action="/search"
+        hx-get="/search" hx-trigger="submit, keyup changed delay:400ms from:#q"
+        hx-target="#search-results" hx-swap="outerHTML" hx-push-url="true">
+    <label class="visually-hidden" for="q">Search areas, projects, and tasks</label>
+    <input id="q" name="q" type="search" value="{{ query }}"
+           placeholder="Search areas, projects, tasks…" autocomplete="off">
+    <button type="submit">Search</button>
+  </form>
+  {% include "_search_results.html" %}
+{% endblock %}

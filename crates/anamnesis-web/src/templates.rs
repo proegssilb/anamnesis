@@ -25,6 +25,21 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("project.html", include_str!("../templates/project.html")),
     ("task.html", include_str!("../templates/task.html")),
     ("board.html", include_str!("../templates/board.html")),
+    (
+        "_board_columns.html",
+        include_str!("../templates/_board_columns.html"),
+    ),
+    ("_column.html", include_str!("../templates/_column.html")),
+    ("_card.html", include_str!("../templates/_card.html")),
+    (
+        "_reposition_form.html",
+        include_str!("../templates/_reposition_form.html"),
+    ),
+    ("search.html", include_str!("../templates/search.html")),
+    (
+        "_search_results.html",
+        include_str!("../templates/_search_results.html"),
+    ),
     ("login.html", include_str!("../templates/login.html")),
     ("error.html", include_str!("../templates/error.html")),
 ];

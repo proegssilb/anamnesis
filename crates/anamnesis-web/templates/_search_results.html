@@ -1,0 +1,19 @@
+{# Search results, fragment-addressable (`docs/DOMAIN.md` §8): what
+   `GET /search` returns alone for an `HX-Request`, and what `search.html`
+   includes for a full page. Needs `query` and `results`
+   (`{kind, title, url}` each). #}
+<div id="search-results">
+  {% if query %}
+    {% if results %}
+      <ul class="task-list">
+        {% for r in results %}
+          <li><span class="badge">{{ r.kind }}</span> <a href="{{ r.url }}">{{ r.title }}</a></li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="hint">No results for &ldquo;{{ query }}&rdquo;.</p>
+    {% endif %}
+  {% else %}
+    <p class="hint">Search for an area, a project, or a task by title.</p>
+  {% endif %}
+</div>
