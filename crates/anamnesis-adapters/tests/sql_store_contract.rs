@@ -791,9 +791,10 @@ async fn membership_contract(store: &SqlStore) {
         .unwrap();
     assert!(matches!(effective, Some(Role::Member)));
 
-    // Explicit override: even a *lower* explicit project role wins over the
-    // inherited area role (docs/DOMAIN.md: "an explicit grant is a
-    // deliberate statement, not a floor").
+    // Strongest wins, not most specific: a *lower* explicit project role
+    // does not demote the (higher) area role -- grants are independent and
+    // stack, by analogy to `chmod` (adding a grant must never subtract
+    // capability).
     store
         .set_area_role(&member, a.id, Role::ProjectAdmin)
         .await
@@ -806,8 +807,26 @@ async fn membership_contract(store: &SqlStore) {
         .await
         .unwrap();
     assert!(
-        matches!(effective, Some(Role::Member)),
-        "an explicit project role must win even when the area role would be higher"
+        matches!(effective, Some(Role::ProjectAdmin)),
+        "a lower explicit project role must not demote a higher area role"
+    );
+
+    // And the reverse direction: a *higher* explicit project role still
+    // elevates above a weaker area role.
+    store
+        .set_area_role(&member, a.id, Role::Member)
+        .await
+        .unwrap();
+    store
+        .set_project_role(&member, p.id, Role::ProjectAdmin)
+        .await
+        .unwrap();
+    let effective = MembershipQuery::effective_role(store, &member, p.id, a.id)
+        .await
+        .unwrap();
+    assert!(
+        matches!(effective, Some(Role::ProjectAdmin)),
+        "a higher explicit project role must still elevate above a lower area role"
     );
 
     // A stranger with no rows anywhere and no system admin grant has no
