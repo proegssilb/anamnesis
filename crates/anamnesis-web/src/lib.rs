@@ -13,7 +13,7 @@ pub mod handlers;
 pub mod hx;
 pub mod routes;
 pub mod session;
-pub mod settings;
 pub mod state;
 pub mod static_files;
+pub mod sweep;
 pub mod templates;

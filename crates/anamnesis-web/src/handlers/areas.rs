@@ -292,6 +292,10 @@ async fn transition_project_status_impl(
         .ok_or(AppError::NotFound)?;
     let area_id = aggregate.project.area_id;
     let role = access::project_role(state, &user.user_id, project_id, area_id).await?;
+    // A live read, not a value cached at startup -- this is what makes
+    // editing the limit through `/settings` actually change what gets
+    // enforced on the very next request.
+    let active_project_limit = state.settings.load().await?.active_project_limit;
 
     match transition_project_status(
         state.projects.as_ref(),
@@ -299,7 +303,7 @@ async fn transition_project_status_impl(
         role,
         project_id,
         new_status,
-        state.settings.active_project_limit,
+        active_project_limit,
     )
     .await
     {
