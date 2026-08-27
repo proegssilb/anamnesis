@@ -7,16 +7,14 @@
 //! value and returns a brand new one, never mutating in place.
 //!
 //! `docs/DOMAIN.md` replaces the placeholder kanban model this crate used to
-//! hold. That model — `Board`/`Column`/`Card` — lives on, unchanged, in
-//! [`legacy`], purely so the other crates (rebuilt against this new model in
-//! later phases) keep compiling in the meantime.
+//! hold. That model — `Board`/`Column`/`Card` — has been fully retired
+//! (Phase F1): every crate now builds against the real domain model below.
 
 mod area;
 mod column;
 mod error;
 mod field;
 mod ids;
-pub mod legacy;
 mod placement;
 pub mod policy;
 mod project;
