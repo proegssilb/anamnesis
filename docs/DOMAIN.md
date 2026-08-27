@@ -469,3 +469,187 @@ tests.
   watch it surface and resolve, accept an untangle suggestion, drag a card
   between columns, accept a task suggestion, run an archive-all.
 - Kill every server started during verification; leave no stray processes.
+
+---
+
+## 12. Decisions made during implementation
+
+This design was approved before a line of the real model was written. A
+handful of things resolved only once the model was actually built and
+tested — recorded here, with the reasoning, because the reasoning is what
+keeps a future change from reintroducing the same defect. (`docs/ARCHITECTURE.md`
+covers the same ground from the systems/code-structure angle; this section
+is the *why*, kept next to the design it amends.)
+
+### Area-scoped roles, and composition by strongest grant
+
+§3 named three roles but scoped them only to projects. Two problems showed
+up once membership was actually implemented: a purely area-level action
+(view the area, manage it) had nowhere to hang except System Admin, and
+`CreateProject` was chicken-and-egg — a project that does not exist yet has
+no project role to check. Fix: **Areas are a real membership scope**, and a
+Project inherits its Area's role when it carries no explicit role of its
+own.
+
+Inheritance alone was not sufficient, and the first version of it was wrong
+in a way worth stating plainly. It composed scopes by "most specific wins" —
+an explicit project-level grant overrode the inherited Area grant outright,
+even when the explicit grant was *weaker*. That silently demoted a System
+Admin (or an Area Admin) who also happened to hold a plain Member row on one
+project — precisely backwards, since adding someone to a project was meant
+to add capability, not remove it. The corrected rule is **composition by
+strongest grant**: System Admin status, the Area grant, and the Project
+grant are three independent grants, and the effective role is the strongest
+of the three. This is the same property `chmod` gets right — granting a
+permission bit never revokes one already held — and it is a *monotonicity*
+property, so it was tested as one rather than as a handful of examples: a
+property test enumerates every `(project_role, area_role, is_system_admin)`
+starting state and every way to strengthen exactly one of those three slots,
+and asserts the effective role never goes down. That test is what actually
+caught the System-Admin-demotion defect above; the individual before/after
+example tests in the same file would have kept passing under "most specific
+wins" for the particular cases they happened to construct.
+
+### Tangle identity is `TangleId`, not the fingerprint
+
+Covered in full in §3 ("Identity is the id, not the task set") — recorded
+here only as an index entry, since it is exactly this kind of
+implementation-time correction. Summary: the fingerprint was originally the
+effective identity, which broke the moment untangling was tried in
+practice — untangling *is* edge-editing, so the task set (and hence the
+fingerprint) changes as soon as real progress happens, and a
+fingerprint-identified card dissolves and reappears as a stranger mid-work.
+`TangleId` is now the stable identity; `fingerprint` is only ever used to
+match a fresh detection pass against an existing tangle, never to decide
+what a tangle *is*. Membership freezes the moment a tangle is placed on the
+board, so the goalposts cannot move while the user is working it.
+
+### The `tangled_task_ids` / `tangles` split
+
+`anamnesis_core::BlockingGraph` (the suggestion engine's view of blocking
+and tangling) carries two related but independent fields rather than one
+derived from the other: `tangled_task_ids` (every task id currently bound up
+in an unresolved tangle, full stop) and `tangles` (unresolved tangles
+currently *offerable* in place of their members). Ordinarily every id in the
+first traces back to a tangle in the second — but not always: a tangle
+already accepted onto the board occupies its own slot as a work item and
+must not be offered a second time, while its member tasks must stay excluded
+from individual suggestion until the knot actually resolves. Collapsing
+these into one field (derive "excluded tasks" from "offerable tangles," or
+vice versa) cannot express that state, and without it `Blockage::AllTangled`
+— "everything eligible is knotted, and unusually no tangle is available to
+offer in its place" — has no way to become reachable at all: the tangle
+would always still be sitting there as an offerable substitute. The split
+makes it possible for a placed tangle to correctly suppress its own members
+from suggestion while itself no longer counting as something new to offer.
+
+### Offer composition below three free slots, and `Blockage` precedence
+
+§5 specifies a *full* offer as 2 "next up" + 1 "forgotten," but a board with
+only 1 or 2 free slots was left unresolved. Resolved by shrinking the
+forgotten slot first: 2 free → (1 next-up, 1 forgotten), 1 free → (1, 0), 0
+free → nothing to compose (the board is `Full` before composition ever
+runs). Reasoning: with only one slot open, the single most defensible thing
+to surface is something plausibly still fresh in mind — a "forgotten,"
+deep-backlog item is exactly the kind of thing that needs more context to
+act on immediately, which is a worse bet when there is no room to also offer
+something easier.
+
+`Blockage` (the reason nothing was offered despite there being room) is
+checked as an ordered funnel, most fundamental cause first, so the message
+shown is always the *first* thing actually wrong rather than an arbitrary
+one among several true statements: backlog empty → no active project → all
+blocked → all tangled → all on cooldown. Each check only makes sense once
+every check before it has already passed (there is no point reporting "all
+on cooldown" if the backlog is empty), so the order is load-bearing, not
+incidental.
+
+### The `EveryNWeeks` epoch anchor and `DayOfMonth` clamping
+
+§6 left two edges unspecified. **`EveryNWeeks` anchor**: "every other
+Monday" is ambiguous on its own — which Monday is on-cycle? Resolved to a
+fixed epoch independent of any particular `from`: the first occurrence of
+the given weekday on or after the Unix epoch (1970-01-01, a Thursday), with
+valid run-dates at `anchor + k*n` weeks. Anchoring to a fixed point rather
+than deriving the cycle from whatever `from` happens to be is what keeps
+feeding one call's result back in as the next call's `from` land exactly `n`
+weeks later, and what keeps two different `from` values in the same cycle
+resolving to the same next occurrence — without a fixed anchor the cadence
+would drift, or collapse to "every week," depending on how often the ticker
+happened to ask.
+
+**`DayOfMonth` clamping**: a day past a short month's end (the 31st in
+April, the 29th–31st in February) clamps to that month's actual last day,
+leap-aware. The alternative readings — reject the recurrence outright, or
+silently skip the short month entirely — both fail the plain-language intent
+of "the 15th" worse than clamping does; clamping is the reading a person
+would actually expect.
+
+### Hand-rolled DST replaced by a real IANA tzdb
+
+An earlier version of the timezone handling modeled `Timezone`/`DstRule`
+directly — a standard UTC offset plus a hand-written "Nth weekday of the
+month" DST rule, evaluated inside `anamnesis-core`. This was a defect, not
+an acceptable simplification: real DST rules change by government decree,
+sometimes with only weeks of notice (Brazil abolished DST entirely in 2019;
+Mexico and Iran dropped most of it in 2022; Jordan and Syria moved
+permanently; Chile shifts its dates most years), the whole Southern
+Hemisphere's conventions were missing from the hand-curated table, and
+critically, reapplying a rule to a *historical* timestamp used whichever
+rule happened to be hard-coded *today* rather than whichever rule was
+actually in force on that date — silently wrong for anything but a
+same-year lookup. No amount of careful hand-rolling fixes that class of bug;
+it needs a real tzdb.
+
+Replaced with [`time-tz`](https://docs.rs/time-tz), chosen over `jiff` (also
+evaluated) because it fits the `time` crate already used throughout the
+workspace with no second date-time representation entering the dependency
+graph. Its zone data is vendored from the real IANA tzdata source files and
+compiled into the binary at build time as a static lookup table — there is
+**no runtime read of `/usr/share/zoneinfo`**, so this works identically in a
+container with no system tzdb installed at all. The regression test a
+hardcoded table structurally cannot pass: resolving a timestamp from
+*before* São Paulo's 2019 DST abolition and asserting it gets the DST-era
+offset genuinely in force on that historical date, not the post-2019 rule a
+table keyed only on "the current rule" would wrongly project backward onto
+it.
+
+### `board_columns`, not `columns`
+
+§3 names the entity `Column`; the stored table is `board_columns` in both
+migration trees. Plain `columns` collides badly with SQL's own vocabulary —
+`information_schema.columns` in Postgres, plus assorted tooling and shell
+completion that assumes `columns` means the metadata table — annoying
+enough in practice that the migrations rename the table outright rather
+than fight it indefinitely. Only the table name differs from the design
+doc; the Rust type stays `Column`.
+
+### Search indexing belongs in the use cases, not the handlers
+
+An early implementation called the `SearchIndex` port directly from
+`anamnesis-web`'s HTTP handlers, right after a successful create/edit. That
+is a layering mistake this project's own dependency rule (§7, and
+`docs/ARCHITECTURE.md`) exists to prevent: any future non-web caller of the
+same use cases — the MCP server or CLI `docs/CONTEXT.md` anticipates but
+does not build — would silently fail to index anything it wrote, because
+indexing lived one layer above where those use cases actually run. Moved
+into `anamnesis-app`'s use cases themselves: every use case that touches an
+indexable entity calls the index port beside its repository write, so
+indexing happens for every caller of that use case, web or otherwise, by
+construction rather than by every future caller remembering to add it
+itself.
+
+### The `archived` flag on `search_documents`
+
+`SearchIndex::remove_*` flags a search entry as archived rather than
+deleting its row. An earlier version deleted the row outright when an
+entity was archived, which broke this design's own promise in §2: "vanished
+from every view unless explicitly searched" specifically carves out an
+*explicit-search* exception, and a hard-deleted row has no path back for
+that exception to find. `index_*` — the same call used for create, edit, and
+unarchive alike — always resets the flag to not-archived, so unarchiving an
+entity re-indexes it through the identical call path as any other edit.
+There is still no true row deletion of an area, project, or task anywhere in
+this system; `remove_*` is only ever invoked from an archive use case, never
+a hard delete, so this is a correction to what "remove" already meant at
+every call site, not a new capability.
