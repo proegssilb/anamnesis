@@ -3,7 +3,10 @@
 {% block content %}
   <p class="breadcrumb"><a href="/areas/{{ project.area_id }}">Area</a></p>
   <h1>{{ project.title }}</h1>
-  <p class="hint">Status: <span class="badge">{{ project.status }}</span></p>
+  <p class="hint">
+    Status: <span class="badge">{{ project.status }}</span>
+    {% if project.archived_at %}<span class="badge">archived</span>{% endif %}
+  </p>
   {% if project.description %}<p class="hint">{{ project.description }}</p>{% endif %}
 
   {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
@@ -39,4 +42,60 @@
     <textarea id="description" name="description"></textarea>
     <button type="submit">Create task</button>
   </form>
+
+  {% if can_manage %}
+    <section>
+      <h2>Custom fields</h2>
+      {% if fields %}
+        <ul class="task-list field-list">
+          {% for f in fields %}
+            <li class="field-row">
+              <span class="field-name">{{ f.name }}</span>
+              <span class="badge">{{ f.kind }}</span>
+              {% if f.show_on_card %}<span class="hint">(shown on card)</span>{% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="hint">This project defines no custom fields yet.</p>
+      {% endif %}
+      <form class="panel-form" method="post" action="/projects/{{ project.id }}/fields">
+        <h3>New field</h3>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="field-name">Name</label>
+        <input id="field-name" name="name" required maxlength="200">
+        <label for="field-kind">Kind</label>
+        <select id="field-kind" name="kind">
+          <option value="number">Number</option>
+          <option value="currency">Currency</option>
+          <option value="date">Date</option>
+          <option value="time">Time</option>
+          <option value="datetime">Date &amp; time</option>
+          <option value="line">Line</option>
+          <option value="block">Block</option>
+        </select>
+        <label class="checkbox-label" for="field-show-on-card">
+          <input id="field-show-on-card" type="checkbox" name="show_on_card" value="1">
+          Show on board card
+        </label>
+        <button type="submit">Add field</button>
+      </form>
+    </section>
+
+    <section class="panel-form">
+      <h2>Archive</h2>
+      {% if project.archived_at %}
+        <p class="hint">This project is archived — it is hidden from every view unless explicitly searched.</p>
+        <form method="post" action="/projects/{{ project.id }}/unarchive">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">Unarchive</button>
+        </form>
+      {% else %}
+        <form method="post" action="/projects/{{ project.id }}/archive">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="danger">Archive</button>
+        </form>
+      {% endif %}
+    </section>
+  {% endif %}
 {% endblock %}

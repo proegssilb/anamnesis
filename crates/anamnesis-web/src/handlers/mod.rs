@@ -17,7 +17,7 @@ mod search;
 mod tasks;
 
 pub use areas::{
-    create_area_handler, create_project_handler, list_areas_handler,
+    create_area_handler, create_project_handler, edit_area_handler, list_areas_handler,
     transition_project_status_handler, view_area_handler,
 };
 pub use board::{
@@ -26,10 +26,14 @@ pub use board::{
 };
 pub use login::{callback_handler, login_handler, logout_handler};
 pub use misc::{healthz_handler, root_handler};
-pub use projects::{create_task_handler, view_project_handler};
+pub use projects::{
+    add_field_definition_handler, archive_project_handler, create_task_handler,
+    unarchive_project_handler, view_project_handler,
+};
 pub use search::search_handler;
 pub use tasks::{
-    add_comment_handler, add_link_attachment_handler, create_relationship_handler,
-    delete_relationship_handler, drop_task_handler, edit_task_handler, raise_task_handler,
-    set_field_value_handler, set_parent_handler, view_task_handler,
+    add_comment_handler, add_file_attachment_handler, add_link_attachment_handler,
+    archive_task_handler, create_relationship_handler, delete_relationship_handler,
+    download_attachment_handler, drop_task_handler, edit_task_handler, raise_task_handler,
+    set_field_value_handler, set_parent_handler, unarchive_task_handler, view_task_handler,
 };

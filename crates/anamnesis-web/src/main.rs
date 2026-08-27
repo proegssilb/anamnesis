@@ -11,7 +11,7 @@ use axum_extra::extract::cookie::Key;
 use tracing_subscriber::EnvFilter;
 
 use anamnesis_adapters::{
-    OidcIdentityProvider, SqlStore, SystemClock, TzTimezoneResolver, UuidIdGen,
+    FsBlobStore, OidcIdentityProvider, SqlStore, SystemClock, TzTimezoneResolver, UuidIdGen,
 };
 use anamnesis_app::{Clock, IdentityProvider, TimezoneResolver};
 use anamnesis_web::config::Config;
@@ -98,6 +98,16 @@ async fn main() {
             }
         };
 
+    let blobs = FsBlobStore::new(&config.blob_root)
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!(
+                "failed to prepare the blob store root {:?}: {err}",
+                config.blob_root
+            );
+            std::process::exit(1);
+        });
+
     let store = Arc::new(store);
     let state = AppState {
         areas: store.clone(),
@@ -107,6 +117,7 @@ async fn main() {
         tangles: store.clone(),
         comments: store.clone(),
         attachments: store.clone(),
+        blobs: Arc::new(blobs),
         board: store.clone(),
         search: store.clone(),
         search_index: store.clone(),

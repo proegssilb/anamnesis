@@ -155,7 +155,7 @@ mod sqlite_impl {
     ) -> Result<Vec<Project>, RepoError> {
         let rows = sqlx::query(
             "SELECT id, area_id, title, description, status, created_at, updated_at, archived_at \
-             FROM projects WHERE area_id = ? ORDER BY created_at",
+             FROM projects WHERE area_id = ? AND archived_at IS NULL ORDER BY created_at",
         )
         .bind(area_id.as_uuid().to_string())
         .fetch_all(pool)
@@ -396,7 +396,7 @@ mod postgres_impl {
     ) -> Result<Vec<Project>, RepoError> {
         let rows = sqlx::query(
             "SELECT id, area_id, title, description, status, created_at, updated_at, archived_at \
-             FROM projects WHERE area_id = $1 ORDER BY created_at",
+             FROM projects WHERE area_id = $1 AND archived_at IS NULL ORDER BY created_at",
         )
         .bind(area_id.as_uuid())
         .fetch_all(pool)

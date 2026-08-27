@@ -2,7 +2,7 @@
 //! bounce accounting on drop) and formatting a [`FieldData`] compactly for
 //! the board's `show_on_card` fields and the task detail page.
 
-use anamnesis_app::BoardColumn;
+use anamnesis_app::{BoardColumn, TimezoneResolver};
 use anamnesis_core::{ColumnId, FieldData, FieldKind};
 
 /// Whether `column_id` is an `is_done` column, per the board's current
@@ -58,17 +58,22 @@ pub fn format_field_kind(kind: FieldKind) -> &'static str {
 /// to show the currently stored value when editing it; `currency_code` is
 /// additionally populated for `Currency` (its own separate input).
 ///
-/// `DateTime` intentionally prefills empty: [`anamnesis_app::TimezoneResolver`]
-/// (this crate's only UTC-instant/local-wall-clock conversion seam) exposes
-/// `local_date` (a calendar date only) and `to_utc`, but no
-/// instant-to-local-time-of-day conversion — so there is no correct way to
-/// turn a stored UTC instant back into the exact local wall-clock string an
-/// `<input type="datetime-local">` needs. The field can still be *set*
-/// (`crate::handlers::field_form::parse_datetime` goes the other direction,
-/// which the port fully supports) — it just does not round-trip back into
-/// its own edit form's prefilled value; the stored value is still shown as
-/// text via [`format_field_data`] above the form.
-pub fn field_input_value(data: &FieldData) -> (String, Option<String>) {
+/// `DateTime` needs `timezone`/`iana_name` to turn its stored UTC instant
+/// back into the exact local wall-clock string an
+/// `<input type="datetime-local">` needs (`"YYYY-MM-DDTHH:MM"`) —
+/// [`anamnesis_app::TimezoneResolver::local_date`] plus
+/// [`anamnesis_app::TimezoneResolver::local_time`] (the latter added
+/// specifically to close this gap; see its own doc comment) are the two
+/// halves of that conversion. If the configured zone is somehow unresolvable
+/// (should not happen for a zone the rest of the app already validated at
+/// startup — see `main.rs`), this falls back to an empty prefill rather than
+/// failing the whole page render: the stored value is still shown as text via
+/// [`format_field_data`] above the form either way.
+pub fn field_input_value(
+    data: &FieldData,
+    timezone: &dyn TimezoneResolver,
+    iana_name: &str,
+) -> (String, Option<String>) {
     match data {
         FieldData::Number(n) => (format_scaled(n.units, n.scale), None),
         FieldData::Currency(c) => (
@@ -80,7 +85,23 @@ pub fn field_input_value(data: &FieldData) -> (String, Option<String>) {
             None,
         ),
         FieldData::Time(t) => (format!("{:02}:{:02}", t.hour(), t.minute()), None),
-        FieldData::DateTime(_) => (String::new(), None),
+        FieldData::DateTime(ts) => {
+            let value = match (
+                timezone.local_date(iana_name, *ts),
+                timezone.local_time(iana_name, *ts),
+            ) {
+                (Ok(d), Ok(t)) => format!(
+                    "{:04}-{:02}-{:02}T{:02}:{:02}",
+                    d.year(),
+                    d.month() as u8,
+                    d.day(),
+                    t.hour(),
+                    t.minute()
+                ),
+                _ => String::new(),
+            };
+            (value, None)
+        }
         FieldData::Line(s) | FieldData::Block(s) => (s.clone(), None),
     }
 }
@@ -125,6 +146,30 @@ mod tests {
             currency: CurrencyCode::new("USD").unwrap(),
         });
         assert_eq!(format_field_data(&data), "5.00 USD");
+    }
+
+    #[test]
+    fn datetime_field_prefills_the_local_wall_clock_value() {
+        // Regression coverage for the DateTime prefill gap this phase closes
+        // (`crate::handlers::format::field_input_value`'s doc comment):
+        // 14:30 America/New_York on 2026-07-04 is 18:30 UTC (EDT, UTC-4).
+        let resolver = anamnesis_adapters::TzTimezoneResolver::new();
+        let ts = anamnesis_core::Timestamp::from_unix_seconds(
+            time::macros::datetime!(2026-07-04 18:30:00 UTC).unix_timestamp(),
+        )
+        .unwrap();
+        let (value, currency) =
+            field_input_value(&FieldData::DateTime(ts), &resolver, "America/New_York");
+        assert_eq!(value, "2026-07-04T14:30");
+        assert_eq!(currency, None);
+    }
+
+    #[test]
+    fn datetime_field_prefill_falls_back_to_empty_for_an_unknown_zone() {
+        let resolver = anamnesis_adapters::TzTimezoneResolver::new();
+        let ts = anamnesis_core::Timestamp::from_unix_seconds(0).unwrap();
+        let (value, _) = field_input_value(&FieldData::DateTime(ts), &resolver, "Not/AZone");
+        assert_eq!(value, "");
     }
 
     #[test]

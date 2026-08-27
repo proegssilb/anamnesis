@@ -17,6 +17,15 @@ pub struct CreateAreaForm {
     pub description: String,
 }
 
+/// Replaces an area's title and description (`anamnesis_app::edit_area`).
+#[derive(Debug, Deserialize)]
+pub struct EditAreaForm {
+    pub csrf_token: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateProjectForm {
     pub csrf_token: String,
@@ -32,6 +41,28 @@ pub struct TransitionProjectStatusForm {
     /// SQL adapter stores (`anamnesis_adapters::sql::project_status_to_text`),
     /// so a `<select>` option's value round-trips without translation.
     pub status: String,
+}
+
+/// Defines a new custom field on a project (`docs/DOMAIN.md` §3) — the
+/// owner's motivating house-hunting example (price, viewing date, ...) needs
+/// this to be reachable from the UI at all, not just by hand-writing SQL.
+/// `kind` is the lowercase spelling `crate::handlers::format::format_field_kind`
+/// produces and `crate::handlers::field_form::parse_field_kind` consumes.
+///
+/// `show_on_card` is an HTML checkbox: a browser omits an unchecked box's
+/// name from the submitted body entirely (rather than sending `"false"`), so
+/// this is a plain `String` (present-and-non-empty when checked, absent when
+/// not) rather than a `bool` — `serde`'s `bool` deserializer only accepts the
+/// literal tokens `true`/`false`, which a checkbox never sends either way.
+/// `crate::handlers::projects::add_field_definition_impl` converts it with
+/// `!form.show_on_card.is_empty()`.
+#[derive(Debug, Deserialize)]
+pub struct AddFieldDefinitionForm {
+    pub csrf_token: String,
+    pub name: String,
+    pub kind: String,
+    #[serde(default)]
+    pub show_on_card: String,
 }
 
 #[derive(Debug, Deserialize)]

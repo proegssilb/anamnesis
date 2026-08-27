@@ -48,6 +48,12 @@ pub struct ProjectAggregate {
 #[async_trait]
 pub trait ProjectRepository: Send + Sync {
     async fn load(&self, id: ProjectId) -> Result<Option<ProjectAggregate>, RepoError>;
+    /// Every non-archived project in `area_id` — an archived project stays
+    /// loadable by [`Self::load`] (an archive/unarchive route, or a task
+    /// still living under it, needs to reach it directly), but is excluded
+    /// here so the area's project board does not keep showing it
+    /// (`docs/DOMAIN.md` §2: archived is "vanished from every view unless
+    /// explicitly searched").
     async fn list_by_area(&self, area_id: AreaId) -> Result<Vec<Project>, RepoError>;
     /// How many projects currently hold `status == Active`, excluding
     /// `excluding` itself if given — exactly the count

@@ -66,6 +66,13 @@ impl TimezoneResolver for TzTimezoneResolver {
         Ok(utc.to_timezone(tz).date())
     }
 
+    fn local_time(&self, iana_name: &str, instant: Timestamp) -> Result<Time, RepoError> {
+        let tz = timezones::get_by_name(iana_name).ok_or_else(|| unknown_zone(iana_name))?;
+        let utc = OffsetDateTime::from_unix_timestamp(instant.unix_seconds())
+            .expect("Timestamp was validated at construction");
+        Ok(utc.to_timezone(tz).time())
+    }
+
     fn to_utc(&self, iana_name: &str, date: Date, time: Time) -> Result<Timestamp, RepoError> {
         let tz = timezones::get_by_name(iana_name).ok_or_else(|| unknown_zone(iana_name))?;
         let naive = PrimitiveDateTime::new(date, time);
@@ -381,5 +388,47 @@ mod tests {
             .unwrap();
         let recovered = resolver.local_date("Australia/Sydney", instant).unwrap();
         assert_eq!(recovered, original);
+    }
+
+    // --- local_time: the instant -> local-wall-clock-time-of-day seam that
+    // DateTime field prefill needs (`crate::timezone`'s module doc comment). ---
+
+    #[test]
+    fn local_time_round_trips_through_to_utc() {
+        let resolver = TzTimezoneResolver::new();
+        let original_date = date(2026, Month::July, 4);
+        let original_time = Time::from_hms(14, 30, 0).unwrap();
+        let instant = resolver
+            .to_utc("America/New_York", original_date, original_time)
+            .unwrap();
+        assert_eq!(
+            resolver.local_date("America/New_York", instant).unwrap(),
+            original_date
+        );
+        assert_eq!(
+            resolver.local_time("America/New_York", instant).unwrap(),
+            original_time
+        );
+    }
+
+    #[test]
+    fn local_time_an_unknown_zone_is_rejected() {
+        let resolver = TzTimezoneResolver::new();
+        assert!(
+            resolver
+                .local_time("Mars/Colony_One", ts(2026, Month::June, 1, 0, 0))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn local_time_reflects_the_zones_offset_not_utcs() {
+        // 00:00 UTC on 2026-06-01 is 09:00 the same day in Tokyo (UTC+9, no
+        // DST) -- a real offset shift, not just a pass-through of the UTC
+        // clock time.
+        let resolver = TzTimezoneResolver::new();
+        let instant = ts(2026, Month::June, 1, 0, 0);
+        let local = resolver.local_time("Asia/Tokyo", instant).unwrap();
+        assert_eq!(local, Time::from_hms(9, 0, 0).unwrap());
     }
 }

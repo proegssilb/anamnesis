@@ -135,6 +135,26 @@ pub fn parse_text(kind: FieldKind, raw: &str) -> FieldData {
     }
 }
 
+/// Parses a field *definition*'s `kind` `<select>` value (`"number"`,
+/// `"currency"`, `"date"`, `"time"`, `"datetime"`, `"line"`, `"block"` — the
+/// exact spelling `crate::handlers::format::format_field_kind` produces, so a
+/// round trip through the add-field form matches what the fields list
+/// already renders) into a [`FieldKind`] — the reverse of
+/// `format_field_kind`, needed once a project admin can actually create a
+/// field definition through the UI rather than by hand-writing SQL.
+pub fn parse_field_kind(raw: &str) -> Result<FieldKind, WebError> {
+    match raw {
+        "number" => Ok(FieldKind::Number),
+        "currency" => Ok(FieldKind::Currency),
+        "date" => Ok(FieldKind::Date),
+        "time" => Ok(FieldKind::Time),
+        "datetime" => Ok(FieldKind::DateTime),
+        "line" => Ok(FieldKind::Line),
+        "block" => Ok(FieldKind::Block),
+        other => Err(bad(format!("{other:?} is not a known field kind"))),
+    }
+}
+
 /// Parses `value` (and, for `Currency`, `currency`) into a [`FieldData`]
 /// matching `kind` — the one dispatch point every field-kind parser above
 /// funnels through.
