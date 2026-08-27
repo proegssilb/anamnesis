@@ -201,10 +201,13 @@ CREATE TABLE project_members (
     PRIMARY KEY (user_id, project_id)
 );
 
--- Singleton settings row (docs/DOMAIN.md §3). No port in `anamnesis-app`
--- consumes this table yet (Phase D defined no `SettingsRepository`), so no
--- adapter code reads or writes it in this phase -- it exists so the schema
--- is complete for whichever later phase adds that port.
+-- Singleton settings row (docs/DOMAIN.md §3), backed by
+-- `anamnesis_app::SettingsRepository` / `crate::sql::settings`.
+-- `last_swept_at` was added later (see 0002_settings_last_swept_at.sql).
+-- `timezone` is a schema leftover no adapter code reads or writes -- the
+-- real timezone source of truth is `ANAMNESIS_TIMEZONE` plus
+-- `anamnesis_app::TimezoneResolver` (see `anamnesis_app::settings`'s module
+-- doc comment for why).
 CREATE TABLE settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     active_project_limit INTEGER NOT NULL,

@@ -26,6 +26,7 @@ mod membership;
 mod project;
 mod relationship;
 mod search;
+mod settings;
 mod tangle;
 mod task;
 
@@ -147,6 +148,35 @@ pub(crate) fn field_kind_to_text(kind: anamnesis_core::FieldKind) -> &'static st
         DateTime => "datetime",
         Line => "line",
         Block => "block",
+    }
+}
+
+/// `time::Weekday` <-> its stored text representation, for
+/// `Recurrence::EveryNWeeks`'s `weekday` field.
+pub(crate) fn weekday_to_text(weekday: time::Weekday) -> &'static str {
+    use time::Weekday::*;
+    match weekday {
+        Monday => "monday",
+        Tuesday => "tuesday",
+        Wednesday => "wednesday",
+        Thursday => "thursday",
+        Friday => "friday",
+        Saturday => "saturday",
+        Sunday => "sunday",
+    }
+}
+
+pub(crate) fn weekday_from_text(raw: &str) -> Result<time::Weekday, RepoError> {
+    use time::Weekday::*;
+    match raw {
+        "monday" => Ok(Monday),
+        "tuesday" => Ok(Tuesday),
+        "wednesday" => Ok(Wednesday),
+        "thursday" => Ok(Thursday),
+        "friday" => Ok(Friday),
+        "saturday" => Ok(Saturday),
+        "sunday" => Ok(Sunday),
+        other => Err(RepoError::new(format!("invalid stored weekday {other:?}"))),
     }
 }
 
