@@ -26,6 +26,14 @@ macro_rules! uuid_id {
                 Self(id)
             }
 
+            #[doc = concat!("Builds a `", stringify!($name), "` from a `u128`, as a `const fn`.")]
+            ///
+            /// Used for well-known, fixed ids (e.g. built-in relationship
+            /// kinds) that must exist without any id generator having run.
+            pub const fn from_u128(id: u128) -> Self {
+                Self(Uuid::from_u128(id))
+            }
+
             /// The underlying `Uuid`.
             pub fn as_uuid(&self) -> Uuid {
                 self.0
@@ -49,6 +57,12 @@ macro_rules! uuid_id {
 uuid_id!(BoardId);
 uuid_id!(ColumnId);
 uuid_id!(CardId);
+uuid_id!(AreaId);
+uuid_id!(ProjectId);
+uuid_id!(TaskId);
+uuid_id!(RelationshipId);
+uuid_id!(KindId);
+uuid_id!(FieldId);
 
 /// The identity of a user, taken verbatim from the `sub` claim of an OIDC id
 /// token. Opaque to the core beyond equality.
@@ -130,6 +144,24 @@ mod tests {
         let c = CardId::new(Uuid::from_u128(2));
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn domain_ids_wrap_and_expose_a_uuid() {
+        let raw = Uuid::from_u128(1);
+        assert_eq!(AreaId::new(raw).as_uuid(), raw);
+        assert_eq!(ProjectId::new(raw).as_uuid(), raw);
+        assert_eq!(TaskId::new(raw).as_uuid(), raw);
+        assert_eq!(RelationshipId::new(raw).as_uuid(), raw);
+        assert_eq!(KindId::new(raw).as_uuid(), raw);
+        assert_eq!(FieldId::new(raw).as_uuid(), raw);
+    }
+
+    #[test]
+    fn from_u128_builds_a_stable_well_known_id() {
+        const FIXED: KindId = KindId::from_u128(1);
+        assert_eq!(FIXED, KindId::from_u128(1));
+        assert_ne!(FIXED, KindId::from_u128(2));
     }
 
     #[test]
