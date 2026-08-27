@@ -17,8 +17,8 @@ use support::{FixedClock, SequentialIdGen};
 use anamnesis_app::*;
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
-    AreaId, Column, ColumnId, DomainError, FieldKind, KindId, Outcome, Placement, ProjectId,
-    ProjectStatus, SuggestionSettings, Task, TaskSummary, Title, UserId,
+    AreaId, Column, ColumnId, DomainError, FieldData, FieldKind, KindId, NumberValue, Outcome,
+    Placement, ProjectId, ProjectStatus, SuggestionSettings, Task, TaskSummary, Title, UserId,
 };
 
 fn admin() -> Option<Role> {
@@ -690,4 +690,446 @@ async fn edit_comment_uc(
     body: &str,
 ) -> Result<Comment, AppError> {
     edit_comment(repo, clock, role, editor, id, body).await
+}
+
+#[tokio::test]
+async fn list_comments_and_list_attachments_are_gated_read_paths() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let project_id = some_project_id(&ids);
+    let task = create_task(&fakes, &ids, &clock, member(), project_id, "T", "")
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        list_comments(&fakes, none(), task.id).await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(list_comments(&fakes, member(), task.id).await.is_ok());
+
+    assert!(matches!(
+        list_attachments(&fakes, none(), task.id).await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(list_attachments(&fakes, member(), task.id).await.is_ok());
+}
+
+#[tokio::test]
+async fn delete_comment_is_allowed_for_author_or_admin_only() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let project_id = some_project_id(&ids);
+    let task = create_task(&fakes, &ids, &clock, member(), project_id, "T", "")
+        .await
+        .unwrap();
+    let comment = add_comment(&fakes, &ids, &clock, member(), task.id, alice(), "hi")
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        delete_comment(&fakes, member(), &bob(), comment.id).await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(
+        delete_comment(&fakes, project_admin(), &bob(), comment.id)
+            .await
+            .is_ok()
+    );
+}
+
+// ============================ Read-path gating ============================
+// docs/DOMAIN.md's permission matrix must be enforced on read paths too, not
+// only on writes -- a non-member must not be able to view a project, a
+// task, or an area just because nothing there mutates state.
+
+#[tokio::test]
+async fn view_area_view_project_and_view_task_all_refuse_no_role() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+
+    let area = create_area(&fakes, &ids, &clock, admin(), "Home", "", 0)
+        .await
+        .unwrap();
+    assert!(matches!(
+        view_area(&fakes, none(), area.id).await,
+        Err(AppError::Forbidden)
+    ));
+    // Areas are System Admin territory (crate::policy's module doc comment):
+    // a mere project Member must not see the area grid either.
+    assert!(matches!(
+        view_area(&fakes, member(), area.id).await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(view_area(&fakes, admin(), area.id).await.is_ok());
+
+    let project = create_project(&fakes, &ids, &clock, member(), area.id, "P", "")
+        .await
+        .unwrap();
+    assert!(matches!(
+        view_project(&fakes, none(), project.id).await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(view_project(&fakes, member(), project.id).await.is_ok());
+
+    let task = create_task(&fakes, &ids, &clock, member(), project.id, "T", "")
+        .await
+        .unwrap();
+    assert!(matches!(
+        view_task(&fakes, none(), task.id).await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(view_task(&fakes, member(), task.id).await.is_ok());
+}
+
+// ============================== Areas: edit/reposition ==============================
+
+#[tokio::test]
+async fn edit_area_and_reposition_area_require_system_admin() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let area = create_area(&fakes, &ids, &clock, admin(), "Home", "", 0)
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        edit_area(&fakes, &clock, member(), area.id, "Renamed", "").await,
+        Err(AppError::Forbidden)
+    ));
+    let edited = edit_area(&fakes, &clock, admin(), area.id, "Renamed", "")
+        .await
+        .unwrap();
+    assert_eq!(edited.title.as_str(), "Renamed");
+
+    assert!(matches!(
+        reposition_area(&fakes, member(), area.id, 5).await,
+        Err(AppError::Forbidden)
+    ));
+    let moved = reposition_area(&fakes, admin(), area.id, 5).await.unwrap();
+    assert_eq!(moved.position, 5);
+}
+
+// ============================== Projects: edit/archive ==============================
+
+#[tokio::test]
+async fn edit_project_archive_and_unarchive_require_project_admin() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let area_id = AreaId::new(ids.next());
+    let project = create_project(&fakes, &ids, &clock, member(), area_id, "P", "")
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        edit_project_fields(&fakes, &clock, member(), project.id, Some("New"), None).await,
+        Err(AppError::Forbidden)
+    ));
+    let edited = edit_project_fields(&fakes, &clock, project_admin(), project.id, Some("New"), None)
+        .await
+        .unwrap();
+    assert_eq!(edited.title.as_str(), "New");
+    // description left unchanged (None passed through).
+    assert_eq!(edited.description, "");
+
+    assert!(matches!(
+        archive_project(&fakes, &clock, member(), project.id).await,
+        Err(AppError::Forbidden)
+    ));
+    let archived = archive_project(&fakes, &clock, project_admin(), project.id)
+        .await
+        .unwrap();
+    assert!(archived.archived_at.is_some());
+
+    let restored = unarchive_project(&fakes, &clock, project_admin(), project.id)
+        .await
+        .unwrap();
+    assert!(restored.archived_at.is_none());
+}
+
+#[tokio::test]
+async fn rename_field_definition_requires_project_admin() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let area_id = AreaId::new(ids.next());
+    let project = create_project(&fakes, &ids, &clock, member(), area_id, "P", "")
+        .await
+        .unwrap();
+    let definition = add_field_definition(
+        &fakes,
+        &ids,
+        project_admin(),
+        project.id,
+        "Priority",
+        FieldKind::Number,
+        0,
+        true,
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        rename_field_definition(&fakes, member(), project.id, definition.id, "Urgency").await,
+        Err(AppError::Forbidden)
+    ));
+    let renamed = rename_field_definition(&fakes, project_admin(), project.id, definition.id, "Urgency")
+        .await
+        .unwrap();
+    assert_eq!(renamed.name.as_str(), "Urgency");
+}
+
+// ============================== Task fields ==============================
+
+#[tokio::test]
+async fn set_task_field_value_rejects_a_kind_mismatch() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let area_id = AreaId::new(ids.next());
+    let project = create_project(&fakes, &ids, &clock, member(), area_id, "P", "")
+        .await
+        .unwrap();
+    let definition = add_field_definition(
+        &fakes,
+        &ids,
+        project_admin(),
+        project.id,
+        "Priority",
+        FieldKind::Number,
+        0,
+        true,
+    )
+    .await
+    .unwrap();
+    let task = create_task(&fakes, &ids, &clock, member(), project.id, "T", "")
+        .await
+        .unwrap();
+
+    let mismatched = set_task_field_value(
+        &fakes,
+        member(),
+        &definition,
+        task.id,
+        FieldData::Line("not a number".to_string()),
+    )
+    .await;
+    assert!(matches!(
+        mismatched,
+        Err(AppError::Rule(DomainError::FieldKindMismatch(_)))
+    ));
+
+    let ok = set_task_field_value(
+        &fakes,
+        member(),
+        &definition,
+        task.id,
+        FieldData::Number(NumberValue { units: 5, scale: 0 }),
+    )
+    .await;
+    assert!(ok.is_ok());
+}
+
+#[tokio::test]
+async fn set_checklist_position_reorders_a_task() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let project_id = some_project_id(&ids);
+    let task = create_task(&fakes, &ids, &clock, member(), project_id, "T", "")
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        set_checklist_position(&fakes, none(), task.id, 3).await,
+        Err(AppError::Forbidden)
+    ));
+    let reordered = set_checklist_position(&fakes, member(), task.id, 3)
+        .await
+        .unwrap();
+    assert_eq!(reordered.checklist_position, 3);
+}
+
+// ============================== Relationships ==============================
+
+#[tokio::test]
+async fn resolve_kind_recognises_all_three_builtins_and_falls_back_to_the_repository() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+
+    assert_eq!(
+        resolve_kind(&fakes, KindId::BUILTIN_BLOCKS).await.unwrap().id,
+        KindId::BUILTIN_BLOCKS
+    );
+    assert_eq!(
+        resolve_kind(&fakes, KindId::BUILTIN_RELATES_TO)
+            .await
+            .unwrap()
+            .id,
+        KindId::BUILTIN_RELATES_TO
+    );
+    assert_eq!(
+        resolve_kind(&fakes, KindId::BUILTIN_DUPLICATES)
+            .await
+            .unwrap()
+            .id,
+        KindId::BUILTIN_DUPLICATES
+    );
+
+    let unknown = KindId::new(uuid::Uuid::from_u128(999));
+    assert!(matches!(
+        resolve_kind(&fakes, unknown).await,
+        Err(AppError::NotFound)
+    ));
+
+    let area_id = AreaId::new(ids.next());
+    let clock = FixedClock::at(0);
+    let project = create_project(&fakes, &ids, &clock, member(), area_id, "P", "")
+        .await
+        .unwrap();
+    let custom = add_relationship_kind(&fakes, &ids, project_admin(), project.id, "inspired by", "inspired")
+        .await
+        .unwrap();
+    assert_eq!(resolve_kind(&fakes, custom.id).await.unwrap().id, custom.id);
+}
+
+#[tokio::test]
+async fn create_relationship_use_case_rejects_a_custom_kind_across_projects() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let area_id = AreaId::new(ids.next());
+    let project_a = create_project(&fakes, &ids, &clock, member(), area_id, "A", "")
+        .await
+        .unwrap();
+    let project_b = create_project(&fakes, &ids, &clock, member(), area_id, "B", "")
+        .await
+        .unwrap();
+    let custom = add_relationship_kind(&fakes, &ids, project_admin(), project_a.id, "inspired by", "inspired")
+        .await
+        .unwrap();
+
+    let a = create_task(&fakes, &ids, &clock, member(), project_a.id, "A-task", "")
+        .await
+        .unwrap();
+    let b = create_task(&fakes, &ids, &clock, member(), project_b.id, "B-task", "")
+        .await
+        .unwrap();
+
+    let result = create_relationship(
+        &fakes, &fakes, &ids, &clock, member(), a.id, project_a.id, b.id, project_b.id, custom.id,
+    )
+    .await;
+    assert_eq!(
+        result,
+        Err(AppError::Rule(DomainError::RelationshipKindNotAllowed))
+    );
+
+    // The built-in blocks kind is fine across the same pair of projects.
+    let ok = create_relationship(
+        &fakes,
+        &fakes,
+        &ids,
+        &clock,
+        member(),
+        a.id,
+        project_a.id,
+        b.id,
+        project_b.id,
+        KindId::BUILTIN_BLOCKS,
+    )
+    .await;
+    assert!(ok.is_ok());
+}
+
+#[tokio::test]
+async fn delete_relationship_requires_a_role_and_removes_the_edge() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let project_id = some_project_id(&ids);
+    let a = create_task(&fakes, &ids, &clock, member(), project_id, "A", "")
+        .await
+        .unwrap();
+    let b = create_task(&fakes, &ids, &clock, member(), project_id, "B", "")
+        .await
+        .unwrap();
+    let relationship = create_relationship(
+        &fakes,
+        &fakes,
+        &ids,
+        &clock,
+        member(),
+        a.id,
+        project_id,
+        b.id,
+        project_id,
+        KindId::BUILTIN_RELATES_TO,
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        delete_relationship(&fakes, none(), relationship.id).await,
+        Err(AppError::Forbidden)
+    ));
+    delete_relationship(&fakes, member(), relationship.id)
+        .await
+        .unwrap();
+    assert!(matches!(
+        delete_relationship(&fakes, member(), relationship.id).await,
+        Err(AppError::NotFound)
+    ));
+}
+
+// ============================== Attachments ==============================
+
+#[tokio::test]
+async fn add_link_and_file_attachments_and_delete_cleans_up_the_blob() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let project_id = some_project_id(&ids);
+    let task = create_task(&fakes, &ids, &clock, member(), project_id, "T", "")
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        add_link_attachment(&fakes, &ids, &clock, none(), task.id, "https://example.com").await,
+        Err(AppError::Forbidden)
+    ));
+    let link = add_link_attachment(&fakes, &ids, &clock, member(), task.id, "https://example.com")
+        .await
+        .unwrap();
+    assert!(matches!(link.kind, AttachmentKind::Link { .. }));
+
+    let file = add_file_attachment(
+        &fakes,
+        &fakes,
+        &ids,
+        &clock,
+        member(),
+        task.id,
+        "photo.png",
+        "image/png",
+        vec![1, 2, 3],
+    )
+    .await
+    .unwrap();
+    let blob_key = match &file.kind {
+        AttachmentKind::File { blob_key, .. } => blob_key.clone(),
+        AttachmentKind::Link { .. } => panic!("expected a file attachment"),
+    };
+    assert!(BlobStore::get(&fakes, &blob_key).await.unwrap().is_some());
+
+    let attachments = list_attachments(&fakes, member(), task.id).await.unwrap();
+    assert_eq!(attachments.len(), 2);
+
+    delete_attachment(&fakes, &fakes, member(), file.id)
+        .await
+        .unwrap();
+    assert!(BlobStore::get(&fakes, &blob_key).await.unwrap().is_none());
 }
