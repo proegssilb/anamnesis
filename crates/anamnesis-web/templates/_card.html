@@ -1,0 +1,38 @@
+{# One board card, task or tangle — fragment-addressable
+   (`docs/DOMAIN.md` §8: "Templates become fragment-addressable (one card,
+   one column) so htmx can swap precisely"). Included from `_column.html`'s
+   `{% for item in c.items %}` loop, so `item`, `loop`, `columns`, and
+   `csrf_token` all come from that enclosing context. `data-item-kind` /
+   `data-item-id` are what `static/app.js`'s Sortable handler reads off the
+   dragged element. #}
+{% if item.kind == "task" %}
+  <div class="card" id="card-task-{{ item.id }}" data-item-kind="task" data-item-id="{{ item.id }}">
+    <a class="card-title" href="/tasks/{{ item.id }}">{{ item.title }}</a>
+    {% if item.card_fields %}
+      <p class="card-fields">
+        {% for f in item.card_fields %}<span class="badge">{{ f.name }}: {{ f.value }}</span>{% endfor %}
+      </p>
+    {% endif %}
+    {% if item.bounce_count > 0 %}<span class="badge">bounced {{ item.bounce_count }}x</span>{% endif %}
+    {% include "_reposition_form.html" %}
+  </div>
+{% elif item.kind == "tangle" %}
+  {# A tangle placed on the board -- occupies a column slot and counts
+     against the WIP limit exactly like a task (`docs/DOMAIN.md`'s Tangle
+     section). #}
+  <div class="card tangle-card{% if item.resolved %} tangle-resolved{% endif %}" id="card-tangle-{{ item.id }}" data-item-kind="tangle" data-item-id="{{ item.id }}">
+    <p class="card-title">
+      {% if item.resolved %}Untangled{% else %}Tangle{% endif %}: {{ item.size }} tasks
+    </p>
+    <p class="card-fields">
+      {% for id in item.task_ids %}<a href="/tasks/{{ id }}">task {{ loop.index }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+    </p>
+    {% if not item.resolved %}
+      <form method="post" action="/tangles/{{ item.id }}/drop">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">Drop back</button>
+      </form>
+      {% include "_reposition_form.html" %}
+    {% endif %}
+  </div>
+{% endif %}

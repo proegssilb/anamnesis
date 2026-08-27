@@ -11,10 +11,11 @@ use minijinja::context;
 use anamnesis_app::{
     AppError, add_comment, add_link_attachment, create_relationship, delete_relationship,
     drop_task, edit_task, list_attachments, list_comments, raise_task, resolve_kind,
-    set_task_parent, view_task,
+    set_task_field_value, set_task_parent, view_task,
 };
 use anamnesis_core::{
-    Placement, RelationshipId, TaskId, builtin_blocks, builtin_duplicates, builtin_relates_to,
+    FieldId, Placement, RelationshipId, TaskId, builtin_blocks, builtin_duplicates,
+    builtin_relates_to,
 };
 
 use crate::auth::CurrentUser;
@@ -23,10 +24,11 @@ use crate::session::csrf_tokens_match;
 use crate::state::AppState;
 
 use super::access;
-use super::format::column_is_done;
+use super::field_form;
+use super::format::{column_is_done, field_input_value, format_field_data, format_field_kind};
 use super::forms::{
     AddCommentForm, AddLinkAttachmentForm, CreateRelationshipForm, CsrfOnlyForm, EditTaskForm,
-    RaiseTaskForm, SetParentForm,
+    RaiseTaskForm, SetFieldValueForm, SetParentForm,
 };
 
 /// Resolves the role a task's own project grants `user` — every task
@@ -106,7 +108,16 @@ async fn edit_task_impl(
     )
     .await
     {
-        Ok(task) => render_task_page(state, user, task_id, &task, None, StatusCode::OK).await,
+        Ok(task) => {
+            // Keeps the search index in step with a title edit — see
+            // `crate::handlers::areas::create_area_impl`'s comment for why
+            // this happens here rather than inside the use case.
+            state
+                .search_index
+                .index_task(task.id, task.title.as_str())
+                .await?;
+            render_task_page(state, user, task_id, &task, None, StatusCode::OK).await
+        }
         Err(AppError::Rule(e)) => {
             let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
             render_task_page(
@@ -416,6 +427,93 @@ async fn create_relationship_impl(
     }
 }
 
+/// Sets a task's value for one of its project's custom fields
+/// (`docs/DOMAIN.md` §3) — the form every [`anamnesis_core::FieldKind`]
+/// needed and never had before this phase (see `super::field_form`'s module
+/// doc comment).
+pub async fn set_field_value_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path((id, field_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+    Form(form): Form<SetFieldValueForm>,
+) -> Response {
+    match set_field_value_impl(
+        &state,
+        &user,
+        TaskId::new(id),
+        FieldId::new(field_id),
+        form,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn set_field_value_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    field_id: FieldId,
+    form: SetFieldValueForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let (project_id, role) = role_for_task(state, &user.user_id, task_id).await?;
+    let project = state
+        .projects
+        .load(project_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let definition = project
+        .field_definitions
+        .iter()
+        .find(|d| d.id == field_id)
+        .ok_or(AppError::NotFound)?;
+
+    let data = match field_form::parse_field_data(
+        definition.kind,
+        &form.value,
+        &form.currency,
+        state.timezone.as_ref(),
+        &state.settings.timezone_name,
+    ) {
+        Ok(data) => data,
+        Err(WebError::BadRequest(message)) => {
+            let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
+            return render_task_page(
+                state,
+                user,
+                task_id,
+                &aggregate.task,
+                Some(&message),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            )
+            .await;
+        }
+        Err(err) => return Err(err),
+    };
+
+    match set_task_field_value(state.tasks.as_ref(), role, definition, task_id, data).await {
+        Ok(_) => Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response()),
+        Err(AppError::Rule(e)) => {
+            let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
+            render_task_page(
+                state,
+                user,
+                task_id,
+                &aggregate.task,
+                Some(&e.to_string()),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            )
+            .await
+        }
+        Err(err) => Err(WebError::from(err)),
+    }
+}
+
 /// Deletes a relationship edge — reachable from either end's task page (the
 /// URL's `id` names whichever task the delete form was submitted from, and
 /// need only be *one* of the edge's two tasks, not specifically the `from`
@@ -528,6 +626,40 @@ async fn render_task_page(
         Placement::Below => None,
     };
 
+    // Custom field definitions + this task's own values (`docs/DOMAIN.md`
+    // §3): the section that made every field genuinely editable, not just
+    // displayed (`super::field_form`'s module doc comment).
+    let field_definitions = state
+        .projects
+        .load(task.project_id)
+        .await?
+        .map(|a| a.field_definitions)
+        .unwrap_or_default();
+    let field_values = state
+        .tasks
+        .load(task_id)
+        .await?
+        .map(|a| a.field_values)
+        .unwrap_or_default();
+    let fields: Vec<_> = field_definitions
+        .iter()
+        .map(|def| {
+            let stored = field_values.iter().find(|v| v.field_id == def.id);
+            let (input_value, currency_code) = stored
+                .map(|v| field_input_value(&v.data))
+                .unwrap_or_default();
+            context! {
+                id => def.id.to_string(),
+                name => def.name.as_str(),
+                kind => format_field_kind(def.kind),
+                show_on_card => def.show_on_card,
+                display_value => stored.map(|v| format_field_data(&v.data)),
+                input_value => input_value,
+                currency_code => currency_code.unwrap_or_default(),
+            }
+        })
+        .collect();
+
     let tmpl = state
         .templates
         .get_template("task.html")
@@ -542,6 +674,7 @@ async fn render_task_page(
             attachments => attachments,
             relationships => relationships,
             column_options => column_options,
+            fields => fields,
             csrf_token => user.csrf_token,
             current_user => user.display_name,
             error => error,

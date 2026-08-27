@@ -1,0 +1,21 @@
+{# One board column, fragment-addressable (`docs/DOMAIN.md` §8). Needs `c`
+   (this column's view), `columns` (every column, for `_reposition_form.html`'s
+   picker) and `csrf_token` from the enclosing context.
+   `oob`, if set, marks this fragment as an htmx out-of-band swap: the
+   reposition endpoint's HX-Request response renders one or two of these
+   (the destination column, and the source column if the card changed
+   columns) each addressed by `id="column-…"`, so htmx updates exactly the
+   columns a drag actually touched without re-rendering the whole board. #}
+<section class="column" id="column-{{ c.id }}" data-column-id="{{ c.id }}"{% if oob %} hx-swap-oob="true"{% endif %}>
+  <div class="column-header">
+    <h2 class="column-title">{{ c.title }}</h2>
+    {% if c.wip_limit %}<span class="wip-limit">{{ c.current_count }} / {{ c.wip_limit }}</span>{% endif %}
+  </div>
+  <div class="card-list" id="cardlist-{{ c.id }}" data-column-id="{{ c.id }}">
+    {% for item in c.items %}
+      {% include "_card.html" %}
+    {% else %}
+      <p class="hint">Nothing here.</p>
+    {% endfor %}
+  </div>
+</section>

@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#1c2733">
+  <meta name="csrf-token" content="{{ csrf_token }}">
   <title>{% block title %}Anamnesis{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="manifest" href="/manifest.webmanifest">
@@ -12,7 +13,10 @@
   <header class="site-header">
     <nav class="brand-nav">
       <a class="brand" href="/areas">Anamnesis</a>
-      {% if current_user %}<a class="nav-link" href="/board">Board</a>{% endif %}
+      {% if current_user %}
+        <a class="nav-link" href="/board">Board</a>
+        <a class="nav-link" href="/search">Search</a>
+      {% endif %}
     </nav>
     {% if current_user %}
       <form class="logout-form" method="post" action="/logout">
@@ -25,5 +29,14 @@
   <main>
     {% block content %}{% endblock %}
   </main>
+  {# `docs/DOMAIN.md` §8: htmx supplies the transport, SortableJS the drag
+     mechanics ("Sortable drags, htmx persists") -- both vendored locally
+     (`crate::static_files`'s doc comment), never CDN-loaded. Every
+     interactive affordance these enhance already works as a plain form
+     without this script running at all (progressive enhancement is
+     mandatory) -- see `static/app.js` and each `_reposition_form.html`. #}
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/sortable.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
 </body>
 </html>

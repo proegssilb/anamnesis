@@ -109,3 +109,32 @@ pub struct AcceptTangleForm {
     pub csrf_token: String,
     pub tangle_id: uuid::Uuid,
 }
+
+/// Sets a task's value for one of its project's custom fields
+/// (`docs/DOMAIN.md` §3). One shape for every [`anamnesis_core::FieldKind`]:
+/// `value` is the raw text of whichever single input that kind's edit form
+/// renders (a decimal string, an `<input type="date">`'s value, ...);
+/// `currency` is used only for `Currency` fields (see
+/// `crate::handlers::field_form::parse_field_data`).
+#[derive(Debug, Deserialize)]
+pub struct SetFieldValueForm {
+    pub csrf_token: String,
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub currency: String,
+}
+
+/// Moves a board card (a task or a placed tangle) to `column_id`/`position`
+/// (`docs/DOMAIN.md` §8) — posted either by `static/app.js`'s drag handler
+/// (via `htmx.ajax`) or by `_reposition_form.html`'s plain-form fallback,
+/// both against the exact same endpoint and field names.
+#[derive(Debug, Deserialize)]
+pub struct RepositionForm {
+    pub csrf_token: String,
+    /// `"task"` | `"tangle"`.
+    pub item_kind: String,
+    pub item_id: uuid::Uuid,
+    pub column_id: uuid::Uuid,
+    pub position: u32,
+}

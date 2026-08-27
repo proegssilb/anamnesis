@@ -11,8 +11,9 @@ use crate::handlers::{
     create_project_handler, create_relationship_handler, create_task_handler,
     delete_relationship_handler, drop_tangle_handler, drop_task_handler, edit_task_handler,
     healthz_handler, list_areas_handler, login_handler, logout_handler, raise_task_handler,
-    root_handler, set_parent_handler, transition_project_status_handler, view_area_handler,
-    view_board_handler, view_project_handler, view_task_handler,
+    reposition_handler, root_handler, search_handler, set_field_value_handler,
+    set_parent_handler, transition_project_status_handler, view_area_handler, view_board_handler,
+    view_project_handler, view_task_handler,
 };
 use crate::state::AppState;
 use crate::static_files;
@@ -50,7 +51,12 @@ pub fn build_router(state: AppState) -> Router {
             "/tasks/{id}/relationships/{relationship_id}/delete",
             post(delete_relationship_handler),
         )
+        .route(
+            "/tasks/{id}/fields/{field_id}",
+            post(set_field_value_handler),
+        )
         .route("/board", get(view_board_handler))
+        .route("/board/reposition", post(reposition_handler))
         .route("/board/suggestion/accept", post(accept_suggestion_handler))
         .route(
             "/board/suggestion/accept-tangle",
@@ -58,7 +64,11 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/board/archive-all", post(archive_all_handler))
         .route("/tangles/{id}/drop", post(drop_tangle_handler))
+        .route("/search", get(search_handler))
         .route("/static/app.css", get(static_files::app_css))
+        .route("/static/app.js", get(static_files::app_js))
+        .route("/static/htmx.min.js", get(static_files::htmx_js))
+        .route("/static/sortable.min.js", get(static_files::sortable_js))
         .route("/static/icon.svg", get(static_files::icon))
         .route("/manifest.webmanifest", get(static_files::manifest))
         .with_state(state)

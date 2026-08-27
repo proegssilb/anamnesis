@@ -108,6 +108,8 @@ async fn main() {
         comments: store.clone(),
         attachments: store.clone(),
         board: store.clone(),
+        search: store.clone(),
+        search_index: store.clone(),
         membership: store.clone(),
         timezone: Arc::new(timezone),
         clock: Arc::new(clock),

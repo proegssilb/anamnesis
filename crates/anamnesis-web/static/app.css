@@ -1,7 +1,10 @@
 /* Anamnesis — one hand-written stylesheet, mobile-first.
  * Single-column stack by default; columns become a horizontally scrolling
- * flex row once there is room. No JavaScript anywhere in this app: every
- * interactive affordance below is a plain link or a plain form.
+ * flex row once there is room. Every interactive affordance below still
+ * works as a plain link or a plain form with JavaScript disabled entirely
+ * (`docs/DOMAIN.md` §8: "Keep the form-POST fallbacks") — the vendored
+ * htmx/SortableJS scripts (`crate::static_files`) only ever layer a nicer
+ * drag interaction on top of a card's own `.card-move-form`.
  */
 
 :root {
@@ -537,4 +540,73 @@ button:hover {
 
 .card-fields {
   margin: 0;
+}
+
+/* --- drag-and-drop (`docs/DOMAIN.md` §8): SortableJS adds this class to
+   the card being dragged; the plain-form fallback below it needs no CSS of
+   its own beyond `.card-move-form` (already styled above, under the board
+   toolbar rules). --- */
+
+.card-list {
+  min-height: var(--touch);
+  touch-action: pan-y;
+}
+
+.card {
+  cursor: grab;
+}
+
+.card-drag-ghost {
+  opacity: 0.4;
+}
+
+/* --- custom field values on the task detail page (`docs/DOMAIN.md` §3) --- */
+
+.field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: stretch;
+  padding: 0.75rem;
+}
+
+.field-current {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.field-name {
+  font-weight: 600;
+}
+
+.field-form {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.field-form label {
+  flex-basis: 100%;
+}
+
+.field-form input,
+.field-form textarea {
+  flex: 1 1 8rem;
+  min-width: 0;
+}
+
+/* --- search --- */
+
+.search-form {
+  flex-direction: row;
+  max-width: 32rem;
+}
+
+.search-form input {
+  flex: 1;
+  min-width: 0;
 }

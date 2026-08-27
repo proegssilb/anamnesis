@@ -51,6 +51,53 @@
   </section>
 
   <section>
+    <h2>Fields</h2>
+    {% if fields %}
+      <ul class="task-list field-list">
+        {% for f in fields %}
+          <li class="field-row">
+            <div class="field-current">
+              <span class="field-name">{{ f.name }}</span>
+              {% if f.display_value %}<span class="badge">{{ f.display_value }}</span>{% else %}<span class="hint">not set</span>{% endif %}
+              {% if f.show_on_card %}<span class="hint">(shown on card)</span>{% endif %}
+            </div>
+            <form class="inline-form field-form" method="post" action="/tasks/{{ task.id }}/fields/{{ f.id }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              {% if f.kind == "number" %}
+                <label for="field-{{ f.id }}">{{ f.name }} (number)</label>
+                <input id="field-{{ f.id }}" name="value" inputmode="decimal" placeholder="e.g. 12.5" value="{{ f.input_value }}">
+              {% elif f.kind == "currency" %}
+                <label for="field-{{ f.id }}">{{ f.name }} amount</label>
+                <input id="field-{{ f.id }}" name="value" inputmode="decimal" placeholder="e.g. 19.99" value="{{ f.input_value }}">
+                <label for="field-{{ f.id }}-currency">Currency</label>
+                <input id="field-{{ f.id }}-currency" name="currency" maxlength="3" placeholder="USD" value="{{ f.currency_code }}">
+              {% elif f.kind == "date" %}
+                <label for="field-{{ f.id }}">{{ f.name }}</label>
+                <input id="field-{{ f.id }}" type="date" name="value" value="{{ f.input_value }}">
+              {% elif f.kind == "time" %}
+                <label for="field-{{ f.id }}">{{ f.name }}</label>
+                <input id="field-{{ f.id }}" type="time" name="value" value="{{ f.input_value }}">
+              {% elif f.kind == "datetime" %}
+                <label for="field-{{ f.id }}">{{ f.name }}</label>
+                <input id="field-{{ f.id }}" type="datetime-local" name="value">
+              {% elif f.kind == "block" %}
+                <label for="field-{{ f.id }}">{{ f.name }}</label>
+                <textarea id="field-{{ f.id }}" name="value">{{ f.input_value }}</textarea>
+              {% else %}
+                <label for="field-{{ f.id }}">{{ f.name }}</label>
+                <input id="field-{{ f.id }}" name="value" value="{{ f.input_value }}">
+              {% endif %}
+              <button type="submit">Save</button>
+            </form>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="hint">This project defines no custom fields.</p>
+    {% endif %}
+  </section>
+
+  <section>
     <h2>Checklist</h2>
     {% if children %}
       <ul class="task-list">

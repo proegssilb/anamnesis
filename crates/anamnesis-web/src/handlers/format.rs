@@ -3,7 +3,7 @@
 //! the board's `show_on_card` fields and the task detail page.
 
 use anamnesis_app::BoardColumn;
-use anamnesis_core::{ColumnId, FieldData};
+use anamnesis_core::{ColumnId, FieldData, FieldKind};
 
 /// Whether `column_id` is an `is_done` column, per the board's current
 /// column list — `None` if no such column exists (should not happen for a
@@ -34,6 +34,54 @@ pub fn format_field_data(data: &FieldData) -> String {
         FieldData::Time(t) => format!("{t}"),
         FieldData::DateTime(ts) => ts.unix_seconds().to_string(),
         FieldData::Line(s) | FieldData::Block(s) => s.clone(),
+    }
+}
+
+/// The lowercase name this crate's templates and forms use for a
+/// [`FieldKind`] — `task.html`'s per-kind edit-form branch, and
+/// `crate::handlers::field_form::parse_field_data`'s dispatch, both key off
+/// this same spelling.
+pub fn format_field_kind(kind: FieldKind) -> &'static str {
+    match kind {
+        FieldKind::Number => "number",
+        FieldKind::Currency => "currency",
+        FieldKind::Date => "date",
+        FieldKind::Time => "time",
+        FieldKind::DateTime => "datetime",
+        FieldKind::Line => "line",
+        FieldKind::Block => "block",
+    }
+}
+
+/// A form-input-ready rendering of a field value: `(value, currency_code)`.
+/// `value` is what an `<input>`'s/`<textarea>`'s starting content should be
+/// to show the currently stored value when editing it; `currency_code` is
+/// additionally populated for `Currency` (its own separate input).
+///
+/// `DateTime` intentionally prefills empty: [`anamnesis_app::TimezoneResolver`]
+/// (this crate's only UTC-instant/local-wall-clock conversion seam) exposes
+/// `local_date` (a calendar date only) and `to_utc`, but no
+/// instant-to-local-time-of-day conversion — so there is no correct way to
+/// turn a stored UTC instant back into the exact local wall-clock string an
+/// `<input type="datetime-local">` needs. The field can still be *set*
+/// (`crate::handlers::field_form::parse_datetime` goes the other direction,
+/// which the port fully supports) — it just does not round-trip back into
+/// its own edit form's prefilled value; the stored value is still shown as
+/// text via [`format_field_data`] above the form.
+pub fn field_input_value(data: &FieldData) -> (String, Option<String>) {
+    match data {
+        FieldData::Number(n) => (format_scaled(n.units, n.scale), None),
+        FieldData::Currency(c) => (
+            format_scaled(c.minor_units, 2),
+            Some(c.currency.as_str().to_string()),
+        ),
+        FieldData::Date(d) => (
+            format!("{:04}-{:02}-{:02}", d.year(), d.month() as u8, d.day()),
+            None,
+        ),
+        FieldData::Time(t) => (format!("{:02}:{:02}", t.hour(), t.minute()), None),
+        FieldData::DateTime(_) => (String::new(), None),
+        FieldData::Line(s) | FieldData::Block(s) => (s.clone(), None),
     }
 }
 

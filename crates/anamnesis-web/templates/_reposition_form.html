@@ -1,0 +1,22 @@
+{# The plain-form fallback for moving a board card — works with JavaScript
+   disabled entirely (`docs/DOMAIN.md` §8: "Keep the form-POST fallbacks").
+   `static/app.js`'s drag handler posts to this exact same endpoint with the
+   same field names, computed from the drop instead of typed in. Needs
+   `item` (the card being rendered), `columns` (every board column, for the
+   destination picker) and `csrf_token` from the enclosing context; `loop`
+   (for a sensible default position) is inherited from the `{% for item in
+   c.items %}` loop in `_column.html`. #}
+<form class="card-move-form" method="post" action="/board/reposition">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="item_kind" value="{{ item.kind }}">
+  <input type="hidden" name="item_id" value="{{ item.id }}">
+  <label class="visually-hidden" for="move-col-{{ item.kind }}-{{ item.id }}">Move to column</label>
+  <select id="move-col-{{ item.kind }}-{{ item.id }}" name="column_id">
+    {% for c2 in columns %}
+      <option value="{{ c2.id }}"{% if c2.id == c.id %} selected{% endif %}>{{ c2.title }}</option>
+    {% endfor %}
+  </select>
+  <label class="visually-hidden" for="move-pos-{{ item.kind }}-{{ item.id }}">Position</label>
+  <input id="move-pos-{{ item.kind }}-{{ item.id }}" type="number" name="position" min="0" value="{{ loop.index0 }}">
+  <button type="submit">Move</button>
+</form>

@@ -91,7 +91,19 @@ async fn create_area_impl(
     )
     .await
     {
-        Ok(area) => Ok(Redirect::to(&format!("/areas/{}", area.id)).into_response()),
+        Ok(area) => {
+            // Keeps `docs/DOMAIN.md` §8's global search actually finding
+            // what it claims to search — `anamnesis_app`'s use cases never
+            // call `SearchIndex` themselves (it is a separate write-side
+            // port from the read-side `SearchQuery` those use cases don't
+            // depend on at all), so a handler that just wrote something
+            // searchable is where that has to happen instead, exactly like
+            // `crate::handlers::access` already calls `MembershipQuery`
+            // directly for the same kind of infra-adjacent reason
+            // (`crate::error::WebError`'s doc comment).
+            state.search_index.index_area(area.id, area.title.as_str()).await?;
+            Ok(Redirect::to(&format!("/areas/{}", area.id)).into_response())
+        }
         Err(AppError::Rule(e)) => {
             let areas = state.areas.list().await?;
             render_areas_page(
@@ -171,7 +183,13 @@ async fn create_project_impl(
     )
     .await
     {
-        Ok(project) => Ok(Redirect::to(&format!("/projects/{}", project.id)).into_response()),
+        Ok(project) => {
+            state
+                .search_index
+                .index_project(project.id, project.title.as_str())
+                .await?;
+            Ok(Redirect::to(&format!("/projects/{}", project.id)).into_response())
+        }
         Err(AppError::Rule(e)) => {
             let area = view_area(state.areas.as_ref(), role, area_id).await?;
             let projects = list_projects_in_area(state.projects.as_ref(), role, area_id).await?;
