@@ -6,6 +6,8 @@
 mod authorization;
 mod board_management;
 mod card_movement;
+mod suggestions;
+mod tangles;
 mod world;
 
 pub use world::AppWorld;
