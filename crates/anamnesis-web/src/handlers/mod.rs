@@ -27,6 +27,6 @@ pub use misc::{healthz_handler, root_handler};
 pub use projects::{create_task_handler, view_project_handler};
 pub use tasks::{
     add_comment_handler, add_link_attachment_handler, create_relationship_handler,
-    drop_task_handler, edit_task_handler, raise_task_handler, set_parent_handler,
-    view_task_handler,
+    delete_relationship_handler, drop_task_handler, edit_task_handler, raise_task_handler,
+    set_parent_handler, view_task_handler,
 };

@@ -8,11 +8,11 @@ use axum::routing::{get, post};
 use crate::handlers::{
     accept_suggestion_handler, accept_tangle_offer_handler, add_comment_handler,
     add_link_attachment_handler, archive_all_handler, callback_handler, create_area_handler,
-    create_project_handler, create_relationship_handler, create_task_handler, drop_tangle_handler,
-    drop_task_handler, edit_task_handler, healthz_handler, list_areas_handler, login_handler,
-    logout_handler, raise_task_handler, root_handler, set_parent_handler,
-    transition_project_status_handler, view_area_handler, view_board_handler, view_project_handler,
-    view_task_handler,
+    create_project_handler, create_relationship_handler, create_task_handler,
+    delete_relationship_handler, drop_tangle_handler, drop_task_handler, edit_task_handler,
+    healthz_handler, list_areas_handler, login_handler, logout_handler, raise_task_handler,
+    root_handler, set_parent_handler, transition_project_status_handler, view_area_handler,
+    view_board_handler, view_project_handler, view_task_handler,
 };
 use crate::state::AppState;
 use crate::static_files;
@@ -45,6 +45,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/tasks/{id}/relationships",
             post(create_relationship_handler),
+        )
+        .route(
+            "/tasks/{id}/relationships/{relationship_id}/delete",
+            post(delete_relationship_handler),
         )
         .route("/board", get(view_board_handler))
         .route("/board/suggestion/accept", post(accept_suggestion_handler))

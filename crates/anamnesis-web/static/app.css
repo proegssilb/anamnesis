@@ -430,6 +430,34 @@ button:hover {
   color: var(--text);
 }
 
+/* --- relationships: same row-card as .task-list, but with a remove
+   control alongside the link rather than the link filling the whole row --- */
+
+.relationship-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.relationship-row a {
+  display: inline;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+}
+
+.relationship-delete-form {
+  flex-direction: row;
+  margin: 0;
+}
+
 /* --- comments --- */
 
 .comment-list {

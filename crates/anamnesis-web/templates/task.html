@@ -72,7 +72,13 @@
     {% if relationships %}
       <ul class="task-list">
         {% for r in relationships %}
-          <li>{{ r.label }} <a href="/tasks/{{ r.other_id }}">{{ r.other_title }}</a></li>
+          <li class="relationship-row">
+            <span>{{ r.label }} <a href="/tasks/{{ r.other_id }}">{{ r.other_title }}</a></span>
+            <form class="relationship-delete-form" method="post" action="/tasks/{{ task.id }}/relationships/{{ r.id }}/delete">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="danger">Remove</button>
+            </form>
+          </li>
         {% endfor %}
       </ul>
     {% else %}
