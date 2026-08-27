@@ -5,8 +5,9 @@
 //!
 //! `Clock` and `IdGen` are not kanban-specific — they are shared
 //! infrastructure ports also used by the Phase D use cases against the real
-//! domain model — so they are defined once in [`crate::ports`] and merely
-//! re-exported here for source compatibility with existing imports.
+//! domain model — so they are defined once in [`crate::ports`] and the
+//! legacy use cases (`crate::legacy::use_cases`) import them from there
+//! directly rather than through a re-export in this module.
 
 use async_trait::async_trait;
 use serde::Serialize;
@@ -14,8 +15,6 @@ use serde::Serialize;
 use anamnesis_core::{BoardId, Title, UserId};
 
 use crate::error::{IdentityError, RepoError};
-
-pub use crate::ports::{Clock, IdGen};
 
 /// The full aggregate this port trades in.
 pub use anamnesis_core::legacy::Board;
