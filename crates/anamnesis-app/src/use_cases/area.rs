@@ -1,6 +1,11 @@
 //! Area CRUD (`docs/DOMAIN.md` §3). Gated by [`Action::ManageArea`] /
-//! [`Action::ViewArea`] — see `crate::policy`'s module doc comment for why
-//! areas are treated as System Admin territory.
+//! [`Action::ViewArea`] — see `crate::policy`'s module doc comment: both are
+//! now Area-scoped (any assigned Area role for viewing, Project-Admin-tier
+//! for managing), resolved by the caller via
+//! [`crate::ports::MembershipQuery::effective_area_role`] and passed in.
+//! `create_area` is the one exception: a brand-new Area has no scope to
+//! resolve a role *in*, so in practice only a true System Admin can ever
+//! construct a role value that satisfies [`Action::ManageArea`] here.
 
 use anamnesis_core::policy::Role;
 use anamnesis_core::{self as core, Area, AreaId};

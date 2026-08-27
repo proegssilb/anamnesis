@@ -267,6 +267,33 @@ impl AppWorld {
         project_id
     }
 
+    /// Ensures a project named `project_name` exists, returning the id of
+    /// its (auto-created) Area -- the scope Area-role-inheritance scenarios
+    /// assign roles on directly, via `Fakes::set_area_role`.
+    pub fn domain_area_of(&mut self, project_name: &str) -> AreaId {
+        let project_id = self.domain_project(project_name);
+        self.domain.project(project_id).area_id
+    }
+
+    /// Creates a project named `project_name` inside an *existing* `area_id`
+    /// -- unlike [`Self::domain_project`], which always mints a fresh Area
+    /// of its own. Used to set up a sibling project within the same Area as
+    /// another, already-created one.
+    pub fn domain_project_in_area(&mut self, project_name: &str, area_id: AreaId) -> ProjectId {
+        if let Some(id) = self.domain_projects.get(project_name) {
+            return *id;
+        }
+        let project_id = ProjectId::new(self.ids.next());
+        let mut project =
+            anamnesis_core::create_project(project_id, area_id, project_name, "", self.clock.now())
+                .unwrap();
+        project.status = ProjectStatus::Active;
+        self.domain.seed_project(project);
+        self.domain_projects
+            .insert(project_name.to_string(), project_id);
+        project_id
+    }
+
     /// Ensures a task named `task_name` exists (below the horizon) in
     /// `project_name`'s project, returning its id.
     pub fn domain_task(&mut self, task_name: &str, project_name: &str) -> TaskId {

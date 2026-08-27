@@ -84,7 +84,7 @@ async fn list_areas_is_gated_and_ordered_by_position() {
 // ============================ Projects ============================
 
 #[tokio::test]
-async fn create_project_is_refused_with_no_role_at_all() {
+async fn create_project_requires_project_admin_or_system_admin_in_the_area() {
     let fakes = Fakes::new();
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
@@ -93,7 +93,25 @@ async fn create_project_is_refused_with_no_role_at_all() {
     let result = create_project(&fakes, &ids, &clock, none(), area_id, "Renovate", "").await;
     assert!(matches!(result, Err(AppError::Forbidden)));
 
-    let ok = create_project(&fakes, &ids, &clock, member(), area_id, "Renovate", "").await;
+    // A plain Member of the Area is not enough -- creating a Project is
+    // structural, gated the same as `EditProject`/`ManageFieldDefinitions`,
+    // not the same as ordinary task work.
+    let result = create_project(&fakes, &ids, &clock, member(), area_id, "Renovate", "").await;
+    assert!(matches!(result, Err(AppError::Forbidden)));
+
+    let ok = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        project_admin(),
+        area_id,
+        "Renovate",
+        "",
+    )
+    .await;
+    assert!(ok.is_ok());
+
+    let ok = create_project(&fakes, &ids, &clock, admin(), area_id, "Renovate 2", "").await;
     assert!(ok.is_ok());
 }
 
@@ -104,10 +122,10 @@ async fn transition_project_status_enforces_the_active_project_limit() {
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
 
-    let p1 = create_project(&fakes, &ids, &clock, member(), area_id, "One", "")
+    let p1 = create_project(&fakes, &ids, &clock, project_admin(), area_id, "One", "")
         .await
         .unwrap();
-    let p2 = create_project(&fakes, &ids, &clock, member(), area_id, "Two", "")
+    let p2 = create_project(&fakes, &ids, &clock, project_admin(), area_id, "Two", "")
         .await
         .unwrap();
 
@@ -146,7 +164,7 @@ async fn transition_project_status_excludes_self_from_the_active_count() {
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
 
-    let p1 = create_project(&fakes, &ids, &clock, member(), area_id, "One", "")
+    let p1 = create_project(&fakes, &ids, &clock, project_admin(), area_id, "One", "")
         .await
         .unwrap();
     transition_project_status(
@@ -179,7 +197,7 @@ async fn manage_field_definitions_requires_project_or_system_admin() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project = create_project(&fakes, &ids, &clock, member(), area_id, "One", "")
+    let project = create_project(&fakes, &ids, &clock, project_admin(), area_id, "One", "")
         .await
         .unwrap();
 
@@ -565,7 +583,7 @@ async fn request_suggestion_stamps_last_offered_at_on_every_offered_task() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project = create_project(&fakes, &ids, &clock, member(), area_id, "P", "")
+    let project = create_project(&fakes, &ids, &clock, project_admin(), area_id, "P", "")
         .await
         .unwrap();
     transition_project_status(
@@ -621,7 +639,7 @@ async fn request_suggestion_is_full_silence_at_the_wip_limit() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project = create_project(&fakes, &ids, &clock, member(), area_id, "P", "")
+    let project = create_project(&fakes, &ids, &clock, project_admin(), area_id, "P", "")
         .await
         .unwrap();
     transition_project_status(
@@ -867,15 +885,13 @@ async fn view_area_view_project_and_view_task_all_refuse_no_role() {
         view_area(&fakes, none(), area.id).await,
         Err(AppError::Forbidden)
     ));
-    // Areas are System Admin territory (crate::policy's module doc comment):
-    // a mere project Member must not see the area grid either.
-    assert!(matches!(
-        view_area(&fakes, member(), area.id).await,
-        Err(AppError::Forbidden)
-    ));
+    // Areas are a real membership scope now (crate::policy's module doc
+    // comment): any assigned role -- Member included -- can view the area,
+    // same as `ViewProject`. Only the total absence of a role is refused.
+    assert!(view_area(&fakes, member(), area.id).await.is_ok());
     assert!(view_area(&fakes, admin(), area.id).await.is_ok());
 
-    let project = create_project(&fakes, &ids, &clock, member(), area.id, "P", "")
+    let project = create_project(&fakes, &ids, &clock, project_admin(), area.id, "P", "")
         .await
         .unwrap();
     assert!(matches!(
@@ -897,7 +913,7 @@ async fn view_area_view_project_and_view_task_all_refuse_no_role() {
 // ============================== Areas: edit/reposition ==============================
 
 #[tokio::test]
-async fn edit_area_and_reposition_area_require_system_admin() {
+async fn edit_area_and_reposition_area_require_area_admin_or_system_admin() {
     let fakes = Fakes::new();
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
@@ -909,7 +925,7 @@ async fn edit_area_and_reposition_area_require_system_admin() {
         edit_area(&fakes, &clock, member(), area.id, "Renamed", "").await,
         Err(AppError::Forbidden)
     ));
-    let edited = edit_area(&fakes, &clock, admin(), area.id, "Renamed", "")
+    let edited = edit_area(&fakes, &clock, project_admin(), area.id, "Renamed", "")
         .await
         .unwrap();
     assert_eq!(edited.title.as_str(), "Renamed");
@@ -930,7 +946,7 @@ async fn edit_project_archive_and_unarchive_require_project_admin() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project = create_project(&fakes, &ids, &clock, member(), area_id, "P", "")
+    let project = create_project(&fakes, &ids, &clock, project_admin(), area_id, "P", "")
         .await
         .unwrap();
 
@@ -973,7 +989,7 @@ async fn rename_field_definition_requires_project_admin() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project = create_project(&fakes, &ids, &clock, member(), area_id, "P", "")
+    let project = create_project(&fakes, &ids, &clock, project_admin(), area_id, "P", "")
         .await
         .unwrap();
     let definition = add_field_definition(
@@ -1013,7 +1029,7 @@ async fn set_task_field_value_rejects_a_kind_mismatch() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project = create_project(&fakes, &ids, &clock, member(), area_id, "P", "")
+    let project = create_project(&fakes, &ids, &clock, project_admin(), area_id, "P", "")
         .await
         .unwrap();
     let definition = add_field_definition(
@@ -1113,7 +1129,7 @@ async fn resolve_kind_recognises_all_three_builtins_and_falls_back_to_the_reposi
 
     let area_id = AreaId::new(ids.next());
     let clock = FixedClock::at(0);
-    let project = create_project(&fakes, &ids, &clock, member(), area_id, "P", "")
+    let project = create_project(&fakes, &ids, &clock, project_admin(), area_id, "P", "")
         .await
         .unwrap();
     let custom = add_relationship_kind(
@@ -1135,10 +1151,10 @@ async fn create_relationship_use_case_rejects_a_custom_kind_across_projects() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project_a = create_project(&fakes, &ids, &clock, member(), area_id, "A", "")
+    let project_a = create_project(&fakes, &ids, &clock, project_admin(), area_id, "A", "")
         .await
         .unwrap();
-    let project_b = create_project(&fakes, &ids, &clock, member(), area_id, "B", "")
+    let project_b = create_project(&fakes, &ids, &clock, project_admin(), area_id, "B", "")
         .await
         .unwrap();
     let custom = add_relationship_kind(
@@ -1293,14 +1309,20 @@ async fn add_link_and_file_attachments_and_delete_cleans_up_the_blob() {
 // ============================ MembershipQuery ============================
 // `effective_role`'s default-method composition (crate::ports::membership's
 // module doc comment: "this is what every project-scoped use case should
-// call"): a System Admin gets that role everywhere, even on a project they
-// hold no explicit membership row for; otherwise it falls through to
-// whatever `project_role` says, `None` included.
+// call"): a System Admin gets that role everywhere, even on a project (or
+// area) they hold no explicit membership row for; otherwise it falls
+// through to an explicit project role, then an inherited Area role, `None`
+// included.
+
+fn some_area_id(ids: &SequentialIdGen) -> AreaId {
+    AreaId::new(ids.next())
+}
 
 #[tokio::test]
 async fn effective_role_prefers_system_admin_over_any_stored_project_role() {
     let fakes = Fakes::new();
     let ids = SequentialIdGen::new();
+    let area_id = some_area_id(&ids);
     let project_id = ProjectId::new(ids.next());
     let sam = UserId::new("sam");
 
@@ -1314,7 +1336,7 @@ async fn effective_role_prefers_system_admin_over_any_stored_project_role() {
 
     fakes.make_system_admin(&sam);
     assert_eq!(
-        MembershipQuery::effective_role(&fakes, &sam, project_id)
+        MembershipQuery::effective_role(&fakes, &sam, project_id, area_id)
             .await
             .unwrap(),
         Some(Role::SystemAdmin)
@@ -1325,11 +1347,12 @@ async fn effective_role_prefers_system_admin_over_any_stored_project_role() {
 async fn effective_role_falls_through_to_the_stored_project_role() {
     let fakes = Fakes::new();
     let ids = SequentialIdGen::new();
+    let area_id = some_area_id(&ids);
     let project_id = ProjectId::new(ids.next());
     let priya = UserId::new("priya");
 
     assert_eq!(
-        MembershipQuery::effective_role(&fakes, &priya, project_id)
+        MembershipQuery::effective_role(&fakes, &priya, project_id, area_id)
             .await
             .unwrap(),
         None
@@ -1337,9 +1360,249 @@ async fn effective_role_falls_through_to_the_stored_project_role() {
 
     fakes.set_project_role(&priya, project_id, Role::ProjectAdmin);
     assert_eq!(
-        MembershipQuery::effective_role(&fakes, &priya, project_id)
+        MembershipQuery::effective_role(&fakes, &priya, project_id, area_id)
             .await
             .unwrap(),
         Some(Role::ProjectAdmin)
     );
+}
+
+// ------------------------- Area-scoped inheritance -------------------------
+// The project owner's fix for the Phase D gap: Areas are a real membership
+// scope, and a Project inherits its Area's role when it carries no explicit
+// project role of its own. Each test below is built to fail if inheritance
+// were wired naively (see the Phase D report for what was falsified).
+
+#[tokio::test]
+async fn a_role_held_only_on_the_area_is_inherited_by_a_project_with_no_role_of_its_own() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let area_id = some_area_id(&ids);
+    let project_id = ProjectId::new(ids.next());
+    let priya = UserId::new("priya");
+
+    // Priya holds a role on the Area only -- nothing project-local at all.
+    fakes.set_area_role(&priya, area_id, Role::ProjectAdmin);
+    assert_eq!(
+        MembershipQuery::project_role(&fakes, &priya, project_id)
+            .await
+            .unwrap(),
+        None
+    );
+
+    assert_eq!(
+        MembershipQuery::effective_role(&fakes, &priya, project_id, area_id)
+            .await
+            .unwrap(),
+        Some(Role::ProjectAdmin)
+    );
+}
+
+#[tokio::test]
+async fn an_explicit_project_role_overrides_an_inherited_area_role_even_when_lower() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let area_id = some_area_id(&ids);
+    let project_id = ProjectId::new(ids.next());
+    let priya = UserId::new("priya");
+
+    // Priya administers the whole Area...
+    fakes.set_area_role(&priya, area_id, Role::ProjectAdmin);
+    // ...but is explicitly only a Member on this one project.
+    fakes.set_project_role(&priya, project_id, Role::Member);
+
+    // The explicit (lower) project role wins outright -- it is not floored
+    // by the (higher) inherited Area role.
+    assert_eq!(
+        MembershipQuery::effective_role(&fakes, &priya, project_id, area_id)
+            .await
+            .unwrap(),
+        Some(Role::Member)
+    );
+}
+
+#[tokio::test]
+async fn an_explicit_project_role_also_overrides_an_inherited_area_role_when_higher() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let area_id = some_area_id(&ids);
+    let project_id = ProjectId::new(ids.next());
+    let bob = UserId::new("bob");
+
+    fakes.set_area_role(&bob, area_id, Role::Member);
+    fakes.set_project_role(&bob, project_id, Role::ProjectAdmin);
+
+    assert_eq!(
+        MembershipQuery::effective_role(&fakes, &bob, project_id, area_id)
+            .await
+            .unwrap(),
+        Some(Role::ProjectAdmin)
+    );
+}
+
+#[tokio::test]
+async fn system_admin_overrides_everywhere_with_no_area_or_project_membership() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let area_id = some_area_id(&ids);
+    let project_id = ProjectId::new(ids.next());
+    let sam = UserId::new("sam");
+    fakes.make_system_admin(&sam);
+
+    assert_eq!(
+        MembershipQuery::area_role(&fakes, &sam, area_id)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        MembershipQuery::project_role(&fakes, &sam, project_id)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        MembershipQuery::effective_area_role(&fakes, &sam, area_id)
+            .await
+            .unwrap(),
+        Some(Role::SystemAdmin)
+    );
+    assert_eq!(
+        MembershipQuery::effective_role(&fakes, &sam, project_id, area_id)
+            .await
+            .unwrap(),
+        Some(Role::SystemAdmin)
+    );
+}
+
+#[tokio::test]
+async fn no_role_anywhere_resolves_to_none_on_area_and_project() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let area_id = some_area_id(&ids);
+    let project_id = ProjectId::new(ids.next());
+    let eve = UserId::new("eve");
+
+    assert_eq!(
+        MembershipQuery::effective_area_role(&fakes, &eve, area_id)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        MembershipQuery::effective_role(&fakes, &eve, project_id, area_id)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+// --------------------- Use-case level: Area role inheritance ---------------
+// The same composition, exercised through the actual use cases (`view_area`,
+// `create_project`, `view_project`) rather than the port directly.
+
+#[tokio::test]
+async fn a_user_with_only_an_area_role_can_view_that_area_and_create_a_project_in_it() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let priya = UserId::new("priya");
+
+    let area = create_area(&fakes, &ids, &clock, admin(), "Home", "", 0)
+        .await
+        .unwrap();
+    fakes.set_area_role(&priya, area.id, Role::ProjectAdmin);
+
+    let role = MembershipQuery::effective_area_role(&fakes, &priya, area.id)
+        .await
+        .unwrap();
+    assert!(view_area(&fakes, role, area.id).await.is_ok());
+    assert!(
+        create_project(&fakes, &ids, &clock, role, area.id, "Renovate", "")
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn a_user_with_only_a_project_role_cannot_see_a_sibling_project_or_the_area() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let bob = UserId::new("bob");
+
+    let area = create_area(&fakes, &ids, &clock, admin(), "Home", "", 0)
+        .await
+        .unwrap();
+    let p1 = create_project(&fakes, &ids, &clock, project_admin(), area.id, "One", "")
+        .await
+        .unwrap();
+    let p2 = create_project(&fakes, &ids, &clock, project_admin(), area.id, "Two", "")
+        .await
+        .unwrap();
+    fakes.set_project_role(&bob, p1.id, Role::Member);
+
+    // Bob can see the project he actually holds a role on...
+    let role_on_p1 = MembershipQuery::effective_role(&fakes, &bob, p1.id, area.id)
+        .await
+        .unwrap();
+    assert!(view_project(&fakes, role_on_p1, p1.id).await.is_ok());
+
+    // ...but not its sibling in the same Area...
+    let role_on_p2 = MembershipQuery::effective_role(&fakes, &bob, p2.id, area.id)
+        .await
+        .unwrap();
+    assert!(matches!(
+        view_project(&fakes, role_on_p2, p2.id).await,
+        Err(AppError::Forbidden)
+    ));
+
+    // ...nor the Area itself.
+    let area_role = MembershipQuery::effective_area_role(&fakes, &bob, area.id)
+        .await
+        .unwrap();
+    assert!(matches!(
+        view_area(&fakes, area_role, area.id).await,
+        Err(AppError::Forbidden)
+    ));
+}
+
+#[tokio::test]
+async fn an_explicit_project_role_overrides_area_role_through_the_use_cases() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let priya = UserId::new("priya");
+
+    let area = create_area(&fakes, &ids, &clock, admin(), "Home", "", 0)
+        .await
+        .unwrap();
+    let project = create_project(&fakes, &ids, &clock, project_admin(), area.id, "One", "")
+        .await
+        .unwrap();
+
+    // Priya administers the whole Area...
+    fakes.set_area_role(&priya, area.id, Role::ProjectAdmin);
+    // ...but is explicitly only a Member on this one project.
+    fakes.set_project_role(&priya, project.id, Role::Member);
+
+    let role = MembershipQuery::effective_role(&fakes, &priya, project.id, area.id)
+        .await
+        .unwrap();
+    assert_eq!(role, Some(Role::Member));
+
+    // A Member cannot manage field definitions, even though Priya is a
+    // Project Admin of the surrounding Area.
+    let result = add_field_definition(
+        &fakes,
+        &ids,
+        role,
+        project.id,
+        "Priority",
+        FieldKind::Number,
+        0,
+        true,
+    )
+    .await;
+    assert!(matches!(result, Err(AppError::Forbidden)));
 }
