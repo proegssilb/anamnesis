@@ -1289,3 +1289,57 @@ async fn add_link_and_file_attachments_and_delete_cleans_up_the_blob() {
         .unwrap();
     assert!(BlobStore::get(&fakes, &blob_key).await.unwrap().is_none());
 }
+
+// ============================ MembershipQuery ============================
+// `effective_role`'s default-method composition (crate::ports::membership's
+// module doc comment: "this is what every project-scoped use case should
+// call"): a System Admin gets that role everywhere, even on a project they
+// hold no explicit membership row for; otherwise it falls through to
+// whatever `project_role` says, `None` included.
+
+#[tokio::test]
+async fn effective_role_prefers_system_admin_over_any_stored_project_role() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let project_id = ProjectId::new(ids.next());
+    let sam = UserId::new("sam");
+
+    // Sam holds no project-local role row at all.
+    assert_eq!(
+        MembershipQuery::project_role(&fakes, &sam, project_id)
+            .await
+            .unwrap(),
+        None
+    );
+
+    fakes.make_system_admin(&sam);
+    assert_eq!(
+        MembershipQuery::effective_role(&fakes, &sam, project_id)
+            .await
+            .unwrap(),
+        Some(Role::SystemAdmin)
+    );
+}
+
+#[tokio::test]
+async fn effective_role_falls_through_to_the_stored_project_role() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let project_id = ProjectId::new(ids.next());
+    let priya = UserId::new("priya");
+
+    assert_eq!(
+        MembershipQuery::effective_role(&fakes, &priya, project_id)
+            .await
+            .unwrap(),
+        None
+    );
+
+    fakes.set_project_role(&priya, project_id, Role::ProjectAdmin);
+    assert_eq!(
+        MembershipQuery::effective_role(&fakes, &priya, project_id)
+            .await
+            .unwrap(),
+        Some(Role::ProjectAdmin)
+    );
+}
