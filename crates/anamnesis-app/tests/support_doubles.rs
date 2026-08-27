@@ -12,7 +12,7 @@ use support::{InMemoryBoardRepository, SequentialIdGen, StubIdentityProvider};
 
 fn some_board() -> anamnesis_app::Board {
     let ids = SequentialIdGen::new();
-    anamnesis_core::create_board(
+    anamnesis_core::legacy::create_board(
         anamnesis_core::BoardId::new(ids.next()),
         UserId::new("alice"),
         "Seeded Board",

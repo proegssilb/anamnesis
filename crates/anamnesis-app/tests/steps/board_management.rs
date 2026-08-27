@@ -5,7 +5,7 @@ use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 
 use anamnesis_app::AppError;
-use anamnesis_core::DomainError;
+use anamnesis_core::legacy::DomainError;
 
 use super::AppWorld;
 

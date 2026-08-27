@@ -10,7 +10,7 @@ use anamnesis_core::{BoardId, Timestamp, Title, UserId};
 use crate::error::{IdentityError, RepoError};
 
 /// The full aggregate this port trades in.
-pub use anamnesis_core::Board;
+pub use anamnesis_core::legacy::Board;
 
 /// A lightweight summary of a board, for listing without loading every
 /// column and card.

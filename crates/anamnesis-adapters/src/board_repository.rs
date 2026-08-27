@@ -13,7 +13,8 @@
 use std::collections::HashMap;
 
 use anamnesis_app::{Board, BoardRepository, BoardSummary, RepoError};
-use anamnesis_core::{BoardId, Card, CardId, Column, ColumnId, Timestamp, Title, UserId};
+use anamnesis_core::legacy::{Card, Column};
+use anamnesis_core::{BoardId, CardId, ColumnId, Timestamp, Title, UserId};
 use async_trait::async_trait;
 use sqlx::{PgPool, Row, SqlitePool};
 use uuid::Uuid;
