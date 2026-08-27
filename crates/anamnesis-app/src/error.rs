@@ -8,19 +8,7 @@
 
 use std::error::Error as StdError;
 
-use anamnesis_core::legacy::DomainError;
-
 /// Every way a use case can fail.
-///
-/// `Domain` (the legacy kanban model's [`DomainError`]) and `Rule` (the real
-/// domain model's [`anamnesis_core::DomainError`]) are deliberately separate
-/// variants, not one shared `#[from]`: `thiserror` derives one `From` impl
-/// per source type, and the two `DomainError` types are unrelated types that
-/// happen to share a name (`anamnesis_core::legacy::DomainError` for the
-/// disposable kanban scaffold, `anamnesis_core::DomainError` for the real
-/// model this crate is being rebuilt against) — collapsing them into one
-/// variant would make `?` ambiguous about which model a call site belongs
-/// to.
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum AppError {
     /// The requested aggregate does not exist.
@@ -29,10 +17,6 @@ pub enum AppError {
     /// The current user is not permitted to view or act on this aggregate.
     #[error("forbidden")]
     Forbidden,
-    /// A legacy-kanban-model transition rejected the request because a rule
-    /// was broken.
-    #[error(transparent)]
-    Domain(#[from] DomainError),
     /// A real-domain-model transition (`anamnesis_core`, per `docs/DOMAIN.md`)
     /// rejected the request because a rule was broken.
     #[error(transparent)]

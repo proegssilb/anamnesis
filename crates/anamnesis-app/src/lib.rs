@@ -1,23 +1,21 @@
 #![forbid(unsafe_code)]
-//! `anamnesis-app`: the application layer.
+//! `anamnesis-app`: the application layer for the real domain model
+//! (`docs/DOMAIN.md`).
 //!
-//! Two application layers currently live in this crate side by side
-//! (`docs/DOMAIN.md` §7, §10):
+//! [`ports`], [`use_cases`], [`policy`], and [`entities`] are the
+//! application layer proper. [`ports::IdentityProvider`] (and its
+//! `LoginRedirect`/`LoginCallback` companions) is the one piece of
+//! infrastructure that predates this domain model and survives unchanged —
+//! an OIDC login round trip is not part of `docs/DOMAIN.md` at all, it is
+//! just genuinely shared infrastructure the web shell needs regardless of
+//! which domain model sits behind it.
 //!
-//! - [`legacy`] — the disposable kanban scaffold's ports and use cases
-//!   (`Board`/`Column`/`Card`), re-exported at the crate root unchanged so
-//!   `anamnesis-web` keeps compiling against it. Phase F removes it.
-//! - Everything else at the crate root — [`ports`], [`use_cases`],
-//!   [`policy`], [`entities`] — is the real domain model's application
-//!   layer this crate is being rebuilt around (`docs/DOMAIN.md`).
-//!
-//! `Clock` and `IdGen` are the one piece of genuinely shared infrastructure
-//! between the two: declared once in [`ports`], re-exported from
-//! [`legacy`] too.
+//! The disposable kanban scaffold's own application layer (`Board`/`Column`/
+//! `Card` ports and use cases) has been fully retired (Phase F1): every
+//! crate now builds against the real domain model below.
 
 mod entities;
 mod error;
-mod legacy;
 pub mod policy;
 mod ports;
 mod use_cases;
@@ -27,16 +25,12 @@ pub use entities::{
     create_comment, edit_comment as edit_comment_entity,
 };
 pub use error::{AppError, IdentityError, RepoError};
-pub use legacy::{
-    Board, BoardRepository, BoardSummary, IdentityProvider, LoginCallback, LoginRedirect, add_card,
-    add_column, create_board, delete_board, delete_card, edit_card, list_boards, move_card,
-    view_board,
-};
 pub use ports::{
     AreaRepository, AttachmentRepository, BlobStore, BoardColumn, BoardQuery, Clock,
-    CommentRepository, IdGen, MembershipQuery, ProjectAggregate, ProjectRepository,
-    RelationshipRepository, SearchHit, SearchIndex, SearchQuery, TangleRepository, TaskAggregate,
-    TaskRepository, TaskUpdateError, TimezoneResolver,
+    CommentRepository, IdGen, IdentityProvider, LoginCallback, LoginRedirect, MembershipQuery,
+    ProjectAggregate, ProjectRepository, RelationshipRepository, SearchHit, SearchIndex,
+    SearchQuery, TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
+    TimezoneResolver,
 };
 pub use use_cases::{
     add_comment, add_field_definition, add_file_attachment, add_link_attachment,

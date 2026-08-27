@@ -2,15 +2,15 @@
 -- updates only -- no whole-aggregate delete-and-reinsert anywhere in this
 -- file's consumers. `position`/`checklist_position`/board position columns
 -- are written from the in-memory `Vec`/list index and read back with
--- `ORDER BY position` (or the task's own placement position), exactly as
--- the legacy `boards`/`columns`/`cards` tables already do.
+-- `ORDER BY position` (or the task's own placement position).
 --
 -- UUIDs are stored as TEXT here (SQLite has no native UUID type); the
 -- Postgres sibling of this migration uses native `uuid` instead.
 --
 -- The global task-board column entity is named `board_columns` here (not
--- `columns`) because that name is already taken by the legacy per-board
--- kanban scaffold's table in 0001_init.sql, which this phase must not touch.
+-- `columns`) to leave room for a possible future per-project `columns`
+-- concept without a name collision -- `docs/DOMAIN.md` §3 is explicit that
+-- board columns are global, distinct from a project's own status lanes.
 
 CREATE TABLE areas (
     id TEXT PRIMARY KEY,

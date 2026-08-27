@@ -4,12 +4,14 @@
 //! crate-level `cargo tree` check in the Phase D report.
 
 mod common;
+mod identity;
 mod infra;
 mod membership;
 mod query;
 mod repository;
 
 pub use common::{Clock, IdGen};
+pub use identity::{IdentityProvider, LoginCallback, LoginRedirect};
 pub use infra::{BlobStore, SearchIndex, TimezoneResolver};
 pub use membership::MembershipQuery;
 pub use query::{BoardColumn, BoardQuery, SearchHit, SearchQuery};
