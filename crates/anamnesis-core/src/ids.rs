@@ -63,6 +63,7 @@ uuid_id!(TaskId);
 uuid_id!(RelationshipId);
 uuid_id!(KindId);
 uuid_id!(FieldId);
+uuid_id!(TangleId);
 
 /// The identity of a user, taken verbatim from the `sub` claim of an OIDC id
 /// token. Opaque to the core beyond equality.

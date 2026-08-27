@@ -21,6 +21,7 @@ mod placement;
 pub mod policy;
 mod project;
 mod relationship;
+mod tangle;
 mod task;
 mod title;
 
@@ -47,6 +48,7 @@ pub use relationship::{
     Relationship, RelationshipKind, builtin_blocks, builtin_duplicates, builtin_relates_to,
     create_relationship, create_relationship_kind, is_blocking,
 };
+pub use tangle::{DetectedTangle, Fingerprint, Reconciliation, Tangle, detect_tangles, reconcile};
 pub use task::{
     Task, archive_task, create_task, edit_task, move_placement, set_checklist_position, set_parent,
     unarchive_task,
