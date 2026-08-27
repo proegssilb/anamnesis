@@ -9,10 +9,13 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
 
 use anamnesis_app::{
-    AppError, add_comment, add_link_attachment, create_relationship, drop_task, edit_task,
-    list_attachments, list_comments, raise_task, resolve_kind, set_task_parent, view_task,
+    AppError, add_comment, add_link_attachment, create_relationship, delete_relationship,
+    drop_task, edit_task, list_attachments, list_comments, raise_task, resolve_kind,
+    set_task_parent, view_task,
 };
-use anamnesis_core::{Placement, TaskId, builtin_blocks, builtin_duplicates, builtin_relates_to};
+use anamnesis_core::{
+    Placement, RelationshipId, TaskId, builtin_blocks, builtin_duplicates, builtin_relates_to,
+};
 
 use crate::auth::CurrentUser;
 use crate::error::WebError;
@@ -22,8 +25,8 @@ use crate::state::AppState;
 use super::access;
 use super::format::column_is_done;
 use super::forms::{
-    AddCommentForm, AddLinkAttachmentForm, CreateRelationshipForm, EditTaskForm, RaiseTaskForm,
-    SetParentForm,
+    AddCommentForm, AddLinkAttachmentForm, CreateRelationshipForm, CsrfOnlyForm, EditTaskForm,
+    RaiseTaskForm, SetParentForm,
 };
 
 /// Resolves the role a task's own project grants `user` — every task
@@ -413,6 +416,63 @@ async fn create_relationship_impl(
     }
 }
 
+/// Deletes a relationship edge — reachable from either end's task page (the
+/// URL's `id` names whichever task the delete form was submitted from, and
+/// need only be *one* of the edge's two tasks, not specifically the `from`
+/// side; see `delete_relationship_impl`). Permission is checked against
+/// that task's own project, exactly like `create_relationship_handler`
+/// checks against the initiating task's project — deleting from either
+/// listing (forward or reverse) only ever needs a role on the task whose
+/// page you are looking at.
+pub async fn delete_relationship_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path((id, relationship_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> Response {
+    match delete_relationship_impl(
+        &state,
+        &user,
+        TaskId::new(id),
+        RelationshipId::new(relationship_id),
+        form,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn delete_relationship_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    relationship_id: RelationshipId,
+    form: CsrfOnlyForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
+
+    // The relationship must actually involve the task named in the URL —
+    // otherwise a role on *some* project the caller belongs to would let
+    // them delete an edge between two entirely unrelated tasks just by
+    // naming its id on their own task's delete route.
+    let relationship = state
+        .relationships
+        .load(relationship_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    if relationship.from_task_id != task_id && relationship.to_task_id != task_id {
+        return Err(WebError::App(AppError::NotFound));
+    }
+
+    delete_relationship(state.relationships.as_ref(), role, relationship_id).await?;
+    Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response())
+}
+
 /// Assembles and renders the task detail page: the task itself, its
 /// checklist children, comments, attachments, relationships (with the other
 /// end's title resolved for display), and the board columns available for
@@ -450,7 +510,12 @@ async fn render_task_page(
             .await?
             .map(|a| a.task.title.as_str().to_string())
             .unwrap_or_else(|| "(deleted task)".to_string());
-        relationships.push(context! { label => label, other_id => other_id.to_string(), other_title => other_title });
+        relationships.push(context! {
+            id => rel.id.to_string(),
+            label => label,
+            other_id => other_id.to_string(),
+            other_title => other_title,
+        });
     }
 
     let columns = state.board.columns_with_items().await?;
