@@ -1,13 +1,21 @@
-//! Port traits: what the use cases need from the world, declared here and
-//! implemented by adapters (Phase 3) and the web shell (Phase 4). Nothing in
-//! this module names a concrete database, HTTP, or OIDC crate.
+//! Port traits: what the legacy kanban use cases need from the world,
+//! declared here and implemented by adapters (Phase 3) and the web shell
+//! (Phase 4). Nothing in this module names a concrete database, HTTP, or
+//! OIDC crate.
+//!
+//! `Clock` and `IdGen` are not kanban-specific — they are shared
+//! infrastructure ports also used by the Phase D use cases against the real
+//! domain model — so they are defined once in [`crate::ports`] and merely
+//! re-exported here for source compatibility with existing imports.
 
 use async_trait::async_trait;
 use serde::Serialize;
 
-use anamnesis_core::{BoardId, Timestamp, Title, UserId};
+use anamnesis_core::{BoardId, Title, UserId};
 
 use crate::error::{IdentityError, RepoError};
+
+pub use crate::ports::{Clock, IdGen};
 
 /// The full aggregate this port trades in.
 pub use anamnesis_core::legacy::Board;
@@ -31,18 +39,6 @@ pub trait BoardRepository: Send + Sync {
     async fn save(&self, board: &Board) -> Result<(), RepoError>;
     async fn list_for_owner(&self, owner: &UserId) -> Result<Vec<BoardSummary>, RepoError>;
     async fn delete(&self, id: BoardId) -> Result<(), RepoError>;
-}
-
-/// Supplies "now" as a parameter to use cases that need it. The core never
-/// reads a clock; this is where the shell's clock enters the system.
-pub trait Clock: Send + Sync {
-    fn now(&self) -> Timestamp;
-}
-
-/// Supplies freshly minted ids to use cases that need them. The core never
-/// generates one; this is where the shell's randomness enters the system.
-pub trait IdGen: Send + Sync {
-    fn next(&self) -> uuid::Uuid;
 }
 
 /// The information needed to send the user to the identity provider to begin

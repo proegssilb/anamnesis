@@ -56,6 +56,22 @@ impl WebError {
                     "Something went wrong on our end.".to_string(),
                 )
             }
+            // The remaining `AppError` variants (`Rule`, `Invalid`,
+            // `Conflict`, `ActiveProjectLimitExceeded`, `WipLimitExceeded`)
+            // belong to the Phase D use cases against the real domain model
+            // (`docs/DOMAIN.md`), which this legacy kanban web layer never
+            // calls — Phase F rebuilds this crate against them and gives
+            // each its own real handling. A wildcard arm here (rather than
+            // one per variant) is deliberate: it is a compile-time
+            // reminder, not a masked bug, since no code path in this crate
+            // can actually produce one of these today.
+            WebError::App(other) => {
+                tracing::error!(error = %other, "unexpected application error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Something went wrong on our end.".to_string(),
+                )
+            }
             WebError::CsrfMismatch => (
                 StatusCode::FORBIDDEN,
                 "That form's security token was missing or stale. Please try again.".to_string(),
