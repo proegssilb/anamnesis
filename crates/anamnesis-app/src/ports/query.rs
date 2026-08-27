@@ -104,5 +104,19 @@ pub enum SearchHit {
 /// write side that keeps it up to date.
 #[async_trait]
 pub trait SearchQuery: Send + Sync {
+    /// Ordinary, unqualified search: every non-archived hit matching `text`.
+    /// An archived area/project/task never appears here — see
+    /// [`Self::search_archived`] for the "explicitly searched" exception
+    /// `docs/DOMAIN.md` §2 carves out.
     async fn search(&self, text: &str) -> Result<Vec<SearchHit>, RepoError>;
+
+    /// The explicit-search exception `docs/DOMAIN.md` §2 names: "vanished
+    /// from every view unless explicitly searched". Every *archived* hit
+    /// matching `text` — disjoint from [`Self::search`]'s results, never
+    /// overlapping with them, so a caller wanting "everything, archived or
+    /// not" calls both and merges. Exists because archiving
+    /// (`crate::ports::SearchIndex::remove_area`/`remove_project`/`remove_task`)
+    /// flags an entry rather than deleting it — see that trait's doc
+    /// comment.
+    async fn search_archived(&self, text: &str) -> Result<Vec<SearchHit>, RepoError>;
 }

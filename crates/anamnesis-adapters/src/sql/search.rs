@@ -42,6 +42,9 @@ mod sqlite_impl {
 
     /// FTS5 virtual tables carry no unique constraint to upsert against, so
     /// indexing an entity that is already present is a delete-then-insert.
+    /// Always writes `archived = 0` — the upsert path is create, edit, or
+    /// *unarchive* (`crate::ports::infra::SearchIndex`'s trait doc comment),
+    /// never a state that should stay flagged archived.
     async fn upsert(
         pool: &SqlitePool,
         kind: &str,
@@ -56,7 +59,8 @@ mod sqlite_impl {
             .await
             .map_err(|e| RepoError::from_source("failed to clear old search entry", e))?;
         sqlx::query(
-            "INSERT INTO search_documents (entity_kind, entity_id, title) VALUES (?, ?, ?)",
+            "INSERT INTO search_documents (entity_kind, entity_id, archived, title) \
+             VALUES (?, ?, 0, ?)",
         )
         .bind(kind)
         .bind(&id_text)
@@ -67,13 +71,19 @@ mod sqlite_impl {
         Ok(())
     }
 
+    /// Flags the entry as archived rather than deleting it — see
+    /// `crate::ports::infra::SearchIndex`'s trait doc comment. A no-op update
+    /// (matches zero rows) if the entity was never indexed in the first
+    /// place, which is not an error.
     async fn remove(pool: &SqlitePool, kind: &str, id: uuid::Uuid) -> Result<(), RepoError> {
-        sqlx::query("DELETE FROM search_documents WHERE entity_kind = ? AND entity_id = ?")
-            .bind(kind)
-            .bind(id.to_string())
-            .execute(pool)
-            .await
-            .map_err(|e| RepoError::from_source("failed to remove search entry", e))?;
+        sqlx::query(
+            "UPDATE search_documents SET archived = 1 WHERE entity_kind = ? AND entity_id = ?",
+        )
+        .bind(kind)
+        .bind(id.to_string())
+        .execute(pool)
+        .await
+        .map_err(|e| RepoError::from_source("failed to archive search entry", e))?;
         Ok(())
     }
 
@@ -108,7 +118,11 @@ mod sqlite_impl {
         remove(pool, "task", id.as_uuid()).await
     }
 
-    pub(super) async fn search(pool: &SqlitePool, text: &str) -> Result<Vec<SearchHit>, RepoError> {
+    async fn search_filtered(
+        pool: &SqlitePool,
+        text: &str,
+        archived: i64,
+    ) -> Result<Vec<SearchHit>, RepoError> {
         if text.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -117,9 +131,10 @@ mod sqlite_impl {
         let phrase = format!("\"{}\"", text.replace('"', "\"\""));
         let rows = sqlx::query(
             "SELECT entity_kind, entity_id, title FROM search_documents \
-             WHERE search_documents MATCH ? ORDER BY rank",
+             WHERE search_documents MATCH ? AND archived = ? ORDER BY rank",
         )
         .bind(phrase)
+        .bind(archived)
         .fetch_all(pool)
         .await
         .map_err(|e| RepoError::from_source("failed to search", e))?;
@@ -133,11 +148,25 @@ mod sqlite_impl {
             })
             .collect()
     }
+
+    pub(super) async fn search(pool: &SqlitePool, text: &str) -> Result<Vec<SearchHit>, RepoError> {
+        search_filtered(pool, text, 0).await
+    }
+
+    pub(super) async fn search_archived(
+        pool: &SqlitePool,
+        text: &str,
+    ) -> Result<Vec<SearchHit>, RepoError> {
+        search_filtered(pool, text, 1).await
+    }
 }
 
 mod postgres_impl {
     use super::*;
 
+    /// Always writes `archived = false` — the upsert path is create, edit,
+    /// or *unarchive* (`crate::ports::infra::SearchIndex`'s trait doc
+    /// comment), never a state that should stay flagged archived.
     async fn upsert(
         pool: &PgPool,
         kind: &str,
@@ -145,8 +174,10 @@ mod postgres_impl {
         title: &str,
     ) -> Result<(), RepoError> {
         sqlx::query(
-            "INSERT INTO search_documents (entity_kind, entity_id, title) VALUES ($1, $2, $3) \
-             ON CONFLICT (entity_kind, entity_id) DO UPDATE SET title = excluded.title",
+            "INSERT INTO search_documents (entity_kind, entity_id, archived, title) \
+             VALUES ($1, $2, false, $3) \
+             ON CONFLICT (entity_kind, entity_id) \
+             DO UPDATE SET title = excluded.title, archived = false",
         )
         .bind(kind)
         .bind(id)
@@ -157,13 +188,19 @@ mod postgres_impl {
         Ok(())
     }
 
+    /// Flags the entry as archived rather than deleting it — see
+    /// `crate::ports::infra::SearchIndex`'s trait doc comment. A no-op update
+    /// (matches zero rows) if the entity was never indexed in the first
+    /// place, which is not an error.
     async fn remove(pool: &PgPool, kind: &str, id: uuid::Uuid) -> Result<(), RepoError> {
-        sqlx::query("DELETE FROM search_documents WHERE entity_kind = $1 AND entity_id = $2")
-            .bind(kind)
-            .bind(id)
-            .execute(pool)
-            .await
-            .map_err(|e| RepoError::from_source("failed to remove search entry", e))?;
+        sqlx::query(
+            "UPDATE search_documents SET archived = true WHERE entity_kind = $1 AND entity_id = $2",
+        )
+        .bind(kind)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| RepoError::from_source("failed to archive search entry", e))?;
         Ok(())
     }
 
@@ -198,16 +235,21 @@ mod postgres_impl {
         remove(pool, "task", id.as_uuid()).await
     }
 
-    pub(super) async fn search(pool: &PgPool, text: &str) -> Result<Vec<SearchHit>, RepoError> {
+    async fn search_filtered(
+        pool: &PgPool,
+        text: &str,
+        archived: bool,
+    ) -> Result<Vec<SearchHit>, RepoError> {
         if text.trim().is_empty() {
             return Ok(Vec::new());
         }
         let rows = sqlx::query(
             "SELECT entity_kind, entity_id, title FROM search_documents \
-             WHERE tsv @@ plainto_tsquery('english', $1) \
+             WHERE tsv @@ plainto_tsquery('english', $1) AND archived = $2 \
              ORDER BY ts_rank(tsv, plainto_tsquery('english', $1)) DESC",
         )
         .bind(text)
+        .bind(archived)
         .fetch_all(pool)
         .await
         .map_err(|e| RepoError::from_source("failed to search", e))?;
@@ -220,6 +262,17 @@ mod postgres_impl {
                 )
             })
             .collect()
+    }
+
+    pub(super) async fn search(pool: &PgPool, text: &str) -> Result<Vec<SearchHit>, RepoError> {
+        search_filtered(pool, text, false).await
+    }
+
+    pub(super) async fn search_archived(
+        pool: &PgPool,
+        text: &str,
+    ) -> Result<Vec<SearchHit>, RepoError> {
+        search_filtered(pool, text, true).await
     }
 }
 
@@ -274,6 +327,13 @@ impl SearchQuery for SqlStore {
         match &self.backend {
             Backend::Sqlite(pool) => sqlite_impl::search(pool, text).await,
             Backend::Postgres(pool) => postgres_impl::search(pool, text).await,
+        }
+    }
+
+    async fn search_archived(&self, text: &str) -> Result<Vec<SearchHit>, RepoError> {
+        match &self.backend {
+            Backend::Sqlite(pool) => sqlite_impl::search_archived(pool, text).await,
+            Backend::Postgres(pool) => postgres_impl::search_archived(pool, text).await,
         }
     }
 }

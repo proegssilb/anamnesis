@@ -46,9 +46,12 @@ pub struct Fakes {
     system_admins: Mutex<HashMap<UserId, bool>>,
     area_roles: Mutex<HashMap<(UserId, AreaId), Role>>,
     project_roles: Mutex<HashMap<(UserId, ProjectId), Role>>,
-    /// Every `(kind, id, title)` ever indexed, minus anything removed —
-    /// good enough for `support_doubles`-style assertions on `SearchIndex`.
-    search_entries: Mutex<Vec<(&'static str, String, String)>>,
+    /// Every `(kind, id, title, archived)` ever indexed — `remove_*` flags
+    /// `archived` rather than deleting the entry (mirrors the real adapter's
+    /// semantics; see `anamnesis_app::ports::infra::SearchIndex`'s trait doc
+    /// comment), so this is good enough for `support_doubles`-style
+    /// assertions on `SearchIndex` too.
+    search_entries: Mutex<Vec<(&'static str, String, String, bool)>>,
 }
 
 impl Fakes {
@@ -154,19 +157,34 @@ impl Fakes {
     /// adapter's upsert semantics (`crates/anamnesis-adapters/src/sql/search.rs`:
     /// SQLite's delete-then-insert, Postgres's `ON CONFLICT ... DO UPDATE`),
     /// so a re-index (an edited title) actually replaces the stale entry
-    /// instead of leaving both findable.
+    /// instead of leaving both findable. Always inserts with `archived:
+    /// false` — the upsert path is create, edit, or *unarchive*, never a
+    /// state that should stay flagged archived (mirrors the real adapters;
+    /// see `SearchIndex`'s trait doc comment).
     fn upsert_search_entry(&self, kind: &'static str, id: String, title: String) {
         let mut entries = self.search_entries.lock().unwrap();
-        entries.retain(|(k, entry_id, _)| !(*k == kind && *entry_id == id));
-        entries.push((kind, id, title));
+        entries.retain(|(k, entry_id, _, _)| !(*k == kind && *entry_id == id));
+        entries.push((kind, id, title, false));
     }
 
-    /// Every `(kind, id, title)` currently indexed — the `SearchIndex` state
-    /// made directly observable for assertions that want to check exactly
-    /// what is indexed without going through `SearchQuery`'s substring
-    /// matching (e.g. asserting an entity is indexed *at all*, or asserting
-    /// on the exact count of entries).
-    pub fn search_entries(&self) -> Vec<(&'static str, String, String)> {
+    /// Flags the `(kind, id)` entry as archived rather than removing it —
+    /// mirrors the real adapters' `remove_*` semantics (see `SearchIndex`'s
+    /// trait doc comment). A no-op if no such entry exists.
+    fn archive_search_entry(&self, kind: &'static str, id: String) {
+        let mut entries = self.search_entries.lock().unwrap();
+        for entry in entries.iter_mut() {
+            if entry.0 == kind && entry.1 == id {
+                entry.3 = true;
+            }
+        }
+    }
+
+    /// Every `(kind, id, title, archived)` currently indexed — the
+    /// `SearchIndex` state made directly observable for assertions that want
+    /// to check exactly what is indexed without going through
+    /// `SearchQuery`'s substring matching (e.g. asserting an entity is
+    /// indexed *at all*, or asserting on the exact count of entries).
+    pub fn search_entries(&self) -> Vec<(&'static str, String, String, bool)> {
         self.search_entries.lock().unwrap().clone()
     }
 }
@@ -556,27 +574,35 @@ impl SearchIndex for Fakes {
     }
 
     async fn remove_area(&self, id: AreaId) -> Result<(), RepoError> {
-        self.search_entries
-            .lock()
-            .unwrap()
-            .retain(|(kind, entry_id, _)| !(*kind == "area" && *entry_id == id.to_string()));
+        self.archive_search_entry("area", id.to_string());
         Ok(())
     }
 
     async fn remove_project(&self, id: ProjectId) -> Result<(), RepoError> {
-        self.search_entries
-            .lock()
-            .unwrap()
-            .retain(|(kind, entry_id, _)| !(*kind == "project" && *entry_id == id.to_string()));
+        self.archive_search_entry("project", id.to_string());
         Ok(())
     }
 
     async fn remove_task(&self, id: TaskId) -> Result<(), RepoError> {
-        self.search_entries
-            .lock()
-            .unwrap()
-            .retain(|(kind, entry_id, _)| !(*kind == "task" && *entry_id == id.to_string()));
+        self.archive_search_entry("task", id.to_string());
         Ok(())
+    }
+}
+
+fn hit_from_entry(kind: &str, id: &str, title: &str) -> SearchHit {
+    match kind {
+        "area" => SearchHit::Area {
+            id: AreaId::new(uuid::Uuid::parse_str(id).unwrap()),
+            title: title.to_string(),
+        },
+        "project" => SearchHit::Project {
+            id: ProjectId::new(uuid::Uuid::parse_str(id).unwrap()),
+            title: title.to_string(),
+        },
+        _ => SearchHit::Task {
+            id: TaskId::new(uuid::Uuid::parse_str(id).unwrap()),
+            title: title.to_string(),
+        },
     }
 }
 
@@ -589,21 +615,20 @@ impl SearchQuery for Fakes {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, _, title)| title.to_lowercase().contains(&needle))
-            .map(|(kind, id, title)| match *kind {
-                "area" => SearchHit::Area {
-                    id: AreaId::new(uuid::Uuid::parse_str(id).unwrap()),
-                    title: title.clone(),
-                },
-                "project" => SearchHit::Project {
-                    id: ProjectId::new(uuid::Uuid::parse_str(id).unwrap()),
-                    title: title.clone(),
-                },
-                _ => SearchHit::Task {
-                    id: TaskId::new(uuid::Uuid::parse_str(id).unwrap()),
-                    title: title.clone(),
-                },
-            })
+            .filter(|(_, _, title, archived)| !archived && title.to_lowercase().contains(&needle))
+            .map(|(kind, id, title, _)| hit_from_entry(kind, id, title))
+            .collect())
+    }
+
+    async fn search_archived(&self, text: &str) -> Result<Vec<SearchHit>, RepoError> {
+        let needle = text.to_lowercase();
+        Ok(self
+            .search_entries
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, _, title, archived)| *archived && title.to_lowercase().contains(&needle))
+            .map(|(kind, id, title, _)| hit_from_entry(kind, id, title))
             .collect())
     }
 }
