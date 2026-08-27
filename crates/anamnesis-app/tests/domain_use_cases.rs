@@ -390,6 +390,36 @@ async fn dropping_a_task_from_a_done_column_does_not_bounce_it() {
     assert_eq!(dropped.last_bounced_at, None);
 }
 
+#[tokio::test]
+async fn dropping_a_task_that_is_already_below_the_horizon_does_not_bounce_it() {
+    // Regression: a task that was never raised (still `Below` from
+    // creation) must not accrue a bounce just because `drop_task` was
+    // called on it — e.g. a double-submitted form.
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let project_id = some_project_id(&ids);
+
+    let task = create_task(&fakes, &ids, &clock, member(), project_id, "Task", "")
+        .await
+        .unwrap();
+    assert_eq!(task.placement, Placement::Below);
+
+    let dropped = drop_task(&fakes, &clock, member(), task.id, false)
+        .await
+        .unwrap();
+    assert_eq!(dropped.placement, Placement::Below);
+    assert_eq!(dropped.bounce_count, 0);
+    assert_eq!(dropped.last_bounced_at, None);
+
+    // Dropping it again (the double-submit case) must also stay a no-op.
+    let dropped_again = drop_task(&fakes, &clock, member(), task.id, false)
+        .await
+        .unwrap();
+    assert_eq!(dropped_again.bounce_count, 0);
+    assert_eq!(dropped_again.last_bounced_at, None);
+}
+
 // ---- The deep-ancestor-walk risk: set_task_parent must walk the FULL chain ----
 
 #[tokio::test]
