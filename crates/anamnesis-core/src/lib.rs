@@ -21,6 +21,7 @@ mod placement;
 pub mod policy;
 mod project;
 mod relationship;
+mod suggest;
 mod tangle;
 mod task;
 mod title;
@@ -47,6 +48,10 @@ pub use project::{
 pub use relationship::{
     Relationship, RelationshipKind, builtin_blocks, builtin_duplicates, builtin_relates_to,
     create_relationship, create_relationship_kind, is_blocking,
+};
+pub use suggest::{
+    Blockage, BlockingGraph, BoardState, Offer, OfferItem, Outcome, SuggestionReason,
+    SuggestionSettings, TaskOffer, TaskSummary, bounce_to_below, mark_offered, suggest,
 };
 pub use tangle::{DetectedTangle, Fingerprint, Reconciliation, Tangle, detect_tangles, reconcile};
 pub use task::{
