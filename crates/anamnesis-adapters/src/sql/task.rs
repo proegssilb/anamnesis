@@ -321,7 +321,8 @@ mod sqlite_impl {
         parent_id: TaskId,
     ) -> Result<Vec<Task>, RepoError> {
         let query = format!(
-            "SELECT {TASK_COLUMNS} FROM tasks WHERE parent_task_id = ? ORDER BY checklist_position"
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE parent_task_id = ? AND archived_at IS NULL \
+             ORDER BY checklist_position"
         );
         let rows = sqlx::query(sqlx::AssertSqlSafe(query))
             .bind(parent_id.as_uuid().to_string())
@@ -538,7 +539,8 @@ mod postgres_impl {
         parent_id: TaskId,
     ) -> Result<Vec<Task>, RepoError> {
         let query = format!(
-            "SELECT {TASK_COLUMNS} FROM tasks WHERE parent_task_id = $1 ORDER BY checklist_position"
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE parent_task_id = $1 AND archived_at IS NULL \
+             ORDER BY checklist_position"
         );
         let rows = sqlx::query(sqlx::AssertSqlSafe(query))
             .bind(parent_id.as_uuid())
