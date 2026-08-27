@@ -9,7 +9,8 @@
 
 use anamnesis_adapters::SqlBoardRepository;
 use anamnesis_app::{BoardRepository, BoardSummary};
-use anamnesis_core::{Board, BoardId, Card, CardId, Column, ColumnId, Timestamp, Title, UserId};
+use anamnesis_core::legacy::{Board, Card, Column};
+use anamnesis_core::{BoardId, CardId, ColumnId, Timestamp, Title, UserId};
 use uuid::Uuid;
 
 fn title(raw: &str) -> Title {

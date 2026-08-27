@@ -5,7 +5,8 @@
 //! on failure — including the read paths, so a board can never be read by
 //! anyone but its owner.
 
-use anamnesis_core::{self as core, Board, BoardId, CardId, ColumnId, UserId};
+use anamnesis_core::legacy::{self as core, Board};
+use anamnesis_core::{BoardId, CardId, ColumnId, UserId};
 
 use crate::error::AppError;
 use crate::ports::{BoardRepository, BoardSummary, Clock, IdGen};

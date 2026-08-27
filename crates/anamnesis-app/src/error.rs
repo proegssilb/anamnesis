@@ -8,7 +8,7 @@
 
 use std::error::Error as StdError;
 
-use anamnesis_core::DomainError;
+use anamnesis_core::legacy::DomainError;
 
 /// Every way a use case can fail.
 #[derive(Debug, PartialEq, thiserror::Error)]
