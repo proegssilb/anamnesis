@@ -20,6 +20,7 @@ pub mod legacy;
 mod placement;
 pub mod policy;
 mod project;
+mod recurrence;
 mod relationship;
 mod suggest;
 mod tangle;
@@ -44,6 +45,9 @@ pub use placement::Placement;
 pub use project::{
     Project, ProjectStatus, archive_project, create_project, edit_project, transition_status,
     unarchive_project,
+};
+pub use recurrence::{
+    DstRule, DstTransition, Recurrence, Timezone, WeekOfMonth, next_run, sweep_done,
 };
 pub use relationship::{
     Relationship, RelationshipKind, builtin_blocks, builtin_duplicates, builtin_relates_to,
