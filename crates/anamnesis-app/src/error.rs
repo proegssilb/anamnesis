@@ -11,6 +11,16 @@ use std::error::Error as StdError;
 use anamnesis_core::legacy::DomainError;
 
 /// Every way a use case can fail.
+///
+/// `Domain` (the legacy kanban model's [`DomainError`]) and `Rule` (the real
+/// domain model's [`anamnesis_core::DomainError`]) are deliberately separate
+/// variants, not one shared `#[from]`: `thiserror` derives one `From` impl
+/// per source type, and the two `DomainError` types are unrelated types that
+/// happen to share a name (`anamnesis_core::legacy::DomainError` for the
+/// disposable kanban scaffold, `anamnesis_core::DomainError` for the real
+/// model this crate is being rebuilt against) — collapsing them into one
+/// variant would make `?` ambiguous about which model a call site belongs
+/// to.
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum AppError {
     /// The requested aggregate does not exist.
@@ -19,13 +29,47 @@ pub enum AppError {
     /// The current user is not permitted to view or act on this aggregate.
     #[error("forbidden")]
     Forbidden,
-    /// A core transition rejected the request because a rule was broken.
+    /// A legacy-kanban-model transition rejected the request because a rule
+    /// was broken.
     #[error(transparent)]
     Domain(#[from] DomainError),
+    /// A real-domain-model transition (`anamnesis_core`, per `docs/DOMAIN.md`)
+    /// rejected the request because a rule was broken.
+    #[error(transparent)]
+    Rule(#[from] anamnesis_core::DomainError),
+    /// A candidate value failed validation at the application layer, for a
+    /// type that carries no rule of its own in `anamnesis_core` (comments
+    /// and attachments — see `crate::entities`).
+    #[error("invalid input: {0}")]
+    Invalid(String),
+    /// A [`crate::ports::TaskRepository::update`] optimistic-concurrency
+    /// check failed: the task was modified by someone else between the
+    /// caller's load and this save (`docs/DOMAIN.md` §7 — "with finer-grained
+    /// edits and plausible multi-device use, last-write-wins is no longer
+    /// acceptable"). The caller should reload the task, re-apply its
+    /// intended change on top of the fresh state, and retry.
+    #[error("task was concurrently modified by someone else — reload and retry")]
+    Conflict,
+    /// A project transitioned (or tried to transition) to `Active` while the
+    /// system was already at `Settings.active_project_limit`.
+    #[error("active project limit reached")]
+    ActiveProjectLimitExceeded,
+    /// A column's WIP limit would have been exceeded by placing a task on it.
+    #[error("column is at its work-in-progress limit")]
+    WipLimitExceeded,
     /// A port reported that the world failed (I/O, a database, a network
     /// call).
     #[error(transparent)]
     Repo(#[from] RepoError),
+}
+
+impl From<crate::ports::TaskUpdateError> for AppError {
+    fn from(err: crate::ports::TaskUpdateError) -> Self {
+        match err {
+            crate::ports::TaskUpdateError::Conflict => AppError::Conflict,
+            crate::ports::TaskUpdateError::Repo(e) => AppError::Repo(e),
+        }
+    }
 }
 
 /// An opaque error from a [`crate::ports::BoardRepository`] implementation.

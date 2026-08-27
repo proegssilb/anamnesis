@@ -9,7 +9,8 @@ use anamnesis_core::legacy::{self as core, Board};
 use anamnesis_core::{BoardId, CardId, ColumnId, UserId};
 
 use crate::error::AppError;
-use crate::ports::{BoardRepository, BoardSummary, Clock, IdGen};
+use crate::legacy::ports::{BoardRepository, BoardSummary};
+use crate::ports::{Clock, IdGen};
 
 /// Loads `id` and checks that `user` may view it, mapping a missing board to
 /// [`AppError::NotFound`] and a present-but-foreign board to
