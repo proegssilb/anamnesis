@@ -32,7 +32,9 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use crate::ids::{TangleId, TaskId, Timestamp};
+use crate::error::DomainError;
+use crate::ids::{ColumnId, TangleId, TaskId, Timestamp};
+use crate::placement::Placement;
 use crate::relationship::{Relationship, RelationshipKind, is_blocking};
 
 /// A stable, deterministic identity for a set of task ids: an FNV-1a hash
@@ -77,11 +79,31 @@ impl Fingerprint {
 
 /// A knot of mutually-blocking tasks, detected by [`detect_tangles`] and
 /// tracked across detection runs by [`reconcile`].
+///
+/// Identity is `id`, **not** `fingerprint` — see the module-level `Identity
+/// is the id, not the task set` discussion in `docs/DOMAIN.md`'s Tangle
+/// section. Earlier drafts made the fingerprint the effective identity,
+/// which broke the moment a user made progress untangling one: editing an
+/// edge changes the task set, which changes the fingerprint, and the card
+/// they were working on would dissolve and reappear as a stranger. `id`
+/// persists across membership changes; `fingerprint` is only ever used to
+/// *match* a fresh detection to an existing tangle, never to decide what a
+/// tangle *is*.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tangle {
     pub id: TangleId,
     pub task_ids: BTreeSet<TaskId>,
     pub fingerprint: Fingerprint,
+    /// Where this tangle sits — below the horizon (the common case: an
+    /// ephemeral, detection-refreshed knot nobody has committed to yet), or
+    /// on the board, occupying a column slot like a task.
+    pub placement: Placement,
+    /// Set the moment a tangle is placed on the board ([`place_tangle`]) and
+    /// cleared when it drops back below the horizon ([`drop_tangle`]).
+    /// While `true`, [`reconcile`] never rewrites this tangle's `task_ids`
+    /// or `fingerprint` — the membership the user committed to untangling
+    /// cannot be moved out from under them by the next detection pass.
+    pub frozen: bool,
     pub detected_at: Timestamp,
     pub resolved_at: Option<Timestamp>,
 }
@@ -91,6 +113,124 @@ impl Tangle {
     pub fn is_active(&self) -> bool {
         self.resolved_at.is_none()
     }
+}
+
+/// Places a tangle on the board at `column`/`position`, freezing its
+/// membership (`docs/DOMAIN.md` Tangle section: "placing a tangle freezes
+/// its membership... a commitment to untangle *that specific set*").
+///
+/// Rejects an already-resolved tangle: there is nothing left to place.
+pub fn place_tangle(
+    tangle: &Tangle,
+    column: ColumnId,
+    position: u32,
+) -> Result<Tangle, DomainError> {
+    if tangle.resolved_at.is_some() {
+        return Err(DomainError::TangleAlreadyResolved);
+    }
+    Ok(Tangle {
+        placement: Placement::OnBoard { column, position },
+        frozen: true,
+        ..tangle.clone()
+    })
+}
+
+/// Drops a tangle back below the horizon, unfreezing it — detection is free
+/// to refresh its `task_ids`/`fingerprint` again, or dissolve it entirely,
+/// exactly as for any other below-the-horizon tangle.
+///
+/// Rejects an already-resolved tangle, symmetrically with [`place_tangle`].
+pub fn drop_tangle(tangle: &Tangle) -> Result<Tangle, DomainError> {
+    if tangle.resolved_at.is_some() {
+        return Err(DomainError::TangleAlreadyResolved);
+    }
+    Ok(Tangle {
+        placement: Placement::Below,
+        frozen: false,
+        ..tangle.clone()
+    })
+}
+
+/// True if the subgraph induced by `task_ids` — following only
+/// [`is_blocking`] edges whose *both* endpoints lie inside `task_ids` — still
+/// contains a cycle (an SCC of size > 1, or a self-loop).
+///
+/// This is how a **frozen** tangle's resolution is decided
+/// (`docs/DOMAIN.md`: "checked against the live graph, not against
+/// re-detection"): unlike [`detect_tangles`], which discovers knots
+/// system-wide, this checks one specific, already-known task set against
+/// the live edges — an edge leaving the set (to a task outside it) is
+/// irrelevant to whether *this* knot is still tied.
+pub fn subgraph_has_cycle(
+    task_ids: &BTreeSet<TaskId>,
+    relationships: &[Relationship],
+    kinds: &[RelationshipKind],
+) -> bool {
+    let blocking_kind_ids: HashSet<_> = kinds
+        .iter()
+        .filter(|kind| is_blocking(kind))
+        .map(|kind| kind.id)
+        .collect();
+
+    let mut adjacency: HashMap<TaskId, Vec<TaskId>> = HashMap::new();
+    for id in task_ids {
+        adjacency.entry(*id).or_default();
+    }
+    for rel in relationships {
+        if blocking_kind_ids.contains(&rel.kind_id)
+            && task_ids.contains(&rel.from_task_id)
+            && task_ids.contains(&rel.to_task_id)
+        {
+            adjacency
+                .entry(rel.from_task_id)
+                .or_default()
+                .push(rel.to_task_id);
+        }
+    }
+
+    tarjan_sccs(&adjacency).into_iter().any(|scc| {
+        if scc.len() > 1 {
+            return true;
+        }
+        let only = scc.first().expect("scc is non-empty by construction");
+        adjacency
+            .get(only)
+            .is_some_and(|targets| targets.contains(only))
+    })
+}
+
+/// Resolves `tangle` if its (frozen) `task_ids` no longer contain a cycle in
+/// the live blocking graph (`docs/DOMAIN.md`: a frozen tangle "resolves when
+/// its frozen task set no longer contains a cycle — checked against the live
+/// graph, not against re-detection"). Returns `None`, unchanged, if the knot
+/// still holds.
+///
+/// `done` supplies the board slot to move into when the tangle was on the
+/// board — `Some((done_column, position))` moves it there so "the user sees
+/// the knot closed rather than the card silently vanishing"; `None` (no
+/// `is_done` column configured, or the tangle was already below the
+/// horizon) leaves `placement` untouched and only stamps `resolved_at`.
+pub fn resolve_frozen_tangle(
+    tangle: &Tangle,
+    relationships: &[Relationship],
+    kinds: &[RelationshipKind],
+    now: Timestamp,
+    done: Option<(ColumnId, u32)>,
+) -> Option<Tangle> {
+    if tangle.resolved_at.is_some() || subgraph_has_cycle(&tangle.task_ids, relationships, kinds) {
+        return None;
+    }
+    let placement = match (tangle.placement, done) {
+        (Placement::OnBoard { .. }, Some((column, position))) => {
+            Placement::OnBoard { column, position }
+        }
+        (placement, _) => placement,
+    };
+    Some(Tangle {
+        placement,
+        resolved_at: Some(now),
+        ..tangle.clone()
+    })
 }
 
 /// One strongly-connected component of size > 1 (or a self-loop of size 1)
@@ -148,7 +288,7 @@ pub fn detect_tangles(
                 return true;
             }
             // Size-1 SCC: only a tangle if that single node blocks itself.
-            let only = scc.iter().next().expect("scc is non-empty by construction");
+            let only = scc.first().expect("scc is non-empty by construction");
             adjacency
                 .get(only)
                 .is_some_and(|targets| targets.contains(only))
@@ -302,12 +442,40 @@ pub struct Reconciliation {
 ///
 /// `previous` may contain both active and already-resolved tangles (a
 /// caller-side history of any size); only the *active* ones (`resolved_at ==
-/// None`) participate in matching. A detected fingerprint that matches an
-/// already-resolved previous tangle is treated as a *fresh* recurrence — a
-/// brand-new `Tangle` with a new id — rather than reopening the old row: a
-/// resolved tangle is closed history, and the same set of tasks knotting up
-/// again later is a new event worth its own `detected_at`, not a mutation of
-/// a record that already said "this ended".
+/// None`) participate in matching, and among those, **frozen tangles are
+/// never rewritten by this function at all** (`docs/DOMAIN.md`: "detection
+/// no longer rewrites it, so the goalposts cannot move while the user is
+/// working"). Every active, frozen previous tangle is returned unchanged in
+/// `still_holding` regardless of what this pass detects — its resolution is
+/// decided separately, by [`resolve_frozen_tangle`] against the live graph,
+/// never by a mismatch here.
+///
+/// Only active, **unfrozen** tangles are matched against `detected` by
+/// fingerprint, exactly as before frozen tangles existed:
+/// - a fingerprint match carries the previous tangle through unchanged into
+///   `still_holding` (same id, same `detected_at`, so the caller has no
+///   reason to touch its stored row);
+/// - a previously-active unfrozen tangle whose fingerprint no longer appears
+///   in `detected` is stamped `resolved_at: Some(now)` and returned in
+///   `resolved` — this is the *ephemeral* dissolution `docs/DOMAIN.md`
+///   describes for a tangle below the horizon ("its task set and
+///   fingerprint may change, or it may dissolve").
+///
+/// A detected knot that matches no active tangle by fingerprint is checked
+/// for **duplicate suppression** before being minted as new: if its task set
+/// is fully covered (a subset) by *any* active tangle — frozen or not — it
+/// is the same knot that tangle already tracks (most commonly: the live
+/// graph still contains exactly the cycle a frozen, on-board tangle already
+/// owns) and is silently dropped rather than creating a second card for one
+/// knot. Only once neither check applies is a brand-new `Tangle` minted,
+/// `placement: Placement::Below`, `frozen: false`, from `fresh_ids`.
+///
+/// A detected fingerprint that matches an already-*resolved* previous tangle
+/// is treated as a fresh recurrence — a brand-new `Tangle` with a new id —
+/// rather than reopening the old row: a resolved tangle is closed history,
+/// and the same set of tasks knotting up again later is a new event worth
+/// its own `detected_at`, not a mutation of a record that already said
+/// "this ended".
 ///
 /// `fresh_ids` supplies identity for newly detected tangles, in the same
 /// spirit as every other id parameter in this crate (`docs/DOMAIN.md`: core
@@ -324,33 +492,57 @@ pub fn reconcile(
 ) -> Reconciliation {
     let mut fresh_ids = fresh_ids.into_iter();
     let active_previous: Vec<&Tangle> = previous.iter().filter(|t| t.is_active()).collect();
+    let frozen_previous: Vec<&Tangle> = active_previous
+        .iter()
+        .copied()
+        .filter(|t| t.frozen)
+        .collect();
+    let unfrozen_previous: Vec<&Tangle> = active_previous
+        .iter()
+        .copied()
+        .filter(|t| !t.frozen)
+        .collect();
     let detected_fingerprints: HashSet<Fingerprint> =
         detected.iter().map(|d| d.fingerprint).collect();
 
-    let mut still_holding = Vec::new();
+    // Frozen tangles are never rewritten by detection: pass every one
+    // through unconditionally, whatever this pass did or did not detect.
+    let mut still_holding: Vec<Tangle> = frozen_previous.iter().map(|t| (*t).clone()).collect();
     let mut newly_detected = Vec::new();
+
     for d in detected {
-        match active_previous
+        if let Some(prev) = unfrozen_previous
             .iter()
             .find(|t| t.fingerprint == d.fingerprint)
         {
-            Some(prev) => still_holding.push((*prev).clone()),
-            None => {
-                let id = fresh_ids
-                    .next()
-                    .expect("reconcile: not enough fresh_ids for newly detected tangles");
-                newly_detected.push(Tangle {
-                    id,
-                    task_ids: d.task_ids.clone(),
-                    fingerprint: d.fingerprint,
-                    detected_at: now,
-                    resolved_at: None,
-                });
-            }
+            still_holding.push((*prev).clone());
+            continue;
         }
+        // No unfrozen tangle matches this detection by fingerprint. Before
+        // minting a new one, suppress it if some active tangle (frozen or
+        // not) already fully covers this knot — the "no duplicate cards for
+        // one knot" rule.
+        let already_covered = active_previous
+            .iter()
+            .any(|t| d.task_ids.is_subset(&t.task_ids));
+        if already_covered {
+            continue;
+        }
+        let id = fresh_ids
+            .next()
+            .expect("reconcile: not enough fresh_ids for newly detected tangles");
+        newly_detected.push(Tangle {
+            id,
+            task_ids: d.task_ids.clone(),
+            fingerprint: d.fingerprint,
+            placement: Placement::Below,
+            frozen: false,
+            detected_at: now,
+            resolved_at: None,
+        });
     }
 
-    let resolved = active_previous
+    let resolved = unfrozen_previous
         .into_iter()
         .filter(|t| !detected_fingerprints.contains(&t.fingerprint))
         .map(|t| Tangle {
@@ -660,5 +852,262 @@ mod tests {
         assert_eq!(result.still_holding, previous);
         assert!(result.newly_detected.is_empty());
         assert!(result.resolved.is_empty());
+    }
+
+    // --- placement / freezing ---
+
+    fn cid(n: u128) -> ColumnId {
+        ColumnId::new(Uuid::from_u128(n))
+    }
+
+    #[test]
+    fn place_tangle_moves_it_on_board_and_freezes_it() {
+        let detected = detect_tangles(&[blocks(1, 2), blocks(2, 1)], &builtin_kinds());
+        let tangle = reconcile(&detected, &[], ts(100), [tang_id(1)]).newly_detected[0].clone();
+        assert!(!tangle.frozen);
+        assert_eq!(tangle.placement, Placement::Below);
+
+        let placed = place_tangle(&tangle, cid(1), 0).unwrap();
+        assert!(placed.frozen);
+        assert_eq!(
+            placed.placement,
+            Placement::OnBoard {
+                column: cid(1),
+                position: 0
+            }
+        );
+        // Identity and content are untouched by placing.
+        assert_eq!(placed.id, tangle.id);
+        assert_eq!(placed.task_ids, tangle.task_ids);
+    }
+
+    #[test]
+    fn place_tangle_rejects_an_already_resolved_tangle() {
+        let detected = detect_tangles(&[blocks(1, 2), blocks(2, 1)], &builtin_kinds());
+        let tangle = reconcile(&detected, &[], ts(100), [tang_id(1)]).newly_detected[0].clone();
+        let resolved = Tangle {
+            resolved_at: Some(ts(200)),
+            ..tangle
+        };
+        let result = place_tangle(&resolved, cid(1), 0);
+        assert_eq!(result, Err(DomainError::TangleAlreadyResolved));
+    }
+
+    #[test]
+    fn drop_tangle_moves_it_below_and_unfreezes_it() {
+        let detected = detect_tangles(&[blocks(1, 2), blocks(2, 1)], &builtin_kinds());
+        let tangle = reconcile(&detected, &[], ts(100), [tang_id(1)]).newly_detected[0].clone();
+        let placed = place_tangle(&tangle, cid(1), 0).unwrap();
+
+        let dropped = drop_tangle(&placed).unwrap();
+        assert!(!dropped.frozen);
+        assert_eq!(dropped.placement, Placement::Below);
+        assert_eq!(dropped.id, tangle.id);
+    }
+
+    #[test]
+    fn drop_tangle_rejects_an_already_resolved_tangle() {
+        let detected = detect_tangles(&[blocks(1, 2), blocks(2, 1)], &builtin_kinds());
+        let tangle = reconcile(&detected, &[], ts(100), [tang_id(1)]).newly_detected[0].clone();
+        let resolved = Tangle {
+            resolved_at: Some(ts(200)),
+            ..tangle
+        };
+        let result = drop_tangle(&resolved);
+        assert_eq!(result, Err(DomainError::TangleAlreadyResolved));
+    }
+
+    // --- the key invariant: a placed tangle survives a detection pass ---
+
+    #[test]
+    fn a_placed_tangle_keeps_its_board_slot_across_a_detection_pass() {
+        // The exact same knot is detected again — the ordinary "nothing
+        // changed" re-run every board view does. A frozen, placed tangle
+        // must come back byte-for-byte identical: same id, same placement.
+        let detected = detect_tangles(&[blocks(1, 2), blocks(2, 1)], &builtin_kinds());
+        let fresh = reconcile(&detected, &[], ts(100), [tang_id(1)]).newly_detected[0].clone();
+        let placed = place_tangle(&fresh, cid(7), 2).unwrap();
+
+        let second = reconcile(&detected, std::slice::from_ref(&placed), ts(200), []);
+        assert_eq!(second.still_holding, vec![placed.clone()]);
+        assert!(second.newly_detected.is_empty());
+        assert!(second.resolved.is_empty());
+        assert_eq!(second.still_holding[0].placement, placed.placement);
+        assert!(second.still_holding[0].frozen);
+    }
+
+    #[test]
+    fn editing_an_edge_inside_a_frozen_tangle_does_not_reshape_or_replace_it() {
+        // Frozen over {1, 2, 3}. The user removes edge 3->1, partially
+        // untangling it (a real, in-progress edit) — the live graph now
+        // detects nothing at all over that trio. The frozen card must not
+        // reshape, shrink, or be replaced: reconcile never even looks at
+        // what changed for a frozen tangle.
+        let full_knot = vec![blocks(1, 2), blocks(2, 3), blocks(3, 1)];
+        let detected = detect_tangles(&full_knot, &builtin_kinds());
+        let fresh = reconcile(&detected, &[], ts(100), [tang_id(1)]).newly_detected[0].clone();
+        assert_eq!(fresh.task_ids.len(), 3);
+        let placed = place_tangle(&fresh, cid(1), 0).unwrap();
+
+        let edited = vec![blocks(1, 2), blocks(2, 3)]; // 3->1 removed
+        let after_edit = detect_tangles(&edited, &builtin_kinds()); // now empty
+
+        let result = reconcile(&after_edit, std::slice::from_ref(&placed), ts(200), []);
+        assert_eq!(result.still_holding, vec![placed.clone()]);
+        assert_eq!(result.still_holding[0].task_ids, placed.task_ids);
+        assert_eq!(result.still_holding[0].id, placed.id);
+        assert!(result.newly_detected.is_empty());
+        assert!(result.resolved.is_empty());
+    }
+
+    // --- duplicate suppression ---
+
+    #[test]
+    fn a_freshly_detected_knot_fully_covered_by_an_active_tangle_is_suppressed() {
+        // A frozen tangle already tracks {1, 2, 3}; detection re-runs over
+        // the identical, unchanged graph. The exact same knot must not spawn
+        // a second card.
+        let rels = vec![blocks(1, 2), blocks(2, 3), blocks(3, 1)];
+        let detected = detect_tangles(&rels, &builtin_kinds());
+        let fresh = reconcile(&detected, &[], ts(100), [tang_id(1)]).newly_detected[0].clone();
+        let placed = place_tangle(&fresh, cid(1), 0).unwrap();
+
+        let result = reconcile(&detected, std::slice::from_ref(&placed), ts(200), []);
+        assert!(result.newly_detected.is_empty(), "must not duplicate");
+        assert_eq!(result.still_holding, vec![placed]);
+    }
+
+    #[test]
+    fn a_detected_sub_knot_covered_by_a_frozen_tangles_wider_set_is_suppressed() {
+        // Frozen over {1, 2, 3}. A later detection pass (while frozen, so it
+        // plays no role in matching) happens to also surface a smaller
+        // {1, 2} knot found elsewhere in the same call for whatever reason —
+        // it is still fully inside the frozen set, so no second card.
+        let full_knot = vec![blocks(1, 2), blocks(2, 3), blocks(3, 1)];
+        let detected_full = detect_tangles(&full_knot, &builtin_kinds());
+        let fresh = reconcile(&detected_full, &[], ts(100), [tang_id(1)]).newly_detected[0].clone();
+        let placed = place_tangle(&fresh, cid(1), 0).unwrap();
+
+        let sub_knot_detected = DetectedTangle {
+            task_ids: [tid(1), tid(2)].into_iter().collect(),
+            fingerprint: Fingerprint::of(&[tid(1), tid(2)].into_iter().collect()),
+        };
+        let result = reconcile(
+            &[sub_knot_detected],
+            std::slice::from_ref(&placed),
+            ts(200),
+            [],
+        );
+        assert!(result.newly_detected.is_empty());
+        assert_eq!(result.still_holding, vec![placed]);
+    }
+
+    #[test]
+    fn an_uncovered_detected_knot_still_becomes_newly_detected_alongside_a_frozen_one() {
+        // A frozen tangle over {1, 2}; a wholly disjoint knot {10, 20} is
+        // detected in the same pass. The disjoint knot is not covered by
+        // anything and must still be minted.
+        let first_knot = detect_tangles(&[blocks(1, 2), blocks(2, 1)], &builtin_kinds());
+        let fresh = reconcile(&first_knot, &[], ts(100), [tang_id(1)]).newly_detected[0].clone();
+        let placed = place_tangle(&fresh, cid(1), 0).unwrap();
+
+        let both = detect_tangles(
+            &[blocks(1, 2), blocks(2, 1), blocks(10, 20), blocks(20, 10)],
+            &builtin_kinds(),
+        );
+        let result = reconcile(&both, std::slice::from_ref(&placed), ts(200), [tang_id(2)]);
+        assert_eq!(result.newly_detected.len(), 1);
+        assert_eq!(
+            result.newly_detected[0].task_ids,
+            [tid(10), tid(20)].into_iter().collect::<BTreeSet<_>>()
+        );
+        assert_eq!(result.still_holding, vec![placed]);
+    }
+
+    // --- subgraph_has_cycle / resolve_frozen_tangle ---
+
+    #[test]
+    fn subgraph_has_cycle_is_true_for_a_cycle_fully_inside_the_set() {
+        let rels = vec![blocks(1, 2), blocks(2, 1)];
+        let ids: BTreeSet<TaskId> = [tid(1), tid(2)].into_iter().collect();
+        assert!(subgraph_has_cycle(&ids, &rels, &builtin_kinds()));
+    }
+
+    #[test]
+    fn subgraph_has_cycle_is_false_once_the_closing_edge_is_gone() {
+        let rels = vec![blocks(1, 2)]; // 2->1 removed
+        let ids: BTreeSet<TaskId> = [tid(1), tid(2)].into_iter().collect();
+        assert!(!subgraph_has_cycle(&ids, &rels, &builtin_kinds()));
+    }
+
+    #[test]
+    fn subgraph_has_cycle_ignores_edges_leaving_the_set() {
+        // 1 and 2 no longer cycle between themselves, but 2 now blocks 3,
+        // which is outside the frozen set entirely — irrelevant to whether
+        // *this* set is still knotted.
+        let rels = vec![blocks(1, 2), blocks(2, 3)];
+        let ids: BTreeSet<TaskId> = [tid(1), tid(2)].into_iter().collect();
+        assert!(!subgraph_has_cycle(&ids, &rels, &builtin_kinds()));
+    }
+
+    #[test]
+    fn resolve_frozen_tangle_resolves_and_moves_to_the_done_column_when_acyclic() {
+        let detected = detect_tangles(&[blocks(1, 2), blocks(2, 1)], &builtin_kinds());
+        let fresh = reconcile(&detected, &[], ts(100), [tang_id(1)]).newly_detected[0].clone();
+        let placed = place_tangle(&fresh, cid(1), 3).unwrap();
+
+        // The user broke the cycle: only 1->2 remains.
+        let live = vec![blocks(1, 2)];
+        let done_col = cid(99);
+        let resolved = resolve_frozen_tangle(
+            &placed,
+            &live,
+            &builtin_kinds(),
+            ts(300),
+            Some((done_col, 0)),
+        )
+        .expect("no cycle remains: must resolve");
+
+        assert_eq!(resolved.resolved_at, Some(ts(300)));
+        assert_eq!(
+            resolved.placement,
+            Placement::OnBoard {
+                column: done_col,
+                position: 0
+            }
+        );
+        // Identity and the frozen task set survive the resolution.
+        assert_eq!(resolved.id, placed.id);
+        assert_eq!(resolved.task_ids, placed.task_ids);
+    }
+
+    #[test]
+    fn resolve_frozen_tangle_does_nothing_while_the_frozen_set_still_cycles() {
+        let detected = detect_tangles(&[blocks(1, 2), blocks(2, 1)], &builtin_kinds());
+        let fresh = reconcile(&detected, &[], ts(100), [tang_id(1)]).newly_detected[0].clone();
+        let placed = place_tangle(&fresh, cid(1), 0).unwrap();
+
+        let still_live = vec![blocks(1, 2), blocks(2, 1)];
+        let result = resolve_frozen_tangle(
+            &placed,
+            &still_live,
+            &builtin_kinds(),
+            ts(300),
+            Some((cid(99), 0)),
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_frozen_tangle_without_a_done_column_still_resolves_but_keeps_placement() {
+        let detected = detect_tangles(&[blocks(1, 2), blocks(2, 1)], &builtin_kinds());
+        let fresh = reconcile(&detected, &[], ts(100), [tang_id(1)]).newly_detected[0].clone();
+        let placed = place_tangle(&fresh, cid(1), 3).unwrap();
+
+        let live = vec![blocks(1, 2)];
+        let resolved = resolve_frozen_tangle(&placed, &live, &builtin_kinds(), ts(300), None)
+            .expect("must still resolve");
+        assert_eq!(resolved.resolved_at, Some(ts(300)));
+        assert_eq!(resolved.placement, placed.placement);
     }
 }

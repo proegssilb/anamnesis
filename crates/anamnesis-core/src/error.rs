@@ -58,6 +58,11 @@ pub enum DomainError {
     /// that is already archived.
     #[error("entity is already archived")]
     AlreadyArchived,
+    /// [`crate::place_tangle`] or [`crate::drop_tangle`] was called on a
+    /// tangle whose `resolved_at` is already set — a closed knot has nothing
+    /// left to place or drop.
+    #[error("tangle is already resolved")]
+    TangleAlreadyResolved,
 }
 
 #[cfg(test)]
@@ -97,6 +102,10 @@ mod tests {
         assert_eq!(
             DomainError::AlreadyArchived.to_string(),
             "entity is already archived"
+        );
+        assert_eq!(
+            DomainError::TangleAlreadyResolved.to_string(),
+            "tangle is already resolved"
         );
     }
 
