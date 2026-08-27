@@ -19,20 +19,20 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use anamnesis_app::{
-    Attachment, AttachmentId, AttachmentRepository, AreaRepository, BlobStore, BoardColumn,
+    AreaRepository, Attachment, AttachmentId, AttachmentRepository, BlobStore, BoardColumn,
     BoardQuery, Comment, CommentId, CommentRepository, MembershipQuery, ProjectAggregate,
     ProjectRepository, RelationshipRepository, RepoError, SearchHit, SearchIndex, SearchQuery,
     TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
-    Area, AreaId, BlockingGraph, BoardState, Column, ColumnId, FieldDefinition, FieldValue,
-    KindId, Project, ProjectId, ProjectStatus, Relationship, RelationshipId, RelationshipKind,
-    Tangle, Task, TaskId, TaskSummary, Timestamp, UserId,
+    Area, AreaId, BlockingGraph, BoardState, Column, ColumnId, FieldDefinition, FieldValue, KindId,
+    Project, ProjectId, ProjectStatus, Relationship, RelationshipId, RelationshipKind, Tangle,
+    Task, TaskId, TaskSummary, Timestamp, UserId,
 };
 
 /// Shared in-memory backing store implementing every real-domain-model port.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Fakes {
     areas: Mutex<HashMap<AreaId, Area>>,
     projects: Mutex<HashMap<ProjectId, ProjectAggregate>>,
@@ -212,10 +212,7 @@ impl ProjectRepository for Fakes {
         Ok(())
     }
 
-    async fn insert_field_definition(
-        &self,
-        definition: &FieldDefinition,
-    ) -> Result<(), RepoError> {
+    async fn insert_field_definition(&self, definition: &FieldDefinition) -> Result<(), RepoError> {
         let mut projects = self.projects.lock().unwrap();
         let agg = projects
             .get_mut(&definition.project_id)
@@ -224,10 +221,7 @@ impl ProjectRepository for Fakes {
         Ok(())
     }
 
-    async fn update_field_definition(
-        &self,
-        definition: &FieldDefinition,
-    ) -> Result<(), RepoError> {
+    async fn update_field_definition(&self, definition: &FieldDefinition) -> Result<(), RepoError> {
         let mut projects = self.projects.lock().unwrap();
         let agg = projects
             .get_mut(&definition.project_id)
@@ -363,7 +357,7 @@ impl RelationshipRepository for Fakes {
         self.relationships
             .lock()
             .unwrap()
-            .insert(relationship.id, relationship.clone());
+            .insert(relationship.id, *relationship);
         Ok(())
     }
 
@@ -387,12 +381,18 @@ impl TangleRepository for Fakes {
     }
 
     async fn insert(&self, tangle: &Tangle) -> Result<(), RepoError> {
-        self.tangles.lock().unwrap().insert(tangle.id, tangle.clone());
+        self.tangles
+            .lock()
+            .unwrap()
+            .insert(tangle.id, tangle.clone());
         Ok(())
     }
 
     async fn update(&self, tangle: &Tangle) -> Result<(), RepoError> {
-        self.tangles.lock().unwrap().insert(tangle.id, tangle.clone());
+        self.tangles
+            .lock()
+            .unwrap()
+            .insert(tangle.id, tangle.clone());
         Ok(())
     }
 }
@@ -686,11 +686,8 @@ impl BoardQuery for Fakes {
         drop(relationships);
 
         let columns = self.columns.lock().unwrap();
-        let done_columns: std::collections::HashSet<ColumnId> = columns
-            .iter()
-            .filter(|c| c.is_done)
-            .map(|c| c.id)
-            .collect();
+        let done_columns: std::collections::HashSet<ColumnId> =
+            columns.iter().filter(|c| c.is_done).map(|c| c.id).collect();
         drop(columns);
 
         let tasks = self.tasks.lock().unwrap();

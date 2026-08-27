@@ -98,13 +98,20 @@ pub enum Action {
 pub fn is_allowed(role: Option<Role>, action: Action) -> bool {
     use Action::*;
     match action {
-        ManageArea | ManageSystemSettings | ManageColumns | ManageActiveProjectLimit
+        ManageArea
+        | ManageSystemSettings
+        | ManageColumns
+        | ManageActiveProjectLimit
         | ManageUsers => can_manage_system(role),
 
         ViewArea => can_manage_system(role),
 
-        EditProject | ArchiveProject | TransitionProjectStatus | ManageFieldDefinitions
-        | ManageRelationshipKinds | ManageProjectMembership => can_manage_project(role),
+        EditProject
+        | ArchiveProject
+        | TransitionProjectStatus
+        | ManageFieldDefinitions
+        | ManageRelationshipKinds
+        | ManageProjectMembership => can_manage_project(role),
 
         ViewProject | CreateProject => can_view_project(role),
 

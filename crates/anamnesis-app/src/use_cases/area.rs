@@ -22,7 +22,13 @@ pub async fn create_area(
     if !is_allowed(role, Action::ManageArea) {
         return Err(AppError::Forbidden);
     }
-    let area = core::create_area(AreaId::new(ids.next()), title, description, position, clock.now())?;
+    let area = core::create_area(
+        AreaId::new(ids.next()),
+        title,
+        description,
+        position,
+        clock.now(),
+    )?;
     repo.insert(&area).await?;
     Ok(area)
 }
@@ -40,7 +46,10 @@ pub async fn view_area(
 }
 
 /// Lists every area (the area grid, `docs/DOMAIN.md` §3).
-pub async fn list_areas(repo: &dyn AreaRepository, role: Option<Role>) -> Result<Vec<Area>, AppError> {
+pub async fn list_areas(
+    repo: &dyn AreaRepository,
+    role: Option<Role>,
+) -> Result<Vec<Area>, AppError> {
     if !is_allowed(role, Action::ViewArea) {
         return Err(AppError::Forbidden);
     }

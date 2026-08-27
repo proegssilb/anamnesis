@@ -111,13 +111,26 @@ async fn transition_project_status_enforces_the_active_project_limit() {
         .await
         .unwrap();
 
-    transition_project_status(&fakes, &clock, project_admin(), p1.id, ProjectStatus::Active, 1)
-        .await
-        .unwrap();
+    transition_project_status(
+        &fakes,
+        &clock,
+        project_admin(),
+        p1.id,
+        ProjectStatus::Active,
+        1,
+    )
+    .await
+    .unwrap();
 
-    let result =
-        transition_project_status(&fakes, &clock, project_admin(), p2.id, ProjectStatus::Active, 1)
-            .await;
+    let result = transition_project_status(
+        &fakes,
+        &clock,
+        project_admin(),
+        p2.id,
+        ProjectStatus::Active,
+        1,
+    )
+    .await;
     assert_eq!(
         result,
         Err(AppError::Rule(DomainError::ActiveProjectLimitExceeded))
@@ -136,14 +149,27 @@ async fn transition_project_status_excludes_self_from_the_active_count() {
     let p1 = create_project(&fakes, &ids, &clock, member(), area_id, "One", "")
         .await
         .unwrap();
-    transition_project_status(&fakes, &clock, project_admin(), p1.id, ProjectStatus::Active, 1)
-        .await
-        .unwrap();
+    transition_project_status(
+        &fakes,
+        &clock,
+        project_admin(),
+        p1.id,
+        ProjectStatus::Active,
+        1,
+    )
+    .await
+    .unwrap();
 
     // Re-affirming Active -> Active must still succeed against a limit of 1.
-    let result =
-        transition_project_status(&fakes, &clock, project_admin(), p1.id, ProjectStatus::Active, 1)
-            .await;
+    let result = transition_project_status(
+        &fakes,
+        &clock,
+        project_admin(),
+        p1.id,
+        ProjectStatus::Active,
+        1,
+    )
+    .await;
     assert!(result.is_ok());
 }
 
@@ -198,8 +224,14 @@ fn make_column(
     wip_limit: Option<u32>,
     is_done: bool,
 ) -> Column {
-    anamnesis_core::create_column(ColumnId::new(ids.next()), title, position, wip_limit, is_done)
-        .unwrap()
+    anamnesis_core::create_column(
+        ColumnId::new(ids.next()),
+        title,
+        position,
+        wip_limit,
+        is_done,
+    )
+    .unwrap()
 }
 
 #[tokio::test]
@@ -356,7 +388,13 @@ async fn set_task_parent_rejects_a_cycle_that_closes_five_levels_up() {
     let clock = FixedClock::at(0);
     let project_id = some_project_id(&ids);
 
-    async fn task(fakes: &Fakes, ids: &SequentialIdGen, clock: &FixedClock, project_id: ProjectId, name: &str) -> Task {
+    async fn task(
+        fakes: &Fakes,
+        ids: &SequentialIdGen,
+        clock: &FixedClock,
+        project_id: ProjectId,
+        name: &str,
+    ) -> Task {
         create_task(fakes, ids, clock, Some(Role::Member), project_id, name, "")
             .await
             .unwrap()
@@ -396,7 +434,13 @@ async fn set_task_parent_allows_a_non_cyclic_deep_reparent() {
     let clock = FixedClock::at(0);
     let project_id = some_project_id(&ids);
 
-    async fn task(fakes: &Fakes, ids: &SequentialIdGen, clock: &FixedClock, project_id: ProjectId, name: &str) -> Task {
+    async fn task(
+        fakes: &Fakes,
+        ids: &SequentialIdGen,
+        clock: &FixedClock,
+        project_id: ProjectId,
+        name: &str,
+    ) -> Task {
         create_task(fakes, ids, clock, Some(Role::Member), project_id, name, "")
             .await
             .unwrap()
@@ -419,6 +463,46 @@ async fn set_task_parent_allows_a_non_cyclic_deep_reparent() {
     assert!(result.is_ok());
 }
 
+#[tokio::test]
+async fn set_task_parent_terminates_against_an_already_corrupted_ancestor_chain() {
+    // Defensive case, not reachable through `set_task_parent` itself (which
+    // never lets a cycle get written): if the stored data were ever
+    // corrupted into a self-referencing loop, `walk_ancestors` must still
+    // terminate rather than looping forever. Wrapped in a timeout so a
+    // regression fails this test rather than hanging the whole suite.
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let project_id = some_project_id(&ids);
+
+    let a = create_task(&fakes, &ids, &clock, member(), project_id, "a", "")
+        .await
+        .unwrap();
+    let b = create_task(&fakes, &ids, &clock, member(), project_id, "b", "")
+        .await
+        .unwrap();
+    // Bypass the use case entirely to corrupt the chain: a's parent is b,
+    // b's parent is a.
+    fakes.seed_task(Task {
+        parent_task_id: Some(b.id),
+        ..a.clone()
+    });
+    fakes.seed_task(Task {
+        parent_task_id: Some(a.id),
+        ..b.clone()
+    });
+
+    let c = create_task(&fakes, &ids, &clock, member(), project_id, "c", "")
+        .await
+        .unwrap();
+    // No timeout wrapper needed here (the crate's `tokio` dev-dependency
+    // does not enable the `time` feature): `walk_ancestors`'s `seen` guard
+    // means this either returns promptly or the test genuinely hangs, which
+    // would already fail the suite loudly enough to diagnose.
+    let result = set_task_parent(&fakes, &clock, member(), c.id, Some(a.id)).await;
+    assert!(result.is_ok());
+}
+
 // ============================ Suggestions ============================
 
 fn settings() -> SuggestionSettings {
@@ -434,7 +518,9 @@ async fn derive_seed_is_stable_for_an_unchanged_board_and_changes_when_it_change
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let project_id = some_project_id(&ids);
-    let mut project = anamnesis_core::create_project(project_id, AreaId::new(ids.next()), "P", "", clock.now()).unwrap();
+    let mut project =
+        anamnesis_core::create_project(project_id, AreaId::new(ids.next()), "P", "", clock.now())
+            .unwrap();
     project.status = ProjectStatus::Active;
     fakes.seed_project(project);
 
@@ -482,13 +568,28 @@ async fn request_suggestion_stamps_last_offered_at_on_every_offered_task() {
     let project = create_project(&fakes, &ids, &clock, member(), area_id, "P", "")
         .await
         .unwrap();
-    transition_project_status(&fakes, &clock, project_admin(), project.id, ProjectStatus::Active, 10)
-        .await
-        .unwrap();
+    transition_project_status(
+        &fakes,
+        &clock,
+        project_admin(),
+        project.id,
+        ProjectStatus::Active,
+        10,
+    )
+    .await
+    .unwrap();
 
-    let task = create_task(&fakes, &ids, &clock, member(), project.id, "Do the thing", "")
-        .await
-        .unwrap();
+    let task = create_task(
+        &fakes,
+        &ids,
+        &clock,
+        member(),
+        project.id,
+        "Do the thing",
+        "",
+    )
+    .await
+    .unwrap();
     assert_eq!(task.last_offered_at, None);
 
     let column = make_column(&ids, "To-Do", 0, Some(3), false);
@@ -523,9 +624,16 @@ async fn request_suggestion_is_full_silence_at_the_wip_limit() {
     let project = create_project(&fakes, &ids, &clock, member(), area_id, "P", "")
         .await
         .unwrap();
-    transition_project_status(&fakes, &clock, project_admin(), project.id, ProjectStatus::Active, 10)
-        .await
-        .unwrap();
+    transition_project_status(
+        &fakes,
+        &clock,
+        project_admin(),
+        project.id,
+        ProjectStatus::Active,
+        10,
+    )
+    .await
+    .unwrap();
 
     let column = make_column(&ids, "To-Do", 0, Some(1), false);
     fakes.seed_column(column.clone());
@@ -651,7 +759,9 @@ async fn archive_done_tasks_archives_everything_in_an_is_done_column() {
         .await
         .unwrap();
 
-    let archived = archive_done_tasks(&fakes, &fakes, &clock, member()).await.unwrap();
+    let archived = archive_done_tasks(&fakes, &fakes, &clock, member())
+        .await
+        .unwrap();
     assert_eq!(archived, vec![task.id]);
     assert!(fakes.task(task.id).archived_at.is_some());
 }
@@ -828,9 +938,16 @@ async fn edit_project_archive_and_unarchive_require_project_admin() {
         edit_project_fields(&fakes, &clock, member(), project.id, Some("New"), None).await,
         Err(AppError::Forbidden)
     ));
-    let edited = edit_project_fields(&fakes, &clock, project_admin(), project.id, Some("New"), None)
-        .await
-        .unwrap();
+    let edited = edit_project_fields(
+        &fakes,
+        &clock,
+        project_admin(),
+        project.id,
+        Some("New"),
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(edited.title.as_str(), "New");
     // description left unchanged (None passed through).
     assert_eq!(edited.description, "");
@@ -876,9 +993,15 @@ async fn rename_field_definition_requires_project_admin() {
         rename_field_definition(&fakes, member(), project.id, definition.id, "Urgency").await,
         Err(AppError::Forbidden)
     ));
-    let renamed = rename_field_definition(&fakes, project_admin(), project.id, definition.id, "Urgency")
-        .await
-        .unwrap();
+    let renamed = rename_field_definition(
+        &fakes,
+        project_admin(),
+        project.id,
+        definition.id,
+        "Urgency",
+    )
+    .await
+    .unwrap();
     assert_eq!(renamed.name.as_str(), "Urgency");
 }
 
@@ -961,7 +1084,10 @@ async fn resolve_kind_recognises_all_three_builtins_and_falls_back_to_the_reposi
     let ids = SequentialIdGen::new();
 
     assert_eq!(
-        resolve_kind(&fakes, KindId::BUILTIN_BLOCKS).await.unwrap().id,
+        resolve_kind(&fakes, KindId::BUILTIN_BLOCKS)
+            .await
+            .unwrap()
+            .id,
         KindId::BUILTIN_BLOCKS
     );
     assert_eq!(
@@ -990,9 +1116,16 @@ async fn resolve_kind_recognises_all_three_builtins_and_falls_back_to_the_reposi
     let project = create_project(&fakes, &ids, &clock, member(), area_id, "P", "")
         .await
         .unwrap();
-    let custom = add_relationship_kind(&fakes, &ids, project_admin(), project.id, "inspired by", "inspired")
-        .await
-        .unwrap();
+    let custom = add_relationship_kind(
+        &fakes,
+        &ids,
+        project_admin(),
+        project.id,
+        "inspired by",
+        "inspired",
+    )
+    .await
+    .unwrap();
     assert_eq!(resolve_kind(&fakes, custom.id).await.unwrap().id, custom.id);
 }
 
@@ -1008,9 +1141,16 @@ async fn create_relationship_use_case_rejects_a_custom_kind_across_projects() {
     let project_b = create_project(&fakes, &ids, &clock, member(), area_id, "B", "")
         .await
         .unwrap();
-    let custom = add_relationship_kind(&fakes, &ids, project_admin(), project_a.id, "inspired by", "inspired")
-        .await
-        .unwrap();
+    let custom = add_relationship_kind(
+        &fakes,
+        &ids,
+        project_admin(),
+        project_a.id,
+        "inspired by",
+        "inspired",
+    )
+    .await
+    .unwrap();
 
     let a = create_task(&fakes, &ids, &clock, member(), project_a.id, "A-task", "")
         .await
@@ -1020,7 +1160,16 @@ async fn create_relationship_use_case_rejects_a_custom_kind_across_projects() {
         .unwrap();
 
     let result = create_relationship(
-        &fakes, &fakes, &ids, &clock, member(), a.id, project_a.id, b.id, project_b.id, custom.id,
+        &fakes,
+        &fakes,
+        &ids,
+        &clock,
+        member(),
+        a.id,
+        project_a.id,
+        b.id,
+        project_b.id,
+        custom.id,
     )
     .await;
     assert_eq!(
@@ -1101,9 +1250,16 @@ async fn add_link_and_file_attachments_and_delete_cleans_up_the_blob() {
         add_link_attachment(&fakes, &ids, &clock, none(), task.id, "https://example.com").await,
         Err(AppError::Forbidden)
     ));
-    let link = add_link_attachment(&fakes, &ids, &clock, member(), task.id, "https://example.com")
-        .await
-        .unwrap();
+    let link = add_link_attachment(
+        &fakes,
+        &ids,
+        &clock,
+        member(),
+        task.id,
+        "https://example.com",
+    )
+    .await
+    .unwrap();
     assert!(matches!(link.kind, AttachmentKind::Link { .. }));
 
     let file = add_file_attachment(

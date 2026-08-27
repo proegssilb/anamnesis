@@ -3,8 +3,8 @@
 //! metadata row plus, for a `File` attachment, its blob — links carry
 //! nothing else to clean up.
 
-use anamnesis_core::policy::Role;
 use anamnesis_core::TaskId;
+use anamnesis_core::policy::Role;
 
 use crate::entities::{self, Attachment, AttachmentId, AttachmentKind};
 use crate::error::AppError;
@@ -23,7 +23,8 @@ pub async fn add_link_attachment(
     if !is_allowed(role, Action::CreateAttachment) {
         return Err(AppError::Forbidden);
     }
-    let attachment = entities::attach_link(AttachmentId::new(ids.next()), task_id, url, clock.now())?;
+    let attachment =
+        entities::attach_link(AttachmentId::new(ids.next()), task_id, url, clock.now())?;
     repo.insert(&attachment).await?;
     Ok(attachment)
 }

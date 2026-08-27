@@ -8,8 +8,7 @@ use std::hash::{Hash, Hasher};
 
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
-    self as core, ColumnId, OfferItem, Outcome, Placement, SuggestionSettings, TaskSummary,
-    UserId,
+    self as core, ColumnId, OfferItem, Outcome, Placement, SuggestionSettings, TaskSummary, UserId,
 };
 
 use crate::error::AppError;
@@ -53,7 +52,9 @@ pub fn derive_seed(user: &UserId, local_date: (i32, u16), candidates: &[TaskSumm
         }
         (c.project_status as u8).hash(&mut hasher);
         c.last_touched_at.unix_seconds().hash(&mut hasher);
-        c.last_offered_at.map(|t| t.unix_seconds()).hash(&mut hasher);
+        c.last_offered_at
+            .map(|t| t.unix_seconds())
+            .hash(&mut hasher);
         c.bounce_count.hash(&mut hasher);
     }
     hasher.finish()
@@ -70,6 +71,7 @@ pub fn derive_seed(user: &UserId, local_date: (i32, u16), candidates: &[TaskSumm
 /// same use-case-layer responsibility `crate::use_cases::task::raise_task`
 /// discharges for a direct drag-and-drop move (`docs/DOMAIN.md` §7:
 /// `anamnesis_core` only ever checks a count it is handed).
+#[allow(clippy::too_many_arguments)]
 pub async fn request_suggestion(
     board: &dyn BoardQuery,
     task_repo: &dyn TaskRepository,

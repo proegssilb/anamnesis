@@ -4,11 +4,13 @@
 use std::collections::HashMap;
 
 use anamnesis_app::{AppError, Board, BoardRepository, Clock, IdGen};
+use anamnesis_core::policy::Role;
 use anamnesis_core::{
-    BoardId, CardId, ColumnId, DetectedTangle, ProjectId, ProjectStatus, Reconciliation,
-    Relationship, RelationshipId, Tangle, TangleId, TaskId, TaskSummary, UserId,
+    AreaId, BoardId, CardId, ColumnId, DetectedTangle, ProjectId, ProjectStatus, Reconciliation,
+    Relationship, RelationshipId, Tangle, TangleId, Task, TaskId, TaskSummary, UserId,
 };
 
+use crate::domain_fakes::Fakes;
 use crate::support::{FixedClock, InMemoryBoardRepository, SequentialIdGen};
 
 #[derive(Debug, Default, cucumber::World)]
@@ -51,6 +53,27 @@ pub struct AppWorld {
     pub board_state: Option<anamnesis_core::BoardState>,
     /// The result of the most recent `suggest` call.
     pub last_outcome: Option<anamnesis_core::Outcome>,
+
+    // --- Phase D scenario state: access_control.feature / placement.feature.
+    //
+    // These exercise the real Phase D use cases (`anamnesis_app::use_cases`)
+    // against the in-memory `domain_fakes::Fakes`, which implements every
+    // port at once -- unlike the Phase B state above, this goes through the
+    // actual application layer (role check, port, core transition) rather
+    // than calling `anamnesis_core` directly.
+    pub domain: Fakes,
+    domain_projects: HashMap<String, ProjectId>,
+    domain_tasks: HashMap<String, TaskId>,
+    domain_columns: HashMap<String, ColumnId>,
+    /// A named user's role, as most recently declared by a `Given` step.
+    /// Absent (`None` from the map, distinct from `Some(None)`) means the
+    /// scenario never mentioned a role for them, which
+    /// `AppWorld::domain_role` treats identically to "no role assigned".
+    domain_roles: HashMap<String, Option<Role>>,
+    /// The most recent Phase D use-case result: `None` on success, the
+    /// error otherwise. Distinct from `last_error` (the legacy Board
+    /// scenarios' field) so the two suites cannot interfere.
+    pub last_domain_error: Option<AppError>,
 }
 
 impl AppWorld {
@@ -215,5 +238,103 @@ impl AppWorld {
     /// `reconcile`.
     pub fn fresh_tangle_id(&self) -> TangleId {
         TangleId::new(self.ids.next())
+    }
+
+    // --- Phase D: access_control.feature / placement.feature helpers. ---
+
+    /// Ensures a project named `project_name` exists (in its own,
+    /// auto-created area), returning its id. Created directly against the
+    /// fake store rather than through `create_project` -- the use case's own
+    /// authorization is exercised by `domain_use_cases.rs` and by this
+    /// suite's own access-control scenarios; a `Given` step here is scenario
+    /// *setup*, not the behaviour under test.
+    pub fn domain_project(&mut self, project_name: &str) -> ProjectId {
+        if let Some(id) = self.domain_projects.get(project_name) {
+            return *id;
+        }
+        let area_id = AreaId::new(self.ids.next());
+        let area =
+            anamnesis_core::create_area(area_id, project_name, "", 0, self.clock.now()).unwrap();
+        self.domain.seed_area(area);
+        let project_id = ProjectId::new(self.ids.next());
+        let mut project =
+            anamnesis_core::create_project(project_id, area_id, project_name, "", self.clock.now())
+                .unwrap();
+        project.status = ProjectStatus::Active;
+        self.domain.seed_project(project);
+        self.domain_projects
+            .insert(project_name.to_string(), project_id);
+        project_id
+    }
+
+    /// Ensures a task named `task_name` exists (below the horizon) in
+    /// `project_name`'s project, returning its id.
+    pub fn domain_task(&mut self, task_name: &str, project_name: &str) -> TaskId {
+        if let Some(id) = self.domain_tasks.get(task_name) {
+            return *id;
+        }
+        let project_id = self.domain_project(project_name);
+        let task_id = TaskId::new(self.ids.next());
+        let task =
+            anamnesis_core::create_task(task_id, project_id, task_name, "", self.clock.now())
+                .unwrap();
+        self.domain.seed_task(task);
+        self.domain_tasks.insert(task_name.to_string(), task_id);
+        task_id
+    }
+
+    pub fn domain_task_id(&self, task_name: &str) -> TaskId {
+        *self
+            .domain_tasks
+            .get(task_name)
+            .unwrap_or_else(|| panic!("scenario refers to unknown task {task_name:?}"))
+    }
+
+    /// The id of a column already established by a `Given` step. Panics if
+    /// the scenario never mentioned it -- unlike [`Self::domain_column`],
+    /// this is for `When`/`Then` steps that must refer to an *existing*
+    /// column rather than create one with unspecified settings.
+    pub fn domain_column_id(&self, column_name: &str) -> ColumnId {
+        *self
+            .domain_columns
+            .get(column_name)
+            .unwrap_or_else(|| panic!("scenario refers to unknown column {column_name:?}"))
+    }
+
+    /// Ensures a global board column named `column_name` exists, returning
+    /// its id. `wip_limit` and `is_done` only take effect the first time a
+    /// column of this name is mentioned.
+    pub fn domain_column(
+        &mut self,
+        column_name: &str,
+        wip_limit: Option<u32>,
+        is_done: bool,
+    ) -> ColumnId {
+        if let Some(id) = self.domain_columns.get(column_name) {
+            return *id;
+        }
+        let column_id = ColumnId::new(self.ids.next());
+        let column =
+            anamnesis_core::create_column(column_id, column_name, 0, wip_limit, is_done).unwrap();
+        self.domain.seed_column(column);
+        self.domain_columns
+            .insert(column_name.to_string(), column_id);
+        column_id
+    }
+
+    /// Reads a task straight out of the fake store, bypassing any use case.
+    pub fn domain_task_state(&self, task_name: &str) -> Task {
+        self.domain.task(self.domain_task_id(task_name))
+    }
+
+    /// Declares `user_name`'s role for the rest of the scenario.
+    pub fn set_domain_role(&mut self, user_name: &str, role: Option<Role>) {
+        self.domain_roles.insert(user_name.to_string(), role);
+    }
+
+    /// `user_name`'s most recently declared role, or `None` if the scenario
+    /// never assigned one (an unmentioned user holds no role anywhere).
+    pub fn domain_role(&self, user_name: &str) -> Option<Role> {
+        self.domain_roles.get(user_name).copied().flatten()
     }
 }

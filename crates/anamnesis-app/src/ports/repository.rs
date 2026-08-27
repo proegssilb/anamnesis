@@ -56,10 +56,8 @@ pub trait ProjectRepository: Send + Sync {
     async fn count_active(&self, excluding: Option<ProjectId>) -> Result<u32, RepoError>;
     async fn insert(&self, project: &Project) -> Result<(), RepoError>;
     async fn update(&self, project: &Project) -> Result<(), RepoError>;
-    async fn insert_field_definition(&self, definition: &FieldDefinition)
-    -> Result<(), RepoError>;
-    async fn update_field_definition(&self, definition: &FieldDefinition)
-    -> Result<(), RepoError>;
+    async fn insert_field_definition(&self, definition: &FieldDefinition) -> Result<(), RepoError>;
+    async fn update_field_definition(&self, definition: &FieldDefinition) -> Result<(), RepoError>;
     async fn insert_relationship_kind(&self, kind: &RelationshipKind) -> Result<(), RepoError>;
     /// Looks up a *project-local, custom* relationship kind by id. Built-in
     /// kinds (`docs/DOMAIN.md` §3: `blocks`, `relates to`, `duplicates`) are
@@ -68,8 +66,10 @@ pub trait ProjectRepository: Send + Sync {
     /// provenance should check the three well-known built-in ids first (see
     /// `crate::use_cases::relationship::resolve_kind`) and fall back to this
     /// method only if none matched.
-    async fn load_relationship_kind(&self, id: KindId)
-    -> Result<Option<RelationshipKind>, RepoError>;
+    async fn load_relationship_kind(
+        &self,
+        id: KindId,
+    ) -> Result<Option<RelationshipKind>, RepoError>;
 }
 
 /// A [`Task`] loaded with its field values. Comments and attachments load
