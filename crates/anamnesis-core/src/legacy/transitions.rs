@@ -5,10 +5,11 @@
 //! `Board` rather than mutating in place. `now` and freshly minted ids are
 //! parameters, never reads — this module contains no clock and no RNG.
 
-use crate::error::DomainError;
 use crate::ids::{BoardId, CardId, ColumnId, Timestamp, UserId};
-use crate::model::{Board, Card, Column};
 use crate::title::Title;
+
+use super::error::DomainError;
+use super::model::{Board, Card, Column};
 
 /// Finds the `(column_index, card_index)` of the card with id `card` in
 /// `board`, if it exists anywhere on the board.
