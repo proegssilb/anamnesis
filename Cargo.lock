@@ -26,7 +26,6 @@ dependencies = [
  "async-trait",
  "chrono",
  "openidconnect",
- "rand 0.10.2",
  "rsa",
  "serde_json",
  "sqlx",
