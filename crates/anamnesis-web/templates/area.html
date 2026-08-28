@@ -63,5 +63,36 @@
       <textarea id="edit-description" name="description">{{ area.description }}</textarea>
       <button type="submit">Save</button>
     </form>
+
+    <section class="panel-form">
+      <h2>Members</h2>
+      <p class="hint">Anyone granted a role here can also access every project in this area.</p>
+      <ul class="member-list">
+        {% for m in members %}
+          <li class="member-row">
+            <span class="member-name">{{ m.user_id }}</span>
+            <span class="member-role">{{ m.role }}</span>
+            <form method="post" action="/areas/{{ area.id }}/members/revoke">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="user_id" value="{{ m.user_id }}">
+              <button type="submit" class="danger">Revoke</button>
+            </form>
+          </li>
+        {% else %}
+          <li class="hint">Nobody has an explicit role on this area yet.</li>
+        {% endfor %}
+      </ul>
+      <form class="inline-form" method="post" action="/areas/{{ area.id }}/members">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="member-user-id">User id</label>
+        <input id="member-user-id" name="user_id" required maxlength="200"
+               placeholder="the sub claim from their identity provider">
+        <select name="role">
+          <option value="member">Member</option>
+          <option value="project_admin">Project Admin</option>
+        </select>
+        <button type="submit">Grant</button>
+      </form>
+    </section>
   {% endif %}
 {% endblock %}

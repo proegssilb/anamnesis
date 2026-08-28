@@ -11,11 +11,14 @@ use crate::handlers::{
     archive_all_handler, archive_project_handler, archive_task_handler, callback_handler,
     create_area_handler, create_project_handler, create_relationship_handler, create_task_handler,
     delete_relationship_handler, download_attachment_handler, drop_tangle_handler,
-    drop_task_handler, edit_area_handler, edit_task_handler, healthz_handler, list_areas_handler,
-    login_handler, logout_handler, raise_task_handler, reposition_handler, root_handler,
-    search_handler, set_field_value_handler, set_parent_handler, transition_project_status_handler,
-    unarchive_project_handler, unarchive_task_handler, update_settings_handler, view_area_handler,
-    view_board_handler, view_project_handler, view_settings_handler, view_task_handler,
+    drop_task_handler, edit_area_handler, edit_task_handler, grant_area_member_handler,
+    grant_project_member_handler, grant_system_admin_handler, healthz_handler, list_areas_handler,
+    login_handler, logout_handler, raise_task_handler, reposition_handler,
+    revoke_area_member_handler, revoke_project_member_handler, revoke_system_admin_handler,
+    root_handler, search_handler, set_field_value_handler, set_parent_handler,
+    transition_project_status_handler, unarchive_project_handler, unarchive_task_handler,
+    update_settings_handler, view_area_handler, view_board_handler, view_project_handler,
+    view_settings_handler, view_task_handler, view_users_handler,
 };
 use crate::state::AppState;
 use crate::static_files;
@@ -33,7 +36,17 @@ pub fn build_router(state: AppState) -> Router {
             get(view_area_handler).post(edit_area_handler),
         )
         .route("/areas/{id}/projects", post(create_project_handler))
+        .route("/areas/{id}/members", post(grant_area_member_handler))
+        .route(
+            "/areas/{id}/members/revoke",
+            post(revoke_area_member_handler),
+        )
         .route("/projects/{id}", get(view_project_handler))
+        .route("/projects/{id}/members", post(grant_project_member_handler))
+        .route(
+            "/projects/{id}/members/revoke",
+            post(revoke_project_member_handler),
+        )
         .route(
             "/projects/{id}/status",
             post(transition_project_status_handler),
@@ -87,6 +100,11 @@ pub fn build_router(state: AppState) -> Router {
             "/settings",
             get(view_settings_handler).post(update_settings_handler),
         )
+        .route(
+            "/users",
+            get(view_users_handler).post(grant_system_admin_handler),
+        )
+        .route("/users/revoke", post(revoke_system_admin_handler))
         .route("/static/app.css", get(static_files::app_css))
         .route("/static/app.js", get(static_files::app_js))
         .route("/static/htmx.min.js", get(static_files::htmx_js))

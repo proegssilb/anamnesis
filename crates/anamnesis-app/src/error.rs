@@ -41,6 +41,14 @@ pub enum AppError {
     /// A column's WIP limit would have been exceeded by placing a task on it.
     #[error("column is at its work-in-progress limit")]
     WipLimitExceeded,
+    /// A caller tried to revoke System Admin from the last user who holds
+    /// it. Refused rather than honoured: on a self-hosted deployment, a
+    /// database with zero System Admins is unrecoverable without direct
+    /// database access, so the sane behaviour is to make this
+    /// structurally unreachable through the application layer rather than
+    /// something an admin can accidentally lock themselves out with.
+    #[error("cannot revoke System Admin from the last user who holds it")]
+    LastSystemAdmin,
     /// A port reported that the world failed (I/O, a database, a network
     /// call).
     #[error(transparent)]

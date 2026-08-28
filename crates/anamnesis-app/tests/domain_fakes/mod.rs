@@ -21,9 +21,9 @@ use async_trait::async_trait;
 use anamnesis_app::{
     AreaRepository, Attachment, AttachmentId, AttachmentRepository, BlobStore, BoardColumn,
     BoardItem, BoardQuery, Comment, CommentId, CommentRepository, MembershipQuery,
-    ProjectAggregate, ProjectRepository, RelationshipRepository, RepoError, SearchHit, SearchIndex,
-    SearchQuery, Settings, SettingsRepository, TangleRepository, TaskAggregate, TaskRepository,
-    TaskUpdateError,
+    MembershipRepository, ProjectAggregate, ProjectRepository, RelationshipRepository, RepoError,
+    SearchHit, SearchIndex, SearchQuery, Settings, SettingsRepository, TangleRepository,
+    TaskAggregate, TaskRepository, TaskUpdateError,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
@@ -694,6 +694,104 @@ impl MembershipQuery for Fakes {
             .unwrap()
             .get(&(user.clone(), project))
             .copied())
+    }
+
+    async fn list_system_admins(&self) -> Result<Vec<UserId>, RepoError> {
+        Ok(self
+            .system_admins
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, is_admin)| **is_admin)
+            .map(|(user, _)| user.clone())
+            .collect())
+    }
+
+    async fn list_area_members(&self, area: AreaId) -> Result<Vec<(UserId, Role)>, RepoError> {
+        Ok(self
+            .area_roles
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|((_, a), _)| *a == area)
+            .map(|((user, _), role)| (user.clone(), *role))
+            .collect())
+    }
+
+    async fn list_project_members(
+        &self,
+        project: ProjectId,
+    ) -> Result<Vec<(UserId, Role)>, RepoError> {
+        Ok(self
+            .project_roles
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|((_, p), _)| *p == project)
+            .map(|((user, _), role)| (user.clone(), *role))
+            .collect())
+    }
+}
+
+#[async_trait]
+impl MembershipRepository for Fakes {
+    async fn grant_system_admin(&self, user: &UserId) -> Result<(), RepoError> {
+        self.system_admins
+            .lock()
+            .unwrap()
+            .insert(user.clone(), true);
+        Ok(())
+    }
+
+    async fn revoke_system_admin(&self, user: &UserId) -> Result<(), RepoError> {
+        self.system_admins.lock().unwrap().remove(user);
+        Ok(())
+    }
+
+    async fn set_area_role(
+        &self,
+        user: &UserId,
+        area: AreaId,
+        role: Role,
+    ) -> Result<(), RepoError> {
+        self.area_roles
+            .lock()
+            .unwrap()
+            .insert((user.clone(), area), role);
+        Ok(())
+    }
+
+    async fn revoke_area_role(&self, user: &UserId, area: AreaId) -> Result<(), RepoError> {
+        self.area_roles
+            .lock()
+            .unwrap()
+            .remove(&(user.clone(), area));
+        Ok(())
+    }
+
+    async fn set_project_role(
+        &self,
+        user: &UserId,
+        project: ProjectId,
+        role: Role,
+    ) -> Result<(), RepoError> {
+        self.project_roles
+            .lock()
+            .unwrap()
+            .insert((user.clone(), project), role);
+        Ok(())
+    }
+
+    async fn revoke_project_role(
+        &self,
+        user: &UserId,
+        project: ProjectId,
+    ) -> Result<(), RepoError> {
+        self.project_roles
+            .lock()
+            .unwrap()
+            .remove(&(user.clone(), project));
+        Ok(())
     }
 }
 

@@ -43,6 +43,60 @@ pub struct TransitionProjectStatusForm {
     pub status: String,
 }
 
+/// Grants a role on an Area (`crate::handlers::membership`). `role` is
+/// `"member"` | `"project_admin"` only — deliberately no `"system_admin"`
+/// option exists in the `<select>` this form is posted from, and
+/// `crate::handlers::membership::parse_grantable_role` refuses anything else
+/// server-side too (belt-and-suspenders on top of `anamnesis_app::
+/// grant_area_role`'s own refusal — see that use case's module doc comment
+/// on why System Admin can only ever be granted through the dedicated
+/// System Admin form).
+#[derive(Debug, Deserialize)]
+pub struct GrantAreaRoleForm {
+    pub csrf_token: String,
+    pub user_id: String,
+    pub role: String,
+}
+
+/// Revokes a user's role on an Area entirely.
+#[derive(Debug, Deserialize)]
+pub struct RevokeAreaRoleForm {
+    pub csrf_token: String,
+    pub user_id: String,
+}
+
+/// Grants a role on a Project — the [`GrantAreaRoleForm`] sibling.
+#[derive(Debug, Deserialize)]
+pub struct GrantProjectRoleForm {
+    pub csrf_token: String,
+    pub user_id: String,
+    pub role: String,
+}
+
+/// Revokes a user's role on a Project entirely.
+#[derive(Debug, Deserialize)]
+pub struct RevokeProjectRoleForm {
+    pub csrf_token: String,
+    pub user_id: String,
+}
+
+/// Grants System Admin (`crate::handlers::membership`) — the one
+/// System-Admin-only place in the UI that can mint another System Admin.
+#[derive(Debug, Deserialize)]
+pub struct GrantSystemAdminForm {
+    pub csrf_token: String,
+    pub user_id: String,
+}
+
+/// Revokes System Admin. Refused by `anamnesis_app::revoke_system_admin`
+/// when `user_id` names the last remaining System Admin
+/// (`AppError::LastSystemAdmin`).
+#[derive(Debug, Deserialize)]
+pub struct RevokeSystemAdminForm {
+    pub csrf_token: String,
+    pub user_id: String,
+}
+
 /// Defines a new custom field on a project (`docs/DOMAIN.md` §3) — the
 /// owner's motivating house-hunting example (price, viewing date, ...) needs
 /// this to be reachable from the UI at all, not just by hand-writing SQL.

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Users — Anamnesis{% endblock %}
+{% block content %}
+  <h1>Users</h1>
+  <p class="hint">
+    System Admins — visible and editable to System Admins only. A System
+    Admin implicitly has every Project Admin and Member permission
+    everywhere.
+  </p>
+
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+  <ul class="member-list">
+    {% for admin in admins %}
+      <li class="member-row">
+        <span class="member-name">{{ admin }}</span>
+        <form method="post" action="/users/revoke">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="user_id" value="{{ admin }}">
+          <button type="submit" class="danger">Revoke</button>
+        </form>
+      </li>
+    {% else %}
+      <li class="hint">No System Admins yet.</li>
+    {% endfor %}
+  </ul>
+
+  <form class="panel-form" method="post" action="/users">
+    <h2>Grant System Admin</h2>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="user_id">User id</label>
+    <input id="user_id" name="user_id" required maxlength="200"
+           placeholder="the sub claim from their identity provider">
+    <button type="submit">Grant System Admin</button>
+  </form>
+{% endblock %}

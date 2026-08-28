@@ -43,6 +43,7 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("login.html", include_str!("../templates/login.html")),
     ("error.html", include_str!("../templates/error.html")),
     ("settings.html", include_str!("../templates/settings.html")),
+    ("users.html", include_str!("../templates/users.html")),
 ];
 
 #[cfg(test)]

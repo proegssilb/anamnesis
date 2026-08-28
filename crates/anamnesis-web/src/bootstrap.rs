@@ -1,14 +1,17 @@
 //! Closes the bootstrap gap `docs/DOMAIN.md` leaves open: `create_area` is
-//! System-Admin-only, and `MembershipQuery`/`BoardQuery` are read-only, so a
-//! freshly created database has no System Admin to grant anything and no
-//! board columns to place a task on — nothing in the use-case layer can dig
-//! it out of that hole. `anamnesis_adapters::SqlStore` exposes
-//! `grant_system_admin`, `seed_board_column`, `set_area_role`, and
-//! `set_project_role` as inherent seams (not ports — `docs/DOMAIN.md` §7
-//! defines no column-writing port at all) for exactly this: run once at
-//! startup, idempotently, before the router starts accepting requests.
-//! `SqlStore::seed_settings_if_missing` (also inherent, same reasoning) is
-//! the equivalent seam for the `Settings` singleton row, seeded here too.
+//! System-Admin-only, so a freshly created database has no System Admin to
+//! grant anything and no board columns to place a task on — nothing in the
+//! use-case layer can dig it out of that hole on its own, since granting a
+//! role itself requires an existing admin's authority to invoke
+//! (`anamnesis_app::grant_system_admin`, `crate::use_cases::membership`'s
+//! module doc comment). This uses `anamnesis_app::MembershipRepository`
+//! directly, bypassing that use-case-layer gate, precisely because it is
+//! the one legitimate place in the whole system that must be able to: run
+//! once at startup, idempotently, before the router starts accepting
+//! requests. `SqlStore::seed_board_column` and
+//! `SqlStore::seed_settings_if_missing` are inherent seams (not ports —
+//! `docs/DOMAIN.md` §7 defines no column- or settings-seeding port at all)
+//! for the same reason, seeded here too.
 //!
 //! **Idempotency.** `MembershipQuery` has no "does any System Admin exist"
 //! query, only "does *this* user hold it" (`MembershipQuery::is_system_admin`)
@@ -16,10 +19,10 @@
 //! specifically already holds System Admin, granting only if not. On a
 //! genuinely fresh database (no admins at all) that is equivalent to "no
 //! System Admin exists"; on every later boot the named subject already holds
-//! it, so the grant call — itself idempotent, `SqlStore::grant_system_admin`
-//! upserts — is skipped entirely and nothing is logged. Column seeding is
-//! symmetric: seed only when `BoardQuery::columns_with_items` reports zero
-//! columns.
+//! it, so the grant call — itself idempotent, `MembershipRepository::
+//! grant_system_admin` upserts — is skipped entirely and nothing is logged.
+//! Column seeding is symmetric: seed only when `BoardQuery::
+//! columns_with_items` reports zero columns.
 //!
 //! **Column defaults.** `docs/DOMAIN.md` §3 names the three default columns
 //! (To-Do WIP-limited, Doing, Done) but not a WIP limit number, and columns
@@ -29,7 +32,9 @@
 //! not a hidden default.
 
 use anamnesis_adapters::SqlStore;
-use anamnesis_app::{BoardQuery, IdGen, MembershipQuery, RepoError, Settings};
+use anamnesis_app::{
+    BoardQuery, IdGen, MembershipQuery, MembershipRepository, RepoError, Settings,
+};
 use anamnesis_core::{ColumnId, UserId, create_column};
 
 /// `docs/DOMAIN.md` §3 requires the To-Do column to carry *a* WIP limit but

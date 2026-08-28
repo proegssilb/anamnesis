@@ -16,8 +16,9 @@ use std::sync::Arc;
 
 use anamnesis_app::{
     AreaRepository, AttachmentRepository, BlobStore, BoardQuery, Clock, CommentRepository, IdGen,
-    IdentityProvider, MembershipQuery, ProjectRepository, RelationshipRepository, SearchIndex,
-    SearchQuery, SettingsRepository, TangleRepository, TaskRepository, TimezoneResolver,
+    IdentityProvider, MembershipQuery, MembershipRepository, ProjectRepository,
+    RelationshipRepository, SearchIndex, SearchQuery, SettingsRepository, TangleRepository,
+    TaskRepository, TimezoneResolver,
 };
 use axum::extract::FromRef;
 use axum_extra::extract::cookie::Key;
@@ -53,6 +54,13 @@ pub struct AppState {
     pub search: Arc<dyn SearchQuery>,
     pub search_index: Arc<dyn SearchIndex>,
     pub membership: Arc<dyn MembershipQuery>,
+    /// The write half of [`MembershipQuery`] (`docs/DOMAIN.md` §3, §12):
+    /// grants and revokes System Admin, and Area/Project roles. Kept as a
+    /// separate field, not folded into [`Self::membership`] — see
+    /// [`MembershipRepository`]'s doc comment: every read-only handler only
+    /// ever needs [`MembershipQuery`], and only `crate::handlers::membership`
+    /// ever needs to write a grant.
+    pub membership_write: Arc<dyn MembershipRepository>,
     pub timezone: Arc<dyn TimezoneResolver>,
     pub clock: Arc<dyn Clock>,
     pub id_gen: Arc<dyn IdGen>,

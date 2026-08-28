@@ -13,9 +13,9 @@ use std::collections::BTreeSet;
 use anamnesis_adapters::SqlStore;
 use anamnesis_app::{
     AreaRepository, Attachment, AttachmentId, AttachmentKind, AttachmentRepository, BoardQuery,
-    Comment, CommentId, CommentRepository, MembershipQuery, ProjectAggregate, ProjectRepository,
-    RelationshipRepository, SearchHit, SearchIndex, SearchQuery, Settings, SettingsRepository,
-    TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
+    Comment, CommentId, CommentRepository, MembershipQuery, MembershipRepository, ProjectAggregate,
+    ProjectRepository, RelationshipRepository, SearchHit, SearchIndex, SearchQuery, Settings,
+    SettingsRepository, TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
@@ -1057,6 +1057,81 @@ async fn membership_contract(store: &SqlStore) {
         .await
         .unwrap();
     assert!(matches!(admin_effective, Some(Role::SystemAdmin)));
+
+    // --- Gap 1: MembershipRepository's listing queries and revocations ---
+
+    let admins = MembershipQuery::list_system_admins(store).await.unwrap();
+    assert!(admins.contains(&admin));
+    assert!(!admins.contains(&member));
+
+    let area_members = MembershipQuery::list_area_members(store, a.id)
+        .await
+        .unwrap();
+    assert!(
+        area_members.contains(&(member.clone(), Role::Member)),
+        "expected {member:?} with Role::Member in {area_members:?}"
+    );
+
+    let project_members = MembershipQuery::list_project_members(store, p.id)
+        .await
+        .unwrap();
+    assert!(
+        project_members.contains(&(member.clone(), Role::ProjectAdmin)),
+        "expected {member:?} with Role::ProjectAdmin in {project_members:?}"
+    );
+
+    MembershipRepository::revoke_area_role(store, &member, a.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        MembershipQuery::area_role(store, &member, a.id)
+            .await
+            .unwrap(),
+        None,
+        "revoke_area_role must actually clear the row"
+    );
+
+    MembershipRepository::revoke_project_role(store, &member, p.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        MembershipQuery::project_role(store, &member, p.id)
+            .await
+            .unwrap(),
+        None,
+        "revoke_project_role must actually clear the row"
+    );
+
+    // After both revocations, the member has no effective role left at all.
+    assert_eq!(
+        MembershipQuery::effective_role(store, &member, p.id, a.id)
+            .await
+            .unwrap(),
+        None
+    );
+
+    MembershipRepository::revoke_system_admin(store, &admin)
+        .await
+        .unwrap();
+    assert!(
+        !MembershipQuery::is_system_admin(store, &admin)
+            .await
+            .unwrap(),
+        "revoke_system_admin must actually clear the grant"
+    );
+    let admins_after = MembershipQuery::list_system_admins(store).await.unwrap();
+    assert!(!admins_after.contains(&admin));
+
+    // Revoking a grant nobody holds is a harmless no-op, not an error.
+    MembershipRepository::revoke_system_admin(store, &stranger)
+        .await
+        .unwrap();
+    MembershipRepository::revoke_area_role(store, &stranger, a.id)
+        .await
+        .unwrap();
+    MembershipRepository::revoke_project_role(store, &stranger, p.id)
+        .await
+        .unwrap();
 }
 
 // --- Search: SearchIndex (write) + SearchQuery (read), across kinds ---

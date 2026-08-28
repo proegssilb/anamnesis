@@ -13,7 +13,7 @@ mod repository;
 pub use common::{Clock, IdGen};
 pub use identity::{IdentityProvider, LoginCallback, LoginRedirect};
 pub use infra::{BlobStore, SearchIndex, TimezoneResolver};
-pub use membership::MembershipQuery;
+pub use membership::{MembershipQuery, MembershipRepository};
 pub use query::{BoardColumn, BoardItem, BoardQuery, SearchHit, SearchQuery};
 pub use repository::{
     AreaRepository, AttachmentRepository, CommentRepository, ProjectAggregate, ProjectRepository,

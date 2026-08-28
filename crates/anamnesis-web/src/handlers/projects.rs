@@ -9,8 +9,11 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
 
-use anamnesis_app::{AppError, archive_project, create_task, unarchive_project, view_project};
+use anamnesis_app::{
+    AppError, archive_project, create_task, list_project_members, unarchive_project, view_project,
+};
 use anamnesis_core::ProjectId;
+use anamnesis_core::UserId;
 use anamnesis_core::policy::Role;
 
 use crate::auth::CurrentUser;
@@ -22,6 +25,21 @@ use super::access;
 use super::field_form;
 use super::format::format_field_kind;
 use super::forms::{AddFieldDefinitionForm, CreateTaskForm, CsrfOnlyForm};
+use super::membership::format_role;
+
+/// The Project's "members" section, fetched only when `can_manage` — the
+/// [`crate::handlers::areas::area_members_for_display`] sibling.
+async fn project_members_for_display(
+    state: &AppState,
+    role: Option<Role>,
+    project_id: ProjectId,
+    can_manage: bool,
+) -> Result<Vec<(UserId, Role)>, WebError> {
+    if !can_manage {
+        return Ok(Vec::new());
+    }
+    Ok(list_project_members(state.membership.as_ref(), role, project_id).await?)
+}
 
 pub async fn view_project_handler(
     State(state): State<AppState>,
@@ -49,11 +67,13 @@ async fn view_project_impl(
     let aggregate = view_project(state.projects.as_ref(), role, project_id).await?;
     let tasks = state.tasks.list_by_project(project_id).await?;
     let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
+    let members = project_members_for_display(state, role, project_id, can_manage).await?;
     render_project_page(
         state,
         user,
         &aggregate,
         &tasks,
+        &members,
         can_manage,
         None,
         StatusCode::OK,
@@ -110,11 +130,13 @@ async fn create_task_impl(
             let aggregate = view_project(state.projects.as_ref(), role, project_id).await?;
             let tasks = state.tasks.list_by_project(project_id).await?;
             let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
+            let members = project_members_for_display(state, role, project_id, can_manage).await?;
             render_project_page(
                 state,
                 user,
                 &aggregate,
                 &tasks,
+                &members,
                 can_manage,
                 Some(&e.to_string()),
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -261,11 +283,13 @@ async fn add_field_definition_impl(
             let aggregate = view_project(state.projects.as_ref(), role, project_id).await?;
             let tasks = state.tasks.list_by_project(project_id).await?;
             let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
+            let members = project_members_for_display(state, role, project_id, can_manage).await?;
             render_project_page(
                 state,
                 user,
                 &aggregate,
                 &tasks,
+                &members,
                 can_manage,
                 Some(&e.to_string()),
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -275,11 +299,13 @@ async fn add_field_definition_impl(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_project_page(
     state: &AppState,
     user: &CurrentUser,
     aggregate: &anamnesis_app::ProjectAggregate,
     tasks: &[anamnesis_core::Task],
+    members: &[(UserId, Role)],
     can_manage: bool,
     error: Option<&str>,
     status: StatusCode,
@@ -302,6 +328,10 @@ fn render_project_page(
             }
         })
         .collect();
+    let members: Vec<_> = members
+        .iter()
+        .map(|(user, role)| context! { user_id => user.to_string(), role => format_role(*role) })
+        .collect();
 
     let tmpl = state
         .templates
@@ -313,6 +343,7 @@ fn render_project_page(
             below => below,
             on_board => on_board,
             fields => fields,
+            members => members,
             can_manage => can_manage,
             csrf_token => user.csrf_token,
             current_user => user.display_name,
