@@ -4,28 +4,34 @@
   <h1>Projects</h1>
   <p class="hint">Every project you have access to, across every area.</p>
 
-  <form class="inline-form filter-form" method="get" action="/projects">
-    <label for="filter-status">Status</label>
-    <select id="filter-status" name="status">
-      <option value="" {% if status != "pending" and status != "active" and status != "complete" and status != "all" %}selected{% endif %}>Active &amp; pending</option>
-      <option value="pending" {% if status == "pending" %}selected{% endif %}>Pending</option>
-      <option value="active" {% if status == "active" %}selected{% endif %}>Active</option>
-      <option value="complete" {% if status == "complete" %}selected{% endif %}>Complete</option>
-      <option value="all" {% if status == "all" %}selected{% endif %}>All statuses</option>
-    </select>
+  <form class="filter-form" method="get" action="/projects">
+    <div class="field">
+      <label for="filter-status">Status</label>
+      <select id="filter-status" name="status">
+        <option value="" {% if status != "pending" and status != "active" and status != "complete" and status != "all" %}selected{% endif %}>Active &amp; pending</option>
+        <option value="pending" {% if status == "pending" %}selected{% endif %}>Pending</option>
+        <option value="active" {% if status == "active" %}selected{% endif %}>Active</option>
+        <option value="complete" {% if status == "complete" %}selected{% endif %}>Complete</option>
+        <option value="all" {% if status == "all" %}selected{% endif %}>All statuses</option>
+      </select>
+    </div>
 
-    <label for="filter-area">Area</label>
-    <select id="filter-area" name="area">
-      <option value="">All areas</option>
-      {% for a in areas %}
-        <option value="{{ a.id }}" {% if area == a.id %}selected{% endif %}>{{ a.title }}</option>
-      {% endfor %}
-    </select>
+    <div class="field">
+      <label for="filter-area">Area</label>
+      <select id="filter-area" name="area">
+        <option value="">All areas</option>
+        {% for a in areas %}
+          <option value="{{ a.id }}" {% if area == a.id %}selected{% endif %}>{{ a.title }}</option>
+        {% endfor %}
+      </select>
+    </div>
 
-    <label class="checkbox-label" for="filter-archived">
-      <input id="filter-archived" type="checkbox" name="archived" value="1" {% if include_archived %}checked{% endif %}>
-      Include archived
-    </label>
+    <div class="field field-checkbox">
+      <label class="checkbox-label" for="filter-archived">
+        <input id="filter-archived" type="checkbox" name="archived" value="1" {% if include_archived %}checked{% endif %}>
+        Include archived
+      </label>
+    </div>
 
     <input type="hidden" name="sort" value="{{ sort }}">
     <input type="hidden" name="dir" value="{{ dir }}">

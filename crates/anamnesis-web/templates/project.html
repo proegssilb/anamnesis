@@ -4,7 +4,10 @@
   <p class="breadcrumb"><a href="/areas/{{ project.area_id }}">Area</a></p>
   <div class="page-header">
     <h1>{{ project.title }}</h1>
-    {% if can_manage %}<a class="button-link" href="#project-settings">Settings</a>{% endif %}
+    <div class="header-actions">
+      <a class="icon-button" href="#new-task" aria-label="New task" title="New task">+</a>
+      {% if can_manage %}<a class="icon-button" href="#project-settings" aria-label="Settings" title="Settings">⚙</a>{% endif %}
+    </div>
   </div>
   <p class="hint">
     Status: <span class="badge">{{ project.status }}</span>
@@ -36,15 +39,23 @@
     <p class="hint">Nothing waiting in the backlog.</p>
   {% endif %}
 
-  <form class="panel-form" method="post" action="/projects/{{ project.id }}/tasks">
-    <h2>New task</h2>
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label for="title">Title</label>
-    <input id="title" name="title" required maxlength="200">
-    <label for="description">Description</label>
-    <textarea id="description" name="description"></textarea>
-    <button type="submit">Create task</button>
-  </form>
+  <div class="modal-overlay" id="new-task">
+    <div class="modal" role="dialog" aria-labelledby="new-task-title">
+      <div class="modal-header">
+        <h2 id="new-task-title">New task</h2>
+        <a class="modal-close" href="#" aria-label="Close">&times;</a>
+      </div>
+
+      <form class="panel-form" method="post" action="/projects/{{ project.id }}/tasks#new-task">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="title">Title</label>
+        <input id="title" name="title" required maxlength="200">
+        <label for="description">Description</label>
+        <textarea id="description" name="description"></textarea>
+        <button type="submit">Create task</button>
+      </form>
+    </div>
+  </div>
 
   {% if can_manage %}
     <div class="modal-overlay" id="project-settings">

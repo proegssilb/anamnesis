@@ -693,7 +693,7 @@ input[type="checkbox"] {
   padding: 0.35rem 0.75rem;
 }
 
-/* --- page header (title + settings-modal trigger) --- */
+/* --- page header (title + new/settings modal triggers) --- */
 
 .page-header {
   display: flex;
@@ -707,21 +707,28 @@ input[type="checkbox"] {
   margin: 0;
 }
 
-.button-link {
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.icon-button {
   display: inline-flex;
   align-items: center;
-  min-height: var(--touch);
-  padding: 0.5rem 1rem;
+  justify-content: center;
+  width: var(--touch);
+  height: var(--touch);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
   text-decoration: none;
-  font-weight: 600;
-  font-size: 0.9rem;
+  font-size: 1.2rem;
+  line-height: 1;
 }
 
-.button-link:hover {
+.icon-button:hover {
   filter: brightness(1.05);
 }
 
@@ -799,7 +806,21 @@ input[type="checkbox"] {
 /* --- projects data grid (`GET /projects`) --- */
 
 .filter-form {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 1rem;
   margin: 1rem 0;
+}
+
+.filter-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.filter-form .field-checkbox {
+  justify-content: flex-end;
 }
 
 .table-scroll {
