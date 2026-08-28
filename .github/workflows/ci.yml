@@ -16,7 +16,7 @@ jobs:
     name: fmt, clippy, test (stable)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
@@ -59,7 +59,7 @@ jobs:
     env:
       ANAMNESIS_TEST_PG_URL: postgres://anamnesis:anamnesis@localhost:5432/anamnesis_test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
