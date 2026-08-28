@@ -74,3 +74,39 @@ Feature: Access control
     Then access is granted
     When "Sam" tries to view project "Kitchen Remodel"
     Then access is granted
+
+  # Gap 1: the write half of MembershipQuery. Granting a role carries a
+  # hazard ordinary view/edit actions do not -- the content being written
+  # can itself grant capability -- so these prove the two rules that close
+  # it off: System Admin can only ever be granted through the dedicated
+  # grant, never smuggled in through an Area/Project grant; and a grant is
+  # always checked against the actor's role on the *specific* scope being
+  # acted on, never a role held elsewhere.
+
+  Scenario: A Project Admin cannot grant System Admin
+    Given "Priya" is a Project Admin of "Kitchen Remodel"
+    When "Priya" tries to grant System Admin to "Mallory"
+    Then access is refused
+
+  Scenario: A Project Admin cannot grant a role on an area they do not administer
+    Given "Priya" is a Project Admin of "Kitchen Remodel"
+    When "Priya" tries to grant a Member role to "Bob" on the area that contains "Garden Shed"
+    Then access is refused
+
+  Scenario: Granting an area role lets that user view the area and revoking removes it
+    Given "Sam" is a System Admin
+    When "Sam" tries to grant a Member role to "Bob" on the area that contains "Kitchen Remodel"
+    Then access is granted
+    When "Bob" (with no role) tries to view the area that contains "Kitchen Remodel"
+    Then access is granted
+    When "Sam" tries to revoke Bob's role on the area that contains "Kitchen Remodel"
+    Then access is granted
+    When "Bob" (with no role) tries to view the area that contains "Kitchen Remodel"
+    Then access is refused
+
+  Scenario: The last System Admin cannot revoke their own System Admin
+    Given "Sam" is a System Admin
+    When "Sam" tries to revoke System Admin from "Sam"
+    Then the revocation is refused because Sam is the last System Admin
+    When "Sam" tries to view project "Kitchen Remodel"
+    Then access is granted
