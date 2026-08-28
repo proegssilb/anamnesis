@@ -34,7 +34,12 @@
   <p class="breadcrumb"><a href="/areas">Areas</a></p>
   <div class="page-header">
     <h1>{{ area.title }}</h1>
-    {% if can_manage %}<a class="button-link" href="#area-settings">Settings</a>{% endif %}
+    {% if can_manage %}
+      <div class="header-actions">
+        <a class="icon-button" href="#new-project" aria-label="New project" title="New project">+</a>
+        <a class="icon-button" href="#area-settings" aria-label="Settings" title="Settings">⚙</a>
+      </div>
+    {% endif %}
   </div>
   {% if area.description %}<p class="hint">{{ area.description }}</p>{% endif %}
 
@@ -47,15 +52,23 @@
   </div>
 
   {% if can_manage %}
-    <form class="panel-form" method="post" action="/areas/{{ area.id }}/projects">
-      <h2>New project</h2>
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label for="title">Title</label>
-      <input id="title" name="title" required maxlength="200">
-      <label for="description">Description</label>
-      <textarea id="description" name="description"></textarea>
-      <button type="submit">Create project</button>
-    </form>
+    <div class="modal-overlay" id="new-project">
+      <div class="modal" role="dialog" aria-labelledby="new-project-title">
+        <div class="modal-header">
+          <h2 id="new-project-title">New project</h2>
+          <a class="modal-close" href="#" aria-label="Close">&times;</a>
+        </div>
+
+        <form class="panel-form" method="post" action="/areas/{{ area.id }}/projects#new-project">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label for="title">Title</label>
+          <input id="title" name="title" required maxlength="200">
+          <label for="description">Description</label>
+          <textarea id="description" name="description"></textarea>
+          <button type="submit">Create project</button>
+        </form>
+      </div>
+    </div>
 
     <div class="modal-overlay" id="area-settings">
       <div class="modal" role="dialog" aria-labelledby="area-settings-title">
