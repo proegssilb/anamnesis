@@ -40,8 +40,9 @@ pub use projects::{
 pub use search::search_handler;
 pub use settings::{update_settings_handler, view_settings_handler};
 pub use tasks::{
-    add_comment_handler, add_file_attachment_handler, add_link_attachment_handler,
-    archive_task_handler, create_relationship_handler, delete_relationship_handler,
-    download_attachment_handler, drop_task_handler, edit_task_handler, raise_task_handler,
-    set_field_value_handler, set_parent_handler, unarchive_task_handler, view_task_handler,
+    add_checklist_item_handler, add_comment_handler, add_file_attachment_handler,
+    add_link_attachment_handler, archive_task_handler, create_relationship_handler,
+    delete_relationship_handler, download_attachment_handler, drop_task_handler, edit_task_handler,
+    raise_task_handler, set_field_value_handler, set_parent_handler, unarchive_task_handler,
+    view_task_handler,
 };

@@ -166,6 +166,16 @@ pub struct SetParentForm {
     pub parent_task_id: String,
 }
 
+/// Quick-adds a checklist item: creates a new task in the same project and
+/// sets its parent to the task the form was posted to, in one request
+/// (`crate::handlers::tasks::add_checklist_item_impl`) — the no-fuss
+/// alternative to hand-carrying an existing task's id into [`SetParentForm`].
+#[derive(Debug, Deserialize)]
+pub struct AddChecklistItemForm {
+    pub csrf_token: String,
+    pub title: String,
+}
+
 /// Creates a relationship edge from the task the form was submitted on to
 /// `to_task_id`, using one of the three built-in kinds (`docs/DOMAIN.md` §3:
 /// cross-project edges may only use a built-in kind, and this phase's UI has
