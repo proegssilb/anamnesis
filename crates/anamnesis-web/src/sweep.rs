@@ -104,6 +104,7 @@ async fn tick_once(state: &AppState) -> Result<(), AppError> {
     let archived = archive_done_tasks(
         state.board.as_ref(),
         state.tasks.as_ref(),
+        state.tangles.as_ref(),
         state.clock.as_ref(),
         state.search_index.as_ref(),
         Some(Role::SystemAdmin),
@@ -113,8 +114,10 @@ async fn tick_once(state: &AppState) -> Result<(), AppError> {
     state.settings.record_sweep(now).await?;
 
     tracing::info!(
-        archived_count = archived.len(),
-        archived_task_ids = ?archived,
+        archived_task_count = archived.archived_task_ids.len(),
+        archived_task_ids = ?archived.archived_task_ids,
+        archived_tangle_count = archived.archived_tangle_ids.len(),
+        archived_tangle_ids = ?archived.archived_tangle_ids,
         "scheduled sweep ran"
     );
     Ok(())

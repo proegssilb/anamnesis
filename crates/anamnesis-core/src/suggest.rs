@@ -750,6 +750,7 @@ mod tests {
             frozen: false,
             detected_at: ts(detected_at),
             resolved_at: None,
+            archived_at: None,
         }
     }
 

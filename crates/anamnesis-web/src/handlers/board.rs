@@ -512,6 +512,7 @@ async fn archive_all_impl(
     archive_done_tasks(
         state.board.as_ref(),
         state.tasks.as_ref(),
+        state.tangles.as_ref(),
         state.clock.as_ref(),
         state.search_index.as_ref(),
         Some(Role::Member),

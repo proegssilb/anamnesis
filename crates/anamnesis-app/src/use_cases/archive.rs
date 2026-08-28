@@ -7,35 +7,52 @@
 //! it.
 
 use anamnesis_core::policy::Role;
-use anamnesis_core::{self as core, TaskId};
+use anamnesis_core::{self as core, TangleId, TaskId};
 
 use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
-use crate::ports::{BoardItem, BoardQuery, Clock, SearchIndex, TaskRepository};
+use crate::ports::{BoardItem, BoardQuery, Clock, SearchIndex, TangleRepository, TaskRepository};
 
 use super::indexing::log_index_failure;
 
-/// Archives every task currently sitting in an `is_done` column. Called by a
-/// scheduled sweep ticker (Phase F) on its own schedule, or directly by a
-/// user pressing "Archive all" — identical operation either way.
+/// What one archive-all/sweep pass actually archived — a task id list plus a
+/// tangle id list, kept separate (rather than one merged id list) because
+/// they name different entities persisted through different ports and
+/// nothing downstream ever wants to treat them interchangeably.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArchiveOutcome {
+    pub archived_task_ids: Vec<TaskId>,
+    pub archived_tangle_ids: Vec<TangleId>,
+}
+
+/// Archives every task currently sitting in an `is_done` column, and every
+/// **resolved** tangle sitting in one too (`docs/DOMAIN.md`'s Tangle
+/// section: "the archive sweep then treats it like anything else"). Called
+/// by a scheduled sweep ticker (Phase F) on its own schedule, or directly by
+/// a user pressing "Archive all" — identical operation either way.
 ///
-/// `anamnesis_core::sweep_done` only ever knows about `Task`s (a `Tangle`
-/// carries no `archived_at` of its own to sweep — see `docs/DOMAIN.md`'s
-/// Tangle section), so a resolved tangle sitting in the `is_done` column is
-/// filtered out of `tasks` here rather than passed in.
+/// An *unresolved* tangle sitting in a Done column (nothing stops a user
+/// from placing one there directly) is left alone: `anamnesis_core::
+/// sweep_done_tangles` only ever selects a tangle that is both `OnBoard` in
+/// an `is_done` column and already resolved, exactly mirroring
+/// `anamnesis_core::sweep_done`'s task-side rule but with the one added
+/// resolved-ness condition a `Task` has no equivalent of.
 ///
-/// Each archived task is dropped from the search index — see
+/// Each archived task or tangle is dropped from the search index — see
 /// `crate::use_cases::task::archive_task`'s doc comment for why, and
 /// `crate::use_cases::indexing` for the indexing-failure policy (logged,
-/// non-fatal, applied independently per task so one bad index write cannot
-/// stop the rest of the sweep from being recorded as archived).
+/// non-fatal, applied independently per item so one bad index write cannot
+/// stop the rest of the sweep from being recorded as archived). Tangles are
+/// never indexed for search in the first place (`docs/DOMAIN.md` §8 names
+/// areas, projects, and tasks only), so there is no tangle-side call here.
 pub async fn archive_done_tasks(
     board: &dyn BoardQuery,
     task_repo: &dyn TaskRepository,
+    tangle_repo: &dyn TangleRepository,
     clock: &dyn Clock,
     search: &dyn SearchIndex,
     role: Option<Role>,
-) -> Result<Vec<TaskId>, AppError> {
+) -> Result<ArchiveOutcome, AppError> {
     if !is_allowed(role, Action::RunArchiveAll) {
         return Err(AppError::Forbidden);
     }
@@ -49,12 +66,20 @@ pub async fn archive_done_tasks(
             BoardItem::Tangle(_) => None,
         })
         .collect();
+    let tangles: Vec<_> = board_columns
+        .iter()
+        .flat_map(|bc| bc.items.iter())
+        .filter_map(|item| match item {
+            BoardItem::Tangle(t) => Some(t.clone()),
+            BoardItem::Task(_) => None,
+        })
+        .collect();
 
     let now = clock.now();
-    let to_archive = core::sweep_done(&tasks, &columns, now);
 
-    let mut archived = Vec::with_capacity(to_archive.len());
-    for task_id in to_archive {
+    let to_archive_tasks = core::sweep_done(&tasks, &columns, now);
+    let mut archived_task_ids = Vec::with_capacity(to_archive_tasks.len());
+    for task_id in to_archive_tasks {
         let Some(aggregate) = task_repo.load(task_id).await? else {
             continue; // vanished between the query and now; nothing to do.
         };
@@ -65,7 +90,22 @@ pub async fn archive_done_tasks(
         if let Err(err) = search.remove_task(task_id).await {
             log_index_failure("archive_done_tasks", err);
         }
-        archived.push(task_id);
+        archived_task_ids.push(task_id);
     }
-    Ok(archived)
+
+    let to_archive_tangles = core::sweep_done_tangles(&tangles, &columns, now);
+    let mut archived_tangle_ids = Vec::with_capacity(to_archive_tangles.len());
+    for tangle_id in to_archive_tangles {
+        let Some(tangle) = tangle_repo.load(tangle_id).await? else {
+            continue; // vanished between the query and now; nothing to do.
+        };
+        let done = core::archive_tangle(&tangle, now)?;
+        tangle_repo.update(&done).await?;
+        archived_tangle_ids.push(tangle_id);
+    }
+
+    Ok(ArchiveOutcome {
+        archived_task_ids,
+        archived_tangle_ids,
+    })
 }

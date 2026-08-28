@@ -32,6 +32,7 @@ fn assemble(
     column_id: Option<uuid::Uuid>,
     board_position: Option<i64>,
     frozen: bool,
+    archived_at: Option<i64>,
 ) -> Result<Tangle, RepoError> {
     Ok(Tangle {
         id: TangleId::new(id),
@@ -41,11 +42,12 @@ fn assemble(
         frozen,
         detected_at: timestamp_from_seconds(detected_at)?,
         resolved_at: resolved_at.map(timestamp_from_seconds).transpose()?,
+        archived_at: archived_at.map(timestamp_from_seconds).transpose()?,
     })
 }
 
-const TANGLE_COLUMNS: &str =
-    "id, detected_at, resolved_at, placement_kind, column_id, board_position, frozen";
+const TANGLE_COLUMNS: &str = "id, detected_at, resolved_at, placement_kind, column_id, \
+     board_position, frozen, archived_at";
 
 mod sqlite_impl {
     use super::*;
@@ -77,11 +79,22 @@ mod sqlite_impl {
             column_id.map(|s| parse_uuid(&s)).transpose()?,
             row.get::<Option<i64>, _>("board_position"),
             row.get::<i64, _>("frozen") != 0,
+            row.get::<Option<i64>, _>("archived_at"),
         )
     }
 
     pub(super) async fn list_active(pool: &SqlitePool) -> Result<Vec<Tangle>, RepoError> {
-        let query = format!("SELECT {TANGLE_COLUMNS} FROM tangles WHERE resolved_at IS NULL");
+        // `resolved_at IS NULL` alone already excludes every archived
+        // tangle (only a *resolved* tangle can ever be archived --
+        // `anamnesis_core::archive_tangle` rejects an unresolved one), but
+        // the `archived_at IS NULL` clause is kept explicit rather than
+        // relied on implicitly: it is what actually keeps an archived
+        // tangle out of `reconcile`'s `previous` input if that invariant
+        // ever changes, and it is what stops a detection pass from ever
+        // resurrecting one (`docs/DOMAIN.md`'s Tangle section).
+        let query = format!(
+            "SELECT {TANGLE_COLUMNS} FROM tangles WHERE resolved_at IS NULL AND archived_at IS NULL"
+        );
         let rows = sqlx::query(sqlx::AssertSqlSafe(query))
             .fetch_all(pool)
             .await
@@ -101,11 +114,19 @@ mod sqlite_impl {
     /// sees the knot visibly close (`docs/DOMAIN.md`'s Tangle section)
     /// rather than vanish the instant it resolves, exactly as a `Task`
     /// stays visible in its column once done and before it is archived.
+    ///
+    /// `archived_at IS NULL` **is** filtered here, though — the mirror image
+    /// of the point above: once a resolved tangle has actually been
+    /// archived (by "Archive all" or the scheduled sweep), it must vanish
+    /// from the board exactly like an archived `Task` does, not linger in
+    /// its Done column forever.
     pub(super) async fn list_by_column(
         pool: &SqlitePool,
         column: uuid::Uuid,
     ) -> Result<Vec<Tangle>, RepoError> {
-        let query = format!("SELECT {TANGLE_COLUMNS} FROM tangles WHERE column_id = ?");
+        let query = format!(
+            "SELECT {TANGLE_COLUMNS} FROM tangles WHERE column_id = ? AND archived_at IS NULL"
+        );
         let rows = sqlx::query(sqlx::AssertSqlSafe(query))
             .bind(column.to_string())
             .fetch_all(pool)
@@ -143,8 +164,9 @@ mod sqlite_impl {
         let (placement_kind, column_id, board_position) = encode_placement(&tangle.placement);
         sqlx::query(
             "INSERT INTO tangles \
-             (id, detected_at, resolved_at, placement_kind, column_id, board_position, frozen) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (id, detected_at, resolved_at, placement_kind, column_id, board_position, frozen, \
+              archived_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(tangle.id.as_uuid().to_string())
         .bind(tangle.detected_at.unix_seconds())
@@ -153,6 +175,7 @@ mod sqlite_impl {
         .bind(column_id.map(|u| u.to_string()))
         .bind(board_position)
         .bind(tangle.frozen)
+        .bind(tangle.archived_at.map(|t| t.unix_seconds()))
         .execute(&mut *tx)
         .await
         .map_err(|e| RepoError::from_source("failed to insert tangle", e))?;
@@ -178,7 +201,7 @@ mod sqlite_impl {
         let (placement_kind, column_id, board_position) = encode_placement(&tangle.placement);
         sqlx::query(
             "UPDATE tangles SET detected_at = ?, resolved_at = ?, placement_kind = ?, \
-             column_id = ?, board_position = ?, frozen = ? WHERE id = ?",
+             column_id = ?, board_position = ?, frozen = ?, archived_at = ? WHERE id = ?",
         )
         .bind(tangle.detected_at.unix_seconds())
         .bind(tangle.resolved_at.map(|t| t.unix_seconds()))
@@ -186,6 +209,7 @@ mod sqlite_impl {
         .bind(column_id.map(|u| u.to_string()))
         .bind(board_position)
         .bind(tangle.frozen)
+        .bind(tangle.archived_at.map(|t| t.unix_seconds()))
         .bind(&id_text)
         .execute(&mut *tx)
         .await
@@ -237,11 +261,16 @@ mod postgres_impl {
             row.get::<Option<uuid::Uuid>, _>("column_id"),
             row.get::<Option<i32>, _>("board_position").map(i64::from),
             row.get("frozen"),
+            row.get::<Option<i64>, _>("archived_at"),
         )
     }
 
     pub(super) async fn list_active(pool: &PgPool) -> Result<Vec<Tangle>, RepoError> {
-        let query = format!("SELECT {TANGLE_COLUMNS} FROM tangles WHERE resolved_at IS NULL");
+        // See `sqlite_impl::list_active`'s doc comment for why
+        // `archived_at IS NULL` is kept explicit here too.
+        let query = format!(
+            "SELECT {TANGLE_COLUMNS} FROM tangles WHERE resolved_at IS NULL AND archived_at IS NULL"
+        );
         let rows = sqlx::query(sqlx::AssertSqlSafe(query))
             .fetch_all(pool)
             .await
@@ -256,12 +285,15 @@ mod postgres_impl {
     }
 
     /// Postgres sibling of `sqlite_impl::list_by_column` — see its doc
-    /// comment for why `resolved_at` is deliberately not filtered here.
+    /// comment for why `resolved_at` is deliberately not filtered here, but
+    /// `archived_at` is.
     pub(super) async fn list_by_column(
         pool: &PgPool,
         column: uuid::Uuid,
     ) -> Result<Vec<Tangle>, RepoError> {
-        let query = format!("SELECT {TANGLE_COLUMNS} FROM tangles WHERE column_id = $1");
+        let query = format!(
+            "SELECT {TANGLE_COLUMNS} FROM tangles WHERE column_id = $1 AND archived_at IS NULL"
+        );
         let rows = sqlx::query(sqlx::AssertSqlSafe(query))
             .bind(column)
             .fetch_all(pool)
@@ -302,8 +334,9 @@ mod postgres_impl {
             .map_err(|e| RepoError::from_source("board position out of range", e))?;
         sqlx::query(
             "INSERT INTO tangles \
-             (id, detected_at, resolved_at, placement_kind, column_id, board_position, frozen) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+             (id, detected_at, resolved_at, placement_kind, column_id, board_position, frozen, \
+              archived_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(tangle.id.as_uuid())
         .bind(tangle.detected_at.unix_seconds())
@@ -312,6 +345,7 @@ mod postgres_impl {
         .bind(column_id)
         .bind(board_position)
         .bind(tangle.frozen)
+        .bind(tangle.archived_at.map(|t| t.unix_seconds()))
         .execute(&mut *tx)
         .await
         .map_err(|e| RepoError::from_source("failed to insert tangle", e))?;
@@ -340,7 +374,7 @@ mod postgres_impl {
             .map_err(|e| RepoError::from_source("board position out of range", e))?;
         sqlx::query(
             "UPDATE tangles SET detected_at = $1, resolved_at = $2, placement_kind = $3, \
-             column_id = $4, board_position = $5, frozen = $6 WHERE id = $7",
+             column_id = $4, board_position = $5, frozen = $6, archived_at = $7 WHERE id = $8",
         )
         .bind(tangle.detected_at.unix_seconds())
         .bind(tangle.resolved_at.map(|t| t.unix_seconds()))
@@ -348,6 +382,7 @@ mod postgres_impl {
         .bind(column_id)
         .bind(board_position)
         .bind(tangle.frozen)
+        .bind(tangle.archived_at.map(|t| t.unix_seconds()))
         .bind(tangle.id.as_uuid())
         .execute(&mut *tx)
         .await
