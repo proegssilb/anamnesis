@@ -27,7 +27,7 @@ dependencies = [
  "chrono",
  "openidconnect",
  "rand 0.10.2",
- "rand_core 0.6.4",
+ "rand_core 0.10.1",
  "rsa",
  "serde_json",
  "sqlx",
