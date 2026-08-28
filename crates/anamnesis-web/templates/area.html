@@ -47,22 +47,22 @@
   </div>
 
   {% if can_manage %}
+    <form class="panel-form" method="post" action="/areas/{{ area.id }}/projects">
+      <h2>New project</h2>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="title">Title</label>
+      <input id="title" name="title" required maxlength="200">
+      <label for="description">Description</label>
+      <textarea id="description" name="description"></textarea>
+      <button type="submit">Create project</button>
+    </form>
+
     <div class="modal-overlay" id="area-settings">
       <div class="modal" role="dialog" aria-labelledby="area-settings-title">
         <div class="modal-header">
           <h2 id="area-settings-title">Area settings</h2>
           <a class="modal-close" href="#" aria-label="Close">&times;</a>
         </div>
-
-        <form class="panel-form" method="post" action="/areas/{{ area.id }}/projects#area-settings">
-          <h2>New project</h2>
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <label for="title">Title</label>
-          <input id="title" name="title" required maxlength="200">
-          <label for="description">Description</label>
-          <textarea id="description" name="description"></textarea>
-          <button type="submit">Create project</button>
-        </form>
 
         <form class="panel-form" method="post" action="/areas/{{ area.id }}#area-settings">
           <h2>Edit this area</h2>
