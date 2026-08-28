@@ -71,3 +71,35 @@ jobs:
 
       - name: cargo test -p anamnesis-adapters -- --ignored
         run: cargo test -p anamnesis-adapters --test sql_store_contract -- --ignored
+
+  # Generates coverage for the same test set as the `check` job (Postgres
+  # contract test excluded) and uploads it to Codacy. Skipped for PRs from
+  # forks, since the CODACY_PROJECT_TOKEN secret isn't available to them.
+  coverage:
+    name: coverage (Codacy)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache cargo registry and build output
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: coverage
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage (lcov)
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codacy
+        uses: codacy/codacy-coverage-reporter-action@v1
+        with:
+          project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
+          coverage-reports: lcov.info
