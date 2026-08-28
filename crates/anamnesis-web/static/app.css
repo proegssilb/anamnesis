@@ -693,6 +693,109 @@ input[type="checkbox"] {
   padding: 0.35rem 0.75rem;
 }
 
+/* --- page header (title + settings-modal trigger) --- */
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  flex-wrap: wrap;
+}
+
+.page-header h1 {
+  margin: 0;
+}
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--touch);
+  padding: 0.5rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.button-link:hover {
+  filter: brightness(1.05);
+}
+
+/* --- settings modal: pure CSS `:target` overlay, no JS required (this app
+   is "no-JS server-rendered UI" throughout, `docs/DOMAIN.md`) -- the
+   trigger is a plain `<a href="#…-settings">` and the close control is a
+   plain `<a href="#">`, both fully functional with scripting disabled. --- */
+
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  padding: 1rem;
+  overflow-y: auto;
+  background: color-mix(in srgb, black 55%, transparent);
+}
+
+.modal-overlay:target {
+  display: block;
+}
+
+.modal {
+  margin: 2rem auto;
+  max-width: 32rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  margin-bottom: 0.5rem;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--touch);
+  height: var(--touch);
+  border-radius: var(--radius);
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 1.4rem;
+  line-height: 1;
+}
+
+.modal-close:hover {
+  background: var(--bg);
+}
+
+.modal .panel-form,
+.modal > section.panel-form {
+  margin-top: 1.5rem;
+  max-width: none;
+  padding: 0;
+  background: none;
+  border: none;
+}
+
+.modal .panel-form:first-child {
+  margin-top: 0;
+}
+
 /* --- projects data grid (`GET /projects`) --- */
 
 .filter-form {

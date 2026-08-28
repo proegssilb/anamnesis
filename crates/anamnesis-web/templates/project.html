@@ -2,7 +2,10 @@
 {% block title %}{{ project.title }} — Anamnesis{% endblock %}
 {% block content %}
   <p class="breadcrumb"><a href="/areas/{{ project.area_id }}">Area</a></p>
-  <h1>{{ project.title }}</h1>
+  <div class="page-header">
+    <h1>{{ project.title }}</h1>
+    {% if can_manage %}<a class="button-link" href="#project-settings">Settings</a>{% endif %}
+  </div>
   <p class="hint">
     Status: <span class="badge">{{ project.status }}</span>
     {% if project.archived_at %}<span class="badge">archived</span>{% endif %}
@@ -44,89 +47,98 @@
   </form>
 
   {% if can_manage %}
-    <section>
-      <h2>Custom fields</h2>
-      {% if fields %}
-        <ul class="task-list field-list">
-          {% for f in fields %}
-            <li class="field-row">
-              <span class="field-name">{{ f.name }}</span>
-              <span class="badge">{{ f.kind }}</span>
-              {% if f.show_on_card %}<span class="hint">(shown on card)</span>{% endif %}
-            </li>
-          {% endfor %}
-        </ul>
-      {% else %}
-        <p class="hint">This project defines no custom fields yet.</p>
-      {% endif %}
-      <form class="panel-form" method="post" action="/projects/{{ project.id }}/fields">
-        <h3>New field</h3>
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label for="field-name">Name</label>
-        <input id="field-name" name="name" required maxlength="200">
-        <label for="field-kind">Kind</label>
-        <select id="field-kind" name="kind">
-          <option value="number">Number</option>
-          <option value="currency">Currency</option>
-          <option value="date">Date</option>
-          <option value="time">Time</option>
-          <option value="datetime">Date &amp; time</option>
-          <option value="line">Line</option>
-          <option value="block">Block</option>
-        </select>
-        <label class="checkbox-label" for="field-show-on-card">
-          <input id="field-show-on-card" type="checkbox" name="show_on_card" value="1">
-          Show on board card
-        </label>
-        <button type="submit">Add field</button>
-      </form>
-    </section>
+    <div class="modal-overlay" id="project-settings">
+      <div class="modal" role="dialog" aria-labelledby="project-settings-title">
+        <div class="modal-header">
+          <h2 id="project-settings-title">Project settings</h2>
+          <a class="modal-close" href="#" aria-label="Close">&times;</a>
+        </div>
 
-    <section class="panel-form">
-      <h2>Members</h2>
-      <p class="hint">Ordinary access to this project's tasks; Project Admin also manages its fields, kinds, and membership.</p>
-      <ul class="member-list">
-        {% for m in members %}
-          <li class="member-row">
-            <span class="member-name">{{ m.user_id }}</span>
-            <span class="member-role">{{ m.role }}</span>
-            <form method="post" action="/projects/{{ project.id }}/members/revoke">
+        <section>
+          <h2>Custom fields</h2>
+          {% if fields %}
+            <ul class="task-list field-list">
+              {% for f in fields %}
+                <li class="field-row">
+                  <span class="field-name">{{ f.name }}</span>
+                  <span class="badge">{{ f.kind }}</span>
+                  {% if f.show_on_card %}<span class="hint">(shown on card)</span>{% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="hint">This project defines no custom fields yet.</p>
+          {% endif %}
+          <form class="panel-form" method="post" action="/projects/{{ project.id }}/fields#project-settings">
+            <h3>New field</h3>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label for="field-name">Name</label>
+            <input id="field-name" name="name" required maxlength="200">
+            <label for="field-kind">Kind</label>
+            <select id="field-kind" name="kind">
+              <option value="number">Number</option>
+              <option value="currency">Currency</option>
+              <option value="date">Date</option>
+              <option value="time">Time</option>
+              <option value="datetime">Date &amp; time</option>
+              <option value="line">Line</option>
+              <option value="block">Block</option>
+            </select>
+            <label class="checkbox-label" for="field-show-on-card">
+              <input id="field-show-on-card" type="checkbox" name="show_on_card" value="1">
+              Show on board card
+            </label>
+            <button type="submit">Add field</button>
+          </form>
+        </section>
+
+        <section class="panel-form">
+          <h2>Members</h2>
+          <p class="hint">Ordinary access to this project's tasks; Project Admin also manages its fields, kinds, and membership.</p>
+          <ul class="member-list">
+            {% for m in members %}
+              <li class="member-row">
+                <span class="member-name">{{ m.user_id }}</span>
+                <span class="member-role">{{ m.role }}</span>
+                <form method="post" action="/projects/{{ project.id }}/members/revoke#project-settings">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input type="hidden" name="user_id" value="{{ m.user_id }}">
+                  <button type="submit" class="danger">Revoke</button>
+                </form>
+              </li>
+            {% else %}
+              <li class="hint">Nobody has an explicit role on this project yet.</li>
+            {% endfor %}
+          </ul>
+          <form class="inline-form" method="post" action="/projects/{{ project.id }}/members#project-settings">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label for="member-user-id">User id</label>
+            <input id="member-user-id" name="user_id" required maxlength="200"
+                   placeholder="the sub claim from their identity provider">
+            <select name="role">
+              <option value="member">Member</option>
+              <option value="project_admin">Project Admin</option>
+            </select>
+            <button type="submit">Grant</button>
+          </form>
+        </section>
+
+        <section class="panel-form">
+          <h2>Archive</h2>
+          {% if project.archived_at %}
+            <p class="hint">This project is archived — it is hidden from every view unless explicitly searched.</p>
+            <form method="post" action="/projects/{{ project.id }}/unarchive#project-settings">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <input type="hidden" name="user_id" value="{{ m.user_id }}">
-              <button type="submit" class="danger">Revoke</button>
+              <button type="submit">Unarchive</button>
             </form>
-          </li>
-        {% else %}
-          <li class="hint">Nobody has an explicit role on this project yet.</li>
-        {% endfor %}
-      </ul>
-      <form class="inline-form" method="post" action="/projects/{{ project.id }}/members">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label for="member-user-id">User id</label>
-        <input id="member-user-id" name="user_id" required maxlength="200"
-               placeholder="the sub claim from their identity provider">
-        <select name="role">
-          <option value="member">Member</option>
-          <option value="project_admin">Project Admin</option>
-        </select>
-        <button type="submit">Grant</button>
-      </form>
-    </section>
-
-    <section class="panel-form">
-      <h2>Archive</h2>
-      {% if project.archived_at %}
-        <p class="hint">This project is archived — it is hidden from every view unless explicitly searched.</p>
-        <form method="post" action="/projects/{{ project.id }}/unarchive">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button type="submit">Unarchive</button>
-        </form>
-      {% else %}
-        <form method="post" action="/projects/{{ project.id }}/archive">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button type="submit" class="danger">Archive</button>
-        </form>
-      {% endif %}
-    </section>
+          {% else %}
+            <form method="post" action="/projects/{{ project.id }}/archive#project-settings">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="danger">Archive</button>
+            </form>
+          {% endif %}
+        </section>
+      </div>
+    </div>
   {% endif %}
 {% endblock %}
