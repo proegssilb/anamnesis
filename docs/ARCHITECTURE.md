@@ -186,6 +186,7 @@ side:
 #[async_trait] pub trait TangleRepository: Send + Sync { /* list_active, load, insert, update */ }
 #[async_trait] pub trait CommentRepository: Send + Sync { /* list_for_task, load, insert, update, delete */ }
 #[async_trait] pub trait AttachmentRepository: Send + Sync { /* list_for_task, load, insert, delete */ }
+#[async_trait] pub trait SettingsRepository: Send + Sync { /* load, update, record_sweep — the singleton Settings row */ }
 ```
 
 Read models (`crate::ports::query`) — the query side, described above:
@@ -204,7 +205,8 @@ pub trait IdGen: Send + Sync { fn next(&self) -> uuid::Uuid; }
 #[async_trait] pub trait BlobStore: Send + Sync { /* put, get, delete — attachment file bytes */ }
 #[async_trait] pub trait SearchIndex: Send + Sync { /* index_area/project/task, remove_area/project/task */ }
 pub trait TimezoneResolver: Send + Sync { /* local_date, local_time, to_utc — not async, a real tzdb lookup is in-memory */ }
-#[async_trait] pub trait MembershipQuery: Send + Sync { /* is_system_admin, area_role, project_role, effective_area_role, effective_role */ }
+#[async_trait] pub trait MembershipQuery: Send + Sync { /* is_system_admin, area_role, project_role, effective_area_role, effective_role, list_system_admins, list_area_members, list_project_members */ }
+#[async_trait] pub trait MembershipRepository: Send + Sync { /* grant_system_admin, revoke_system_admin, set_area_role, revoke_area_role, set_project_role, revoke_project_role */ }
 #[async_trait] pub trait IdentityProvider: Send + Sync { /* begin_login, complete_login */ }
 ```
 
@@ -220,6 +222,44 @@ tzdb in the adapter. `MembershipQuery` is the caller-side role resolver
 `anamnesis_core::policy`'s own doc comment calls for: "core has no
 membership table to consult, so the caller (which does) resolves 'what role
 does this user hold here' before calling in."
+
+`SettingsRepository` (the runtime settings pass) and `MembershipRepository`
+(the membership write pass, below) were both flagged as outstanding
+follow-ups in earlier revisions of this document and are recorded here now
+that both exist. `SettingsRepository` is the one port in this crate with no
+id parameter anywhere on it: `Settings` is a genuine singleton (the
+active-project limit, the suggestion engine's tunables, the sweep
+schedule), so `load`/`update` always mean "the one row" — `record_sweep` is
+kept as its own targeted write, isolated from `update`, specifically so the
+sweep ticker's write and a concurrent admin edit through `/settings` cannot
+race each other in a read-modify-write. `MembershipRepository` is
+`MembershipQuery`'s write half, split into its own trait for the same
+reason `SearchQuery`/`SearchIndex` are split rather than combined: every
+read-only caller (every permission check in `crate::policy`, `view_area`,
+`view_project`, ...) only ever needs `MembershipQuery`; only
+`crate::use_cases::membership` — the handful of use cases that actually
+grant or revoke a role — needs write access at all. Before this port
+existed, granting a role was only possible through `SqlStore`'s inherent
+seams reached into directly by `anamnesis-web::bootstrap`, which meant the
+bootstrap admin was the only user who could ever hold a role anywhere in
+the system; see that module's doc comment for what still legitimately
+bypasses the use-case layer (bootstrap itself) and why.
+
+The **scheduled sweep ticker** (`anamnesis-web::sweep`, `docs/DOMAIN.md`
+§6) is the one piece of shell infrastructure in this system with **no port
+of its own** — worth naming here precisely because of that absence. It is
+a background `tokio` task, spawned exactly once (from `main.rs`, never from
+`routes::build_router`/`AppState` construction/`bootstrap::run`, so no
+integration test can ever cause one to spawn) that wakes on a fixed
+interval, asks the pure, unit-tested `anamnesis_web::sweep::is_due` whether
+a sweep is due against `SettingsRepository`-sourced state, and — if so —
+calls the exact same `anamnesis_app::archive_done_tasks` the manual
+"Archive all" button calls, then stamps `SettingsRepository::record_sweep`.
+It needs no port of its own because it is pure orchestration over ports
+that already exist (`BoardQuery`, `TaskRepository`, `TangleRepository`,
+`SearchIndex`, `Clock`, `SettingsRepository`); the "port" here, such as it
+is, is `TimezoneResolver`, already listed above, which is what lets
+`is_due` compare a scheduled local date against real elapsed time.
 
 One adapter, `anamnesis_adapters::SqlStore`, implements essentially the
 entire repository and query surface against one connection pool (SQLite or
