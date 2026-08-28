@@ -31,7 +31,8 @@ use super::format::{
 };
 use super::forms::{
     AddChecklistItemForm, AddCommentForm, AddLinkAttachmentForm, CreateRelationshipForm,
-    CsrfOnlyForm, EditTaskForm, RaiseTaskForm, SetFieldValueForm, SetParentForm,
+    CsrfOnlyForm, EditTaskDescriptionForm, EditTaskTitleForm, RaiseTaskForm, SetFieldValueForm,
+    SetParentForm,
 };
 
 /// Resolves the role a task's own project grants `user` — every task
@@ -88,28 +89,29 @@ async fn view_task_impl(
     .await
 }
 
-pub async fn edit_task_handler(
+pub async fn edit_task_title_handler(
     State(state): State<AppState>,
     user: CurrentUser,
     Path(id): Path<uuid::Uuid>,
-    Form(form): Form<EditTaskForm>,
+    Form(form): Form<EditTaskTitleForm>,
 ) -> Response {
-    match edit_task_impl(&state, &user, TaskId::new(id), form).await {
+    match edit_task_title_impl(&state, &user, TaskId::new(id), form).await {
         Ok(response) => response,
         Err(err) => err.into_response_with(&state.templates),
     }
 }
 
-async fn edit_task_impl(
+async fn edit_task_title_impl(
     state: &AppState,
     user: &CurrentUser,
     task_id: TaskId,
-    form: EditTaskForm,
+    form: EditTaskTitleForm,
 ) -> Result<Response, WebError> {
     if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
         return Err(WebError::CsrfMismatch);
     }
     let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
+    let current = state.tasks.load(task_id).await?.ok_or(AppError::NotFound)?;
     match edit_task(
         state.tasks.as_ref(),
         state.clock.as_ref(),
@@ -117,7 +119,7 @@ async fn edit_task_impl(
         role,
         task_id,
         &form.title,
-        &form.description,
+        current.task.description.as_str(),
     )
     .await
     {
@@ -135,6 +137,58 @@ async fn edit_task_impl(
                 &aggregate.task,
                 Some(&e.to_string()),
                 Some("title"),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            )
+            .await
+        }
+        Err(err) => Err(WebError::from(err)),
+    }
+}
+
+pub async fn edit_task_description_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<uuid::Uuid>,
+    Form(form): Form<EditTaskDescriptionForm>,
+) -> Response {
+    match edit_task_description_impl(&state, &user, TaskId::new(id), form).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn edit_task_description_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    form: EditTaskDescriptionForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
+    let current = state.tasks.load(task_id).await?.ok_or(AppError::NotFound)?;
+    match edit_task(
+        state.tasks.as_ref(),
+        state.clock.as_ref(),
+        state.search_index.as_ref(),
+        role,
+        task_id,
+        current.task.title.as_str(),
+        &form.description,
+    )
+    .await
+    {
+        Ok(task) => render_task_page(state, user, task_id, &task, None, None, StatusCode::OK).await,
+        Err(AppError::Rule(e)) => {
+            let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
+            render_task_page(
+                state,
+                user,
+                task_id,
+                &aggregate.task,
+                Some(&e.to_string()),
+                Some("description"),
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
             .await
@@ -182,13 +236,17 @@ async fn raise_task_impl(
         Ok(_) => Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response()),
         Err(AppError::WipLimitExceeded) => {
             let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
+            // The placement editor is a `#task-placement` modal now, not a
+            // `<details>` — it reopens itself because the raise form's
+            // `action` carries that fragment, so this render doesn't need an
+            // `open_hint` the way title/description edits still do.
             render_task_page(
                 state,
                 user,
                 task_id,
                 &aggregate.task,
                 Some("That column is already at its work-in-progress limit."),
-                Some("placement"),
+                None,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
             .await

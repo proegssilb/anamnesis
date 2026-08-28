@@ -12,9 +12,9 @@ use crate::handlers::{
     archive_task_handler, callback_handler, create_area_handler, create_project_handler,
     create_relationship_handler, create_task_handler, delete_relationship_handler,
     download_attachment_handler, drop_tangle_handler, drop_task_handler, edit_area_handler,
-    edit_task_handler, grant_area_member_handler, grant_project_member_handler,
-    grant_system_admin_handler, healthz_handler, list_areas_handler, list_projects_handler,
-    login_handler, logout_handler, raise_task_handler, reposition_handler,
+    edit_task_description_handler, edit_task_title_handler, grant_area_member_handler,
+    grant_project_member_handler, grant_system_admin_handler, healthz_handler, list_areas_handler,
+    list_projects_handler, login_handler, logout_handler, raise_task_handler, reposition_handler,
     revoke_area_member_handler, revoke_project_member_handler, revoke_system_admin_handler,
     root_handler, search_handler, set_field_value_handler, set_parent_handler,
     transition_project_status_handler, unarchive_project_handler, unarchive_task_handler,
@@ -57,9 +57,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/projects/{id}/unarchive", post(unarchive_project_handler))
         .route("/projects/{id}/fields", post(add_field_definition_handler))
         .route("/projects/{id}/tasks", post(create_task_handler))
+        .route("/tasks/{id}", get(view_task_handler))
+        .route("/tasks/{id}/title", post(edit_task_title_handler))
         .route(
-            "/tasks/{id}",
-            get(view_task_handler).post(edit_task_handler),
+            "/tasks/{id}/description",
+            post(edit_task_description_handler),
         )
         .route("/tasks/{id}/raise", post(raise_task_handler))
         .route("/tasks/{id}/drop", post(drop_task_handler))
