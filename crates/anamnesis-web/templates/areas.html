@@ -12,6 +12,7 @@
         <li><a class="grid-card" href="/areas/{{ a.id }}">
           <h2>{{ a.title }}</h2>
           {% if a.description %}<p>{{ a.description }}</p>{% endif %}
+          <span class="badge">{{ a.project_count }} project{% if a.project_count != 1 %}s{% endif %}</span>
         </a></li>
       {% endfor %}
     </ul>

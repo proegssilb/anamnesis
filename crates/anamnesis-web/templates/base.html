@@ -12,13 +12,16 @@
 <body>
   <header class="site-header">
     <nav class="brand-nav">
-      <a class="brand" href="/areas">Anamnesis</a>
+      <a class="brand" href="/board">Anamnesis</a>
       {% if current_user %}
+        <form class="jump-form" method="get" action="/search" role="search">
+          <input type="search" name="q" placeholder="Jump to…" aria-label="Jump to…">
+        </form>
         <a class="nav-link" href="/board">Board</a>
-        <a class="nav-link" href="/search">Search</a>
+        <a class="nav-link" href="/areas">Areas</a>
+        <a class="nav-link" href="/projects">Projects</a>
         {% if is_system_admin %}
           <a class="nav-link" href="/settings">Settings</a>
-          <a class="nav-link" href="/users">Users</a>
         {% endif %}
       {% endif %}
     </nav>

@@ -56,6 +56,12 @@ pub trait ProjectRepository: Send + Sync {
     /// (`docs/DOMAIN.md` §2: archived is "vanished from every view unless
     /// explicitly searched").
     async fn list_by_area(&self, area_id: AreaId) -> Result<Vec<Project>, RepoError>;
+    /// Every project in the system, across every area, archived included —
+    /// the system-wide Projects data grid's source (`GET /projects`), which
+    /// needs to offer archived/completed projects as an explicit filter
+    /// rather than excluding them the way [`Self::list_by_area`] always
+    /// does.
+    async fn list_all(&self) -> Result<Vec<Project>, RepoError>;
     /// How many projects currently hold `status == Active`, excluding
     /// `excluding` itself if given — exactly the count
     /// [`anamnesis_core::transition_status`] needs to enforce

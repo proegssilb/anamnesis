@@ -177,6 +177,30 @@ mod sqlite_impl {
             .collect()
     }
 
+    pub(super) async fn list_all(pool: &SqlitePool) -> Result<Vec<Project>, RepoError> {
+        let rows = sqlx::query(
+            "SELECT id, area_id, title, description, status, created_at, updated_at, archived_at \
+             FROM projects ORDER BY created_at",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| RepoError::from_source("failed to list all projects", e))?;
+        rows.into_iter()
+            .map(|row| {
+                assemble_project(
+                    parse_uuid(&row.get::<String, _>("id"))?,
+                    parse_uuid(&row.get::<String, _>("area_id"))?,
+                    row.get("title"),
+                    row.get("description"),
+                    row.get("status"),
+                    row.get::<i64, _>("created_at"),
+                    row.get::<i64, _>("updated_at"),
+                    row.get::<Option<i64>, _>("archived_at"),
+                )
+            })
+            .collect()
+    }
+
     pub(super) async fn count_active(
         pool: &SqlitePool,
         excluding: Option<ProjectId>,
@@ -418,6 +442,30 @@ mod postgres_impl {
             .collect()
     }
 
+    pub(super) async fn list_all(pool: &PgPool) -> Result<Vec<Project>, RepoError> {
+        let rows = sqlx::query(
+            "SELECT id, area_id, title, description, status, created_at, updated_at, archived_at \
+             FROM projects ORDER BY created_at",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| RepoError::from_source("failed to list all projects", e))?;
+        rows.into_iter()
+            .map(|row| {
+                assemble_project(
+                    row.get::<uuid::Uuid, _>("id"),
+                    row.get::<uuid::Uuid, _>("area_id"),
+                    row.get("title"),
+                    row.get("description"),
+                    row.get("status"),
+                    row.get::<i64, _>("created_at"),
+                    row.get::<i64, _>("updated_at"),
+                    row.get::<Option<i64>, _>("archived_at"),
+                )
+            })
+            .collect()
+    }
+
     pub(super) async fn count_active(
         pool: &PgPool,
         excluding: Option<ProjectId>,
@@ -570,6 +618,13 @@ impl ProjectRepository for SqlStore {
         match &self.backend {
             Backend::Sqlite(pool) => sqlite_impl::list_by_area(pool, area_id).await,
             Backend::Postgres(pool) => postgres_impl::list_by_area(pool, area_id).await,
+        }
+    }
+
+    async fn list_all(&self) -> Result<Vec<Project>, RepoError> {
+        match &self.backend {
+            Backend::Sqlite(pool) => sqlite_impl::list_all(pool).await,
+            Backend::Postgres(pool) => postgres_impl::list_all(pool).await,
         }
     }
 

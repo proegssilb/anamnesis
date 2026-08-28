@@ -4,17 +4,19 @@
 //! only ever shows tasks above it.
 
 use axum::Form;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
+use serde::Deserialize;
 
 use anamnesis_app::{
-    AppError, archive_project, create_task, list_project_members, unarchive_project, view_project,
+    AppError, archive_project, create_task, list_all_projects, list_project_members,
+    unarchive_project, view_project,
 };
-use anamnesis_core::ProjectId;
 use anamnesis_core::UserId;
 use anamnesis_core::policy::Role;
+use anamnesis_core::{Project, ProjectId, ProjectStatus};
 
 use crate::auth::CurrentUser;
 use crate::error::WebError;
@@ -351,4 +353,196 @@ fn render_project_page(
         })
         .map_err(WebError::template)?;
     Ok((status, Html(body)).into_response())
+}
+
+/// Filter/sort state for the system-wide Projects data grid (`GET
+/// /projects`). Every field is a plain `String` with `#[serde(default)]` —
+/// the same shape `crate::handlers::search::SearchParams` uses — so a bare
+/// `GET /projects` with no query string at all lands on the intended
+/// defaults (`status`/`archived` empty means "non-archived, non-completed",
+/// per this page's own spec) rather than a 400.
+#[derive(Debug, Deserialize)]
+pub struct ProjectListParams {
+    /// `""` (default: Pending + Active only) | `"pending"` | `"active"` |
+    /// `"complete"` | `"all"`.
+    #[serde(default)]
+    pub status: String,
+    /// An [`anamnesis_core::AreaId`]'s text form, or `""` for every area.
+    #[serde(default)]
+    pub area: String,
+    /// The "include archived" checkbox — present only when checked, exactly
+    /// like `SearchParams::archived`.
+    #[serde(default)]
+    pub archived: String,
+    /// `"title"` (default) | `"area"` | `"status"` | `"created"` | `"updated"`.
+    #[serde(default)]
+    pub sort: String,
+    /// `"asc"` (default) | `"desc"`.
+    #[serde(default)]
+    pub dir: String,
+}
+
+pub async fn list_projects_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(params): Query<ProjectListParams>,
+) -> Response {
+    match list_projects_impl(&state, &user, params).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn list_projects_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    params: ProjectListParams,
+) -> Result<Response, WebError> {
+    let admin = access::is_system_admin(state, &user.user_id).await?;
+
+    // Every area this caller may see at all — the same per-area membership
+    // filter `crate::handlers::areas::list_areas_impl` applies to the area
+    // grid, reused here so a project never leaks through a listing that has
+    // no area-level scoping of its own (see `list_all_projects`'s doc
+    // comment).
+    let all_areas = state.areas.list().await?;
+    let mut visible_areas = Vec::with_capacity(all_areas.len());
+    for area in all_areas {
+        if admin
+            || access::area_role(state, &user.user_id, area.id)
+                .await?
+                .is_some()
+        {
+            visible_areas.push(area);
+        }
+    }
+    visible_areas.sort_by(|a, b| a.title.as_str().cmp(b.title.as_str()));
+
+    let area_filter = uuid::Uuid::parse_str(params.area.trim())
+        .ok()
+        .map(anamnesis_core::AreaId::new);
+
+    let all_projects = list_all_projects(state.projects.as_ref(), Some(Role::Member)).await?;
+    let area_titles: std::collections::HashMap<_, _> = visible_areas
+        .iter()
+        .map(|a| (a.id, a.title.as_str().to_string()))
+        .collect();
+
+    let include_archived = !params.archived.is_empty();
+    let status_filter = params.status.as_str();
+
+    let mut projects: Vec<Project> = all_projects
+        .into_iter()
+        .filter(|p| area_titles.contains_key(&p.area_id))
+        .filter(|p| include_archived || p.archived_at.is_none())
+        .filter(|p| match status_filter {
+            "all" => true,
+            "pending" => p.status == ProjectStatus::Pending,
+            "active" => p.status == ProjectStatus::Active,
+            "complete" => p.status == ProjectStatus::Complete,
+            // Default: hide Complete projects until asked for explicitly.
+            _ => p.status != ProjectStatus::Complete,
+        })
+        .filter(|p| area_filter.is_none_or(|area_id| p.area_id == area_id))
+        .collect();
+
+    let sort = match params.sort.as_str() {
+        "area" | "status" | "created" | "updated" => params.sort.as_str(),
+        _ => "title",
+    };
+    let dir_desc = params.dir == "desc";
+    projects.sort_by(|a, b| {
+        let ordering = match sort {
+            "area" => area_titles
+                .get(&a.area_id)
+                .cmp(&area_titles.get(&b.area_id)),
+            "status" => format_status(a.status).cmp(format_status(b.status)),
+            "created" => a
+                .created_at
+                .unix_seconds()
+                .cmp(&b.created_at.unix_seconds()),
+            "updated" => a
+                .updated_at
+                .unix_seconds()
+                .cmp(&b.updated_at.unix_seconds()),
+            _ => a.title.as_str().cmp(b.title.as_str()),
+        };
+        if dir_desc {
+            ordering.reverse()
+        } else {
+            ordering
+        }
+    });
+
+    let rows: Vec<_> = projects
+        .iter()
+        .map(|p| {
+            context! {
+                id => p.id.to_string(),
+                title => p.title.as_str(),
+                status => format_status(p.status),
+                area_id => p.area_id.to_string(),
+                area_title => area_titles.get(&p.area_id).cloned().unwrap_or_default(),
+                archived => p.archived_at.is_some(),
+                created_at => p.created_at.unix_seconds(),
+                updated_at => p.updated_at.unix_seconds(),
+            }
+        })
+        .collect();
+
+    let area_options: Vec<_> = visible_areas
+        .iter()
+        .map(|a| context! { id => a.id.to_string(), title => a.title.as_str() })
+        .collect();
+
+    let dir_for = |field: &str| {
+        if sort == field && !dir_desc {
+            "desc"
+        } else {
+            "asc"
+        }
+    };
+    let sort_link = |field: &str| {
+        format!(
+            "/projects?status={status}&area={area}&archived={archived}&sort={field}&dir={dir}",
+            status = status_filter,
+            area = params.area,
+            archived = if include_archived { "1" } else { "" },
+            field = field,
+            dir = dir_for(field),
+        )
+    };
+
+    let tmpl = state
+        .templates
+        .get_template("projects.html")
+        .map_err(WebError::template)?;
+    let body = tmpl
+        .render(context! {
+            projects => rows,
+            areas => area_options,
+            status => status_filter,
+            area => params.area,
+            include_archived => include_archived,
+            sort => sort,
+            dir => if dir_desc { "desc" } else { "asc" },
+            sort_link_title => sort_link("title"),
+            sort_link_area => sort_link("area"),
+            sort_link_status => sort_link("status"),
+            sort_link_created => sort_link("created"),
+            sort_link_updated => sort_link("updated"),
+            csrf_token => user.csrf_token,
+            current_user => user.display_name,
+            is_system_admin => admin,
+        })
+        .map_err(WebError::template)?;
+    Ok(Html(body).into_response())
+}
+
+fn format_status(status: ProjectStatus) -> &'static str {
+    match status {
+        ProjectStatus::Pending => "Pending",
+        ProjectStatus::Active => "Active",
+        ProjectStatus::Complete => "Complete",
+    }
 }
