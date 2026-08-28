@@ -44,7 +44,7 @@ pub use project::{
     Project, ProjectStatus, archive_project, create_project, edit_project, transition_status,
     unarchive_project,
 };
-pub use recurrence::{Recurrence, next_run, sweep_done};
+pub use recurrence::{Recurrence, next_run, sweep_done, sweep_done_tangles};
 pub use relationship::{
     Relationship, RelationshipKind, builtin_blocks, builtin_duplicates, builtin_relates_to,
     create_relationship, create_relationship_kind, is_blocking,
@@ -54,8 +54,8 @@ pub use suggest::{
     SuggestionSettings, TaskOffer, TaskSummary, bounce_to_below, mark_offered, suggest,
 };
 pub use tangle::{
-    DetectedTangle, Fingerprint, Reconciliation, Tangle, detect_tangles, drop_tangle, place_tangle,
-    reconcile, resolve_frozen_tangle, subgraph_has_cycle,
+    DetectedTangle, Fingerprint, Reconciliation, Tangle, archive_tangle, detect_tangles,
+    drop_tangle, place_tangle, reconcile, resolve_frozen_tangle, subgraph_has_cycle,
 };
 pub use task::{
     Task, archive_task, create_task, edit_task, move_placement, set_checklist_position, set_parent,

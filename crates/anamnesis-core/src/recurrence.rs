@@ -171,13 +171,48 @@ pub fn sweep_done(tasks: &[Task], columns: &[Column], _now: Timestamp) -> Vec<Ta
         .collect()
 }
 
+/// Which tangles a sweep should archive: the [`sweep_done`] sibling for
+/// [`crate::Tangle`] (`docs/DOMAIN.md`'s Tangle section: "the archive sweep
+/// then treats it like anything else").
+///
+/// A tangle qualifies only when it is **both** `OnBoard` in an `is_done`
+/// column **and already resolved** (`resolved_at.is_some()`) — unlike a
+/// task, whose column membership alone decides done-ness, a tangle can sit
+/// in a Done column while still unresolved (a user is free to place one
+/// there directly), and an unresolved knot still has real work left in it.
+/// Archiving it anyway would silently make the card impossible to find
+/// again while the knot is still tied. Already-archived tangles are
+/// excluded, exactly as [`sweep_done`] excludes already-archived tasks.
+pub fn sweep_done_tangles(
+    tangles: &[crate::Tangle],
+    columns: &[Column],
+    _now: Timestamp,
+) -> Vec<crate::TangleId> {
+    let done_columns: HashSet<ColumnId> = columns
+        .iter()
+        .filter(|column| column.is_done)
+        .map(|column| column.id)
+        .collect();
+
+    tangles
+        .iter()
+        .filter(|tangle| tangle.archived_at.is_none() && tangle.resolved_at.is_some())
+        .filter_map(|tangle| match tangle.placement {
+            Placement::OnBoard { column, .. } if done_columns.contains(&column) => Some(tangle.id),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use uuid::Uuid;
 
     use crate::column::create_column;
-    use crate::ids::ProjectId;
+    use crate::ids::{ProjectId, TangleId};
+    use crate::tangle::{Fingerprint, Tangle};
     use crate::task::{create_task, move_placement};
 
     fn ts(seconds: i64) -> Timestamp {
@@ -376,5 +411,92 @@ mod tests {
         let done = column(1, true);
         let result = sweep_done(&[], &[done], ts(100));
         assert_eq!(result, Vec::<TaskId>::new());
+    }
+
+    // --- sweep_done_tangles (gap 2: resolved tangles piling up in Done) ---
+
+    fn tangle_ids(n: u128) -> BTreeSet<TaskId> {
+        [TaskId::new(Uuid::from_u128(n))].into_iter().collect()
+    }
+
+    fn tangle_on(id: u128, column: ColumnId, resolved: bool) -> Tangle {
+        let task_ids = tangle_ids(id);
+        Tangle {
+            id: TangleId::new(Uuid::from_u128(id)),
+            fingerprint: Fingerprint::of(&task_ids),
+            task_ids,
+            placement: Placement::OnBoard {
+                column,
+                position: 0,
+            },
+            frozen: true,
+            detected_at: ts(0),
+            resolved_at: resolved.then_some(ts(50)),
+            archived_at: None,
+        }
+    }
+
+    fn tangle_below(id: u128) -> Tangle {
+        let task_ids = tangle_ids(id);
+        Tangle {
+            id: TangleId::new(Uuid::from_u128(id)),
+            fingerprint: Fingerprint::of(&task_ids),
+            task_ids,
+            placement: Placement::Below,
+            frozen: false,
+            detected_at: ts(0),
+            resolved_at: None,
+            archived_at: None,
+        }
+    }
+
+    #[test]
+    fn sweep_done_tangles_archives_only_resolved_tangles_in_done_columns() {
+        let done = column(1, true);
+        let doing = column(2, false);
+
+        let resolved_in_done = tangle_on(1, done.id, true);
+        let unresolved_in_done = tangle_on(2, done.id, false);
+        let resolved_in_doing = tangle_on(3, doing.id, true);
+        let resolved_below = tangle_below(4);
+
+        let result = sweep_done_tangles(
+            &[
+                resolved_in_done.clone(),
+                unresolved_in_done,
+                resolved_in_doing,
+                resolved_below,
+            ],
+            &[done, doing],
+            ts(100),
+        );
+
+        assert_eq!(
+            result,
+            vec![resolved_in_done.id],
+            "only a resolved tangle sitting in an is_done column is swept"
+        );
+    }
+
+    #[test]
+    fn sweep_done_tangles_excludes_already_archived_tangles() {
+        let done = column(1, true);
+        let resolved = tangle_on(1, done.id, true);
+        let archived = crate::tangle::archive_tangle(&tangle_on(2, done.id, true), ts(50)).unwrap();
+
+        let result = sweep_done_tangles(&[resolved.clone(), archived], &[done], ts(100));
+
+        assert_eq!(result, vec![resolved.id]);
+    }
+
+    #[test]
+    fn sweep_done_tangles_is_a_no_op_when_nothing_qualifies() {
+        let doing = column(1, false);
+        let unresolved = tangle_on(1, doing.id, false);
+        let below = tangle_below(2);
+
+        let result = sweep_done_tangles(&[unresolved, below], &[doing], ts(100));
+
+        assert_eq!(result, Vec::<TangleId>::new());
     }
 }

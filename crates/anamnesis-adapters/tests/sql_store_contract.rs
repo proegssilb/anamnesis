@@ -578,6 +578,7 @@ async fn tangle_contract(store: &SqlStore) {
         frozen: false,
         detected_at: ts(7_000),
         resolved_at: None,
+        archived_at: None,
     };
     TangleRepository::insert(store, &tangle).await.unwrap();
 
@@ -644,6 +645,50 @@ async fn tangle_contract(store: &SqlStore) {
     assert!(
         !active.iter().any(|t| t.id == tangle.id),
         "a resolved tangle must no longer be active"
+    );
+
+    // --- Gap 2: archived_at round-trips, and an archived tangle vanishes
+    // from both `list_active` and its column's item list.
+    assert_eq!(
+        resolved.archived_at, None,
+        "resolving alone must not archive it"
+    );
+    let archived = anamnesis_core::archive_tangle(&resolved, ts(7_600)).unwrap();
+    TangleRepository::update(store, &archived).await.unwrap();
+
+    let reloaded = TangleRepository::load(store, tangle.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reloaded.archived_at,
+        Some(ts(7_600)),
+        "archived_at must round-trip through storage"
+    );
+
+    // Place it back on a column directly (bypassing `place_tangle`, which
+    // rejects a resolved tangle) so the "vanishes from its column" half of
+    // the assertion has a column to check against.
+    let vanish_column = column(11, None, true);
+    store.seed_board_column(&vanish_column).await.unwrap();
+    let mut on_the_board = reloaded.clone();
+    on_the_board.placement = Placement::OnBoard {
+        column: vanish_column.id,
+        position: 0,
+    };
+    TangleRepository::update(store, &on_the_board)
+        .await
+        .unwrap();
+
+    let columns = BoardQuery::columns_with_items(store).await.unwrap();
+    let vanish = columns
+        .iter()
+        .find(|c| c.column.id == vanish_column.id)
+        .unwrap();
+    assert!(
+        vanish.items.is_empty(),
+        "an archived tangle must not render in its column: {:?}",
+        vanish.items
     );
 }
 
@@ -774,6 +819,7 @@ async fn tangle_on_board_contract(store: &SqlStore, project_id: ProjectId) {
             frozen: false,
             detected_at: ts(9_000),
             resolved_at: None,
+            archived_at: None,
         },
         lane.id,
         0, // placed before the task, at position 0

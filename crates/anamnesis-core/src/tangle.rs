@@ -106,6 +106,13 @@ pub struct Tangle {
     pub frozen: bool,
     pub detected_at: Timestamp,
     pub resolved_at: Option<Timestamp>,
+    /// Set once a *resolved* tangle has been swept off the board
+    /// ([`archive_tangle`]) — the Tangle-side counterpart of `Task::
+    /// archived_at` (`docs/DOMAIN.md` §2's "archived: vanished from every
+    /// view unless explicitly searched"). `None` for every tangle detection
+    /// ever mints; only ever set by [`archive_tangle`], and only on a tangle
+    /// that is already resolved.
+    pub archived_at: Option<Timestamp>,
 }
 
 impl Tangle {
@@ -113,6 +120,31 @@ impl Tangle {
     pub fn is_active(&self) -> bool {
         self.resolved_at.is_none()
     }
+}
+
+/// Archives a *resolved* tangle — the Tangle-side counterpart of
+/// [`crate::archive_task`], called by the same "archive all"/scheduled-sweep
+/// path once a resolved tangle is sitting in an `is_done` column
+/// (`docs/DOMAIN.md`'s Tangle section: "the archive sweep then treats it
+/// like anything else").
+///
+/// Rejects a tangle that is not yet resolved (`DomainError::
+/// TangleNotResolved`) — an unresolved knot still has real work left in it
+/// and must never be silently swept off the board alongside genuinely done
+/// work — and rejects a tangle that is already archived
+/// (`DomainError::AlreadyArchived`), symmetrically with every other
+/// `archive_*` transition in this crate.
+pub fn archive_tangle(tangle: &Tangle, now: Timestamp) -> Result<Tangle, DomainError> {
+    if tangle.archived_at.is_some() {
+        return Err(DomainError::AlreadyArchived);
+    }
+    if tangle.resolved_at.is_none() {
+        return Err(DomainError::TangleNotResolved);
+    }
+    Ok(Tangle {
+        archived_at: Some(now),
+        ..tangle.clone()
+    })
 }
 
 /// Places a tangle on the board at `column`/`position`, freezing its
@@ -539,6 +571,7 @@ pub fn reconcile(
             frozen: false,
             detected_at: now,
             resolved_at: None,
+            archived_at: None,
         });
     }
 
@@ -1109,5 +1142,50 @@ mod tests {
             .expect("must still resolve");
         assert_eq!(resolved.resolved_at, Some(ts(300)));
         assert_eq!(resolved.placement, placed.placement);
+    }
+
+    // --- archive_tangle (gap 2: resolved tangles piling up in Done) ---
+
+    fn resolved_tangle() -> Tangle {
+        let detected = detect_tangles(&[blocks(1, 2), blocks(2, 1)], &builtin_kinds());
+        let fresh = reconcile(&detected, &[], ts(100), [tang_id(1)]).newly_detected[0].clone();
+        let placed = place_tangle(&fresh, cid(1), 0).unwrap();
+        let live = vec![blocks(1, 2)]; // cycle broken
+        resolve_frozen_tangle(&placed, &live, &builtin_kinds(), ts(200), None)
+            .expect("must resolve")
+    }
+
+    #[test]
+    fn a_freshly_detected_tangle_starts_unarchived() {
+        let detected = detect_tangles(&[blocks(1, 2), blocks(2, 1)], &builtin_kinds());
+        let fresh = reconcile(&detected, &[], ts(100), [tang_id(1)]).newly_detected[0].clone();
+        assert_eq!(fresh.archived_at, None);
+    }
+
+    #[test]
+    fn archive_tangle_stamps_archived_at_on_a_resolved_tangle() {
+        let resolved = resolved_tangle();
+        let archived = archive_tangle(&resolved, ts(300)).unwrap();
+        assert_eq!(archived.archived_at, Some(ts(300)));
+        // Identity and task set survive archiving.
+        assert_eq!(archived.id, resolved.id);
+        assert_eq!(archived.task_ids, resolved.task_ids);
+    }
+
+    #[test]
+    fn archive_tangle_rejects_an_unresolved_tangle() {
+        let detected = detect_tangles(&[blocks(1, 2), blocks(2, 1)], &builtin_kinds());
+        let fresh = reconcile(&detected, &[], ts(100), [tang_id(1)]).newly_detected[0].clone();
+        assert_eq!(fresh.resolved_at, None);
+        let result = archive_tangle(&fresh, ts(300));
+        assert_eq!(result, Err(DomainError::TangleNotResolved));
+    }
+
+    #[test]
+    fn archive_tangle_rejects_an_already_archived_tangle() {
+        let resolved = resolved_tangle();
+        let archived = archive_tangle(&resolved, ts(300)).unwrap();
+        let result = archive_tangle(&archived, ts(400));
+        assert_eq!(result, Err(DomainError::AlreadyArchived));
     }
 }

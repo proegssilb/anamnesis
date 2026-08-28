@@ -1368,11 +1368,164 @@ async fn archive_done_tasks_archives_everything_in_an_is_done_column() {
         .await
         .unwrap();
 
-    let archived = archive_done_tasks(&fakes, &fakes, &clock, &fakes, member())
+    let archived = archive_done_tasks(&fakes, &fakes, &fakes, &clock, &fakes, member())
         .await
         .unwrap();
-    assert_eq!(archived, vec![task.id]);
+    assert_eq!(archived.archived_task_ids, vec![task.id]);
+    assert!(archived.archived_tangle_ids.is_empty());
     assert!(fakes.task(task.id).archived_at.is_some());
+}
+
+// --- Gap 2: a resolved tangle sitting in Done must be archived too, an
+// unresolved one must not, and an archived tangle must never be resurrected
+// by a later detection pass over the same (still-cyclic) tasks.
+
+#[tokio::test]
+async fn archive_done_tasks_archives_a_resolved_tangle_sitting_in_an_is_done_column() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let (_, a, b, tangle) = knotted_pair(&fakes, &ids, &clock).await;
+    let todo = make_column(&ids, "To-Do", 0, None, false);
+    let done = make_column(&ids, "Done", 1, None, true);
+    fakes.seed_column(todo.clone());
+    fakes.seed_column(done.clone());
+    place_tangle(&fakes, &fakes, member(), tangle.id, todo.id)
+        .await
+        .unwrap();
+
+    // Untangle it (break the cycle), then resolve it onto Done -- exactly
+    // `resolve_frozen_tangles_closes_one_and_moves_it_to_the_done_column`'s
+    // setup, since that is the only way a real tangle ever ends up resolved
+    // and sitting in Done.
+    let b_blocks_a = RelationshipRepository::list_for_task(&fakes, b.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.from_task_id == b.id && r.to_task_id == a.id)
+        .unwrap();
+    delete_relationship(&fakes, member(), b_blocks_a.id)
+        .await
+        .unwrap();
+    resolve_frozen_tangles(&fakes, &fakes, &fakes, &clock, Some(done.id))
+        .await
+        .unwrap();
+
+    let outcome = archive_done_tasks(&fakes, &fakes, &fakes, &clock, &fakes, member())
+        .await
+        .unwrap();
+    assert_eq!(outcome.archived_tangle_ids, vec![tangle.id]);
+
+    let archived = TangleRepository::load(&fakes, tangle.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(archived.archived_at.is_some());
+
+    // It must actually vanish from the board, not merely carry the flag.
+    let columns = BoardQuery::columns_with_items(&fakes).await.unwrap();
+    let done_column = columns.iter().find(|c| c.column.id == done.id).unwrap();
+    assert!(
+        done_column.items.is_empty(),
+        "an archived tangle must vanish from its column: {:?}",
+        done_column.items
+    );
+}
+
+#[tokio::test]
+async fn archive_done_tasks_does_not_archive_an_unresolved_tangle_sitting_in_an_is_done_column() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let (_, _, _, tangle) = knotted_pair(&fakes, &ids, &clock).await;
+    let done = make_column(&ids, "Done", 0, None, true);
+    fakes.seed_column(done.clone());
+    // Placed directly in the Done column while the knot is still cyclic --
+    // nothing stops a user from placing a tangle there, and it must not be
+    // treated as archivable just because of where it happens to sit.
+    place_tangle(&fakes, &fakes, member(), tangle.id, done.id)
+        .await
+        .unwrap();
+
+    let outcome = archive_done_tasks(&fakes, &fakes, &fakes, &clock, &fakes, member())
+        .await
+        .unwrap();
+    assert!(
+        outcome.archived_tangle_ids.is_empty(),
+        "an unresolved tangle must never be archived, even sitting in Done"
+    );
+    let reloaded = TangleRepository::load(&fakes, tangle.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(reloaded.archived_at.is_none());
+}
+
+#[tokio::test]
+async fn an_archived_tangle_is_not_resurrected_by_a_fresh_detection_pass_over_the_same_tasks() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let (project_id, a, b, tangle) = knotted_pair(&fakes, &ids, &clock).await;
+    let todo = make_column(&ids, "To-Do", 0, None, false);
+    let done = make_column(&ids, "Done", 1, None, true);
+    fakes.seed_column(todo.clone());
+    fakes.seed_column(done.clone());
+    place_tangle(&fakes, &fakes, member(), tangle.id, todo.id)
+        .await
+        .unwrap();
+
+    let b_blocks_a = RelationshipRepository::list_for_task(&fakes, b.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.from_task_id == b.id && r.to_task_id == a.id)
+        .unwrap();
+    delete_relationship(&fakes, member(), b_blocks_a.id)
+        .await
+        .unwrap();
+    resolve_frozen_tangles(&fakes, &fakes, &fakes, &clock, Some(done.id))
+        .await
+        .unwrap();
+    let outcome = archive_done_tasks(&fakes, &fakes, &fakes, &clock, &fakes, member())
+        .await
+        .unwrap();
+    assert_eq!(outcome.archived_tangle_ids, vec![tangle.id]);
+
+    // The user re-ties the exact same knot: re-create the b->a edge over
+    // the same two tasks.
+    create_relationship(
+        &fakes,
+        &fakes,
+        &ids,
+        &clock,
+        member(),
+        b.id,
+        project_id,
+        a.id,
+        project_id,
+        KindId::BUILTIN_BLOCKS,
+    )
+    .await
+    .unwrap();
+
+    let reconciliation = run_tangle_detection(&fakes, &fakes, &ids, &clock)
+        .await
+        .unwrap();
+    assert_eq!(
+        reconciliation.newly_detected.len(),
+        1,
+        "the same knot recurring after the old tangle was archived must mint \
+         a brand-new tangle, not be suppressed or silently ignored: {reconciliation:?}"
+    );
+    let fresh = &reconciliation.newly_detected[0];
+    assert_ne!(
+        fresh.id, tangle.id,
+        "the new tangle must not reuse the archived tangle's identity"
+    );
+    assert_eq!(fresh.task_ids, tangle.task_ids);
+    assert!(fresh.resolved_at.is_none());
+    assert!(fresh.archived_at.is_none());
 }
 
 // ============================ Search index ============================
@@ -1671,10 +1824,10 @@ async fn archive_done_tasks_removes_every_swept_task_from_the_index() {
         .unwrap();
     assert!(!fakes.search("Swept").await.unwrap().is_empty());
 
-    let archived = archive_done_tasks(&fakes, &fakes, &clock, &fakes, member())
+    let archived = archive_done_tasks(&fakes, &fakes, &fakes, &clock, &fakes, member())
         .await
         .unwrap();
-    assert_eq!(archived, vec![task.id]);
+    assert_eq!(archived.archived_task_ids, vec![task.id]);
 
     let hits = fakes.search("Swept").await.unwrap();
     assert!(

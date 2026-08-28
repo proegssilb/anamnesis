@@ -720,10 +720,14 @@ impl BoardQuery for Fakes {
                     // Tangles: NOT filtered on `is_active` here, on purpose —
                     // a just-resolved tangle stays visible in its (now
                     // `is_done`) column rather than vanish the instant it
-                    // resolves (`docs/DOMAIN.md`'s Tangle section).
+                    // resolves (`docs/DOMAIN.md`'s Tangle section). An
+                    // *archived* one, though, must vanish exactly like an
+                    // archived task does — mirrors the real adapters'
+                    // `list_by_column`'s `archived_at IS NULL` filter.
                     .chain(
                         tangles
                             .values()
+                            .filter(|t| t.archived_at.is_none())
                             .filter(|t| {
                                 matches!(
                                     t.placement,

@@ -63,6 +63,12 @@ pub enum DomainError {
     /// left to place or drop.
     #[error("tangle is already resolved")]
     TangleAlreadyResolved,
+    /// [`crate::archive_tangle`] was called on a tangle whose `resolved_at`
+    /// is still `None` — only a *resolved* tangle sitting in a Done column
+    /// is ever swept (`docs/DOMAIN.md`'s Tangle section); an unresolved
+    /// knot still has real work left in it and must never silently vanish.
+    #[error("tangle is not resolved")]
+    TangleNotResolved,
 }
 
 #[cfg(test)]
@@ -106,6 +112,10 @@ mod tests {
         assert_eq!(
             DomainError::TangleAlreadyResolved.to_string(),
             "tangle is already resolved"
+        );
+        assert_eq!(
+            DomainError::TangleNotResolved.to_string(),
+            "tangle is not resolved"
         );
     }
 

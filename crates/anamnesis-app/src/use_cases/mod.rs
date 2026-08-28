@@ -16,7 +16,7 @@ mod suggestion;
 mod tangle;
 mod task;
 
-pub use archive::archive_done_tasks;
+pub use archive::{ArchiveOutcome, archive_done_tasks};
 pub use area::{create_area, edit_area, list_areas, reposition_area, view_area};
 pub use attachment::{
     add_file_attachment, add_link_attachment, delete_attachment, list_attachments,
