@@ -36,7 +36,7 @@ impl MockProvider {
         let server = MockServer::start().await;
         let issuer = server.uri();
 
-        let mut rng = rand_core::OsRng;
+        let mut rng = rsa::rand_core::OsRng;
         let private_key =
             rsa::RsaPrivateKey::new(&mut rng, 2048).expect("generate RSA key for test signing");
         let pem = private_key
