@@ -13,7 +13,8 @@ use cucumber::{given, then, when};
 
 use anamnesis_app::{
     AppError, MembershipQuery, add_field_definition, archive_project, create_area, create_project,
-    view_area, view_project, view_task,
+    grant_area_role, grant_system_admin, revoke_area_role, revoke_system_admin, view_area,
+    view_project, view_task,
 };
 use anamnesis_core::FieldKind;
 use anamnesis_core::policy::Role;
@@ -207,6 +208,86 @@ async fn tries_to_create_a_project_in_the_area_that_contains(
     )
     .await;
     world.last_domain_error = result.err();
+}
+
+// --- Gap 1: MembershipRepository, exercised through
+// `anamnesis_app::use_cases::membership` -- resolving the acting role
+// exactly as the steps above do (`MembershipQuery`, never a shortcut). ---
+
+#[when(regex = r#"^"([^"]+)" tries to grant System Admin to "([^"]+)"$"#)]
+async fn tries_to_grant_system_admin_to(world: &mut AppWorld, actor: String, target: String) {
+    let actor_id = world.user(&actor);
+    let target_id = world.user(&target);
+    // Granting System Admin has no per-area/project scope to resolve a role
+    // in -- the only membership that could ever satisfy it is System Admin
+    // status itself, exactly as `tries_to_create_area` resolves it.
+    let role = if world.domain.is_system_admin(&actor_id).await.unwrap() {
+        Some(Role::SystemAdmin)
+    } else {
+        None
+    };
+    let result = grant_system_admin(&world.domain, role, &target_id).await;
+    world.last_domain_error = result.err();
+}
+
+#[when(regex = r#"^"([^"]+)" tries to revoke System Admin from "([^"]+)"$"#)]
+async fn tries_to_revoke_system_admin_from(world: &mut AppWorld, actor: String, target: String) {
+    let actor_id = world.user(&actor);
+    let target_id = world.user(&target);
+    let role = if world.domain.is_system_admin(&actor_id).await.unwrap() {
+        Some(Role::SystemAdmin)
+    } else {
+        None
+    };
+    let result = revoke_system_admin(&world.domain, &world.domain, role, &target_id).await;
+    world.last_domain_error = result.err();
+}
+
+#[when(
+    regex = r#"^"([^"]+)" tries to grant a Member role to "([^"]+)" on the area that contains "([^"]+)"$"#
+)]
+async fn tries_to_grant_a_member_role_on_the_area_that_contains(
+    world: &mut AppWorld,
+    actor: String,
+    target: String,
+    project_name: String,
+) {
+    let actor_id = world.user(&actor);
+    let target_id = world.user(&target);
+    let area_id = world.domain_area_of(&project_name);
+    let role = MembershipQuery::effective_area_role(&world.domain, &actor_id, area_id)
+        .await
+        .unwrap();
+    let result = grant_area_role(&world.domain, role, area_id, &target_id, Role::Member).await;
+    world.last_domain_error = result.err();
+}
+
+#[when(
+    regex = r#"^"([^"]+)" tries to revoke ([A-Za-z]+)'s role on the area that contains "([^"]+)"$"#
+)]
+async fn tries_to_revoke_a_role_on_the_area_that_contains(
+    world: &mut AppWorld,
+    actor: String,
+    target: String,
+    project_name: String,
+) {
+    let actor_id = world.user(&actor);
+    let target_id = world.user(&target);
+    let area_id = world.domain_area_of(&project_name);
+    let role = MembershipQuery::effective_area_role(&world.domain, &actor_id, area_id)
+        .await
+        .unwrap();
+    let result = revoke_area_role(&world.domain, role, area_id, &target_id).await;
+    world.last_domain_error = result.err();
+}
+
+#[then(regex = r#"^the revocation is refused because ([A-Za-z]+) is the last System Admin$"#)]
+async fn the_revocation_is_refused_because_last_system_admin(world: &mut AppWorld, _who: String) {
+    assert!(
+        matches!(world.last_domain_error, Some(AppError::LastSystemAdmin)),
+        "expected AppError::LastSystemAdmin, got {:?}",
+        world.last_domain_error
+    );
 }
 
 #[then(expr = "access is granted")]
