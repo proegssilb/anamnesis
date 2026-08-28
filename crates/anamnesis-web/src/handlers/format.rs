@@ -16,6 +16,16 @@ pub fn column_is_done(columns: &[BoardColumn], column_id: ColumnId) -> Option<bo
         .map(|c| c.column.is_done)
 }
 
+/// A column's display title, for the task detail page's placement pill —
+/// `None` under the same "should not happen, but not guaranteed" caveat as
+/// [`column_is_done`].
+pub fn column_title(columns: &[BoardColumn], column_id: ColumnId) -> Option<String> {
+    columns
+        .iter()
+        .find(|c| c.column.id == column_id)
+        .map(|c| c.column.title.as_str().to_string())
+}
+
 /// A short, human-readable rendering of a field value — used for the
 /// board's compact `show_on_card` fields and the task detail page. Not
 /// locale-aware; good enough for this phase's no-JS forms, not a currency or

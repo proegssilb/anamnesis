@@ -2,70 +2,67 @@
 {% block title %}{{ task.title }} — Anamnesis{% endblock %}
 {% block content %}
   <p class="breadcrumb"><a href="/board">Board</a></p>
-  <h1>{{ task.title }}</h1>
-  <p class="hint">
-    {% if is_on_board %}
-      <span class="badge">on the board</span>
-    {% else %}
-      <span class="badge">below the horizon</span>
-    {% endif %}
+
+  <div class="page-header task-header">
+    <details class="editable-block editable-title"{% if open_hint == "title" %} open{% endif %}>
+      <summary>
+        <h1>{{ task.title }}</h1>
+        {% if task.description %}<p class="card-body">{{ task.description }}</p>{% endif %}
+      </summary>
+      <form class="panel-form" method="post" action="/tasks/{{ task.id }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="title">Title</label>
+        <input id="title" name="title" required maxlength="200" value="{{ task.title }}">
+        <label for="description">Description</label>
+        <textarea id="description" name="description">{{ task.description }}</textarea>
+        <button type="submit">Save</button>
+      </form>
+    </details>
+    <div class="header-actions">
+      {% if task.archived_at %}
+        <form method="post" action="/tasks/{{ task.id }}/unarchive">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="icon-button" aria-label="Unarchive" title="Unarchive — this task is hidden from every view unless explicitly searched">⤴</button>
+        </form>
+      {% else %}
+        <form method="post" action="/tasks/{{ task.id }}/archive">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="icon-button icon-button-danger" aria-label="Archive" title="Archive">🗄</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="hint task-status-row">
+    <details class="editable-block editable-placement"{% if open_hint == "placement" %} open{% endif %}>
+      <summary><span class="badge placement-badge">{% if is_on_board %}on the board, in {{ current_column_title }}{% else %}below the horizon{% endif %}</span></summary>
+      <div class="placement-form-wrap">
+        {% if column_options %}
+          <form method="post" action="/tasks/{{ task.id }}/raise">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label for="column_id">{% if is_on_board %}Move to{% else %}Raise onto{% endif %} the board, in column</label>
+            <select id="column_id" name="column_id">
+              {% for c in column_options %}<option value="{{ c.id }}">{{ c.title }}</option>{% endfor %}
+            </select>
+            <button type="submit">{% if is_on_board %}Move{% else %}Raise{% endif %}</button>
+          </form>
+        {% endif %}
+        {% if is_on_board %}
+          <form method="post" action="/tasks/{{ task.id }}/drop">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit">Drop back below the horizon</button>
+          </form>
+          {% if not current_column_is_done %}
+            <p class="hint">Dropping without finishing counts as a bounce.</p>
+          {% endif %}
+        {% endif %}
+      </div>
+    </details>
     {% if task.bounce_count > 0 %}<span class="badge">bounced {{ task.bounce_count }}x</span>{% endif %}
     {% if task.archived_at %}<span class="badge">archived</span>{% endif %}
-  </p>
-  {% if task.description %}<p class="card-body">{{ task.description }}</p>{% endif %}
+  </div>
 
   {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
-
-  <section class="panel-form">
-    <h2>Edit</h2>
-    <form method="post" action="/tasks/{{ task.id }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label for="title">Title</label>
-      <input id="title" name="title" required maxlength="200" value="{{ task.title }}">
-      <label for="description">Description</label>
-      <textarea id="description" name="description">{{ task.description }}</textarea>
-      <button type="submit">Save</button>
-    </form>
-  </section>
-
-  <section class="panel-form">
-    <h2>Placement</h2>
-    {% if column_options %}
-      <form method="post" action="/tasks/{{ task.id }}/raise">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label for="column_id">{% if is_on_board %}Move to{% else %}Raise onto{% endif %} the board, in column</label>
-        <select id="column_id" name="column_id">
-          {% for c in column_options %}<option value="{{ c.id }}">{{ c.title }}</option>{% endfor %}
-        </select>
-        <button type="submit">{% if is_on_board %}Move{% else %}Raise{% endif %}</button>
-      </form>
-    {% endif %}
-    {% if is_on_board %}
-      <form method="post" action="/tasks/{{ task.id }}/drop">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit">Drop back below the horizon</button>
-      </form>
-      {% if not current_column_is_done %}
-        <p class="hint">Dropping without finishing counts as a bounce.</p>
-      {% endif %}
-    {% endif %}
-  </section>
-
-  <section class="panel-form">
-    <h2>Archive</h2>
-    {% if task.archived_at %}
-      <p class="hint">This task is archived — it is hidden from every view unless explicitly searched.</p>
-      <form method="post" action="/tasks/{{ task.id }}/unarchive">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit">Unarchive</button>
-      </form>
-    {% else %}
-      <form method="post" action="/tasks/{{ task.id }}/archive">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="danger">Archive</button>
-      </form>
-    {% endif %}
-  </section>
 
   <section>
     <h2>Fields</h2>
@@ -117,15 +114,30 @@
   <section>
     <h2>Checklist</h2>
     {% if children %}
-      <ul class="task-list">
-        {% for c in children %}<li><a href="/tasks/{{ c.id }}">{{ c.title }}</a></li>{% endfor %}
+      <ul class="task-list checklist">
+        {% for c in children %}
+          <li class="checklist-item">
+            <input type="checkbox" class="checklist-checkbox" disabled {% if c.done %}checked{% endif %}>
+            <a href="/tasks/{{ c.id }}">{{ c.title }}</a>
+          </li>
+        {% endfor %}
       </ul>
     {% else %}
       <p class="hint">No checklist items yet.</p>
     {% endif %}
+    <form class="inline-form checklist-add-form" method="post" action="/tasks/{{ task.id }}/children">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="checklist-item-title" class="visually-hidden">Add a checklist item</label>
+      <input id="checklist-item-title" name="title" required maxlength="200" placeholder="Add a checklist item…">
+      <button type="submit">Add</button>
+    </form>
+  </section>
+
+  <section class="panel-form">
+    <h2>Parent task</h2>
     <form class="inline-form" method="post" action="/tasks/{{ task.id }}/parent">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label for="parent_task_id">Set this task's parent (its id, blank to clear)</label>
+      <label for="parent_task_id">This task's own parent (its id, blank to clear)</label>
       <input id="parent_task_id" name="parent_task_id" placeholder="parent task id">
       <button type="submit">Set parent</button>
     </form>

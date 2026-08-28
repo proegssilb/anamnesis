@@ -6,14 +6,15 @@ use axum::Router;
 use axum::routing::{get, post};
 
 use crate::handlers::{
-    accept_suggestion_handler, accept_tangle_offer_handler, add_comment_handler,
-    add_field_definition_handler, add_file_attachment_handler, add_link_attachment_handler,
-    archive_all_handler, archive_project_handler, archive_task_handler, callback_handler,
-    create_area_handler, create_project_handler, create_relationship_handler, create_task_handler,
-    delete_relationship_handler, download_attachment_handler, drop_tangle_handler,
-    drop_task_handler, edit_area_handler, edit_task_handler, grant_area_member_handler,
-    grant_project_member_handler, grant_system_admin_handler, healthz_handler, list_areas_handler,
-    list_projects_handler, login_handler, logout_handler, raise_task_handler, reposition_handler,
+    accept_suggestion_handler, accept_tangle_offer_handler, add_checklist_item_handler,
+    add_comment_handler, add_field_definition_handler, add_file_attachment_handler,
+    add_link_attachment_handler, archive_all_handler, archive_project_handler,
+    archive_task_handler, callback_handler, create_area_handler, create_project_handler,
+    create_relationship_handler, create_task_handler, delete_relationship_handler,
+    download_attachment_handler, drop_tangle_handler, drop_task_handler, edit_area_handler,
+    edit_task_handler, grant_area_member_handler, grant_project_member_handler,
+    grant_system_admin_handler, healthz_handler, list_areas_handler, list_projects_handler,
+    login_handler, logout_handler, raise_task_handler, reposition_handler,
     revoke_area_member_handler, revoke_project_member_handler, revoke_system_admin_handler,
     root_handler, search_handler, set_field_value_handler, set_parent_handler,
     transition_project_status_handler, unarchive_project_handler, unarchive_task_handler,
@@ -65,6 +66,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/tasks/{id}/archive", post(archive_task_handler))
         .route("/tasks/{id}/unarchive", post(unarchive_task_handler))
         .route("/tasks/{id}/parent", post(set_parent_handler))
+        .route("/tasks/{id}/children", post(add_checklist_item_handler))
         .route("/tasks/{id}/comments", post(add_comment_handler))
         .route("/tasks/{id}/attachments", post(add_link_attachment_handler))
         .route(

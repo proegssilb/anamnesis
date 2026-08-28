@@ -732,6 +732,99 @@ input[type="checkbox"] {
   filter: brightness(1.05);
 }
 
+.icon-button-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* --- task detail page: click-to-reveal edit forms via <details>/<summary>,
+   no JS required — the disclosure triangle is stripped so the summary reads
+   as a plain clickable title/badge instead of a list item. --- */
+
+.task-header {
+  align-items: flex-start;
+}
+
+.editable-block > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.editable-block > summary::-webkit-details-marker,
+.editable-block > summary::marker {
+  display: none;
+}
+
+.editable-block > summary:hover h1,
+.editable-block > summary:hover .placement-badge {
+  color: var(--accent);
+}
+
+.editable-block > form.panel-form {
+  margin-top: 0.75rem;
+}
+
+.editable-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.editable-title > summary .card-body {
+  margin-top: 0.25rem;
+}
+
+.header-actions form {
+  margin: 0;
+}
+
+.placement-form-wrap {
+  margin-top: 0.75rem;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 24rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.task-status-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.5rem 0 1rem;
+}
+
+/* --- checklist (task children): read-only status checkbox + quick add,
+   nested inside `.task-list` so its `<a>` needs the same row-card override
+   `.relationship-row a` uses. --- */
+
+.checklist-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.checklist-item a {
+  display: inline;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.checklist-add-form input {
+  flex: 1;
+  min-width: 8rem;
+}
+
 /* --- settings modal: pure CSS `:target` overlay, no JS required (this app
    is "no-JS server-rendered UI" throughout, `docs/DOMAIN.md`) -- the
    trigger is a plain `<a href="#…-settings">` and the close control is a

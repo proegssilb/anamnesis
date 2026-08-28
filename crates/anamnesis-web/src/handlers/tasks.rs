@@ -10,9 +10,9 @@ use minijinja::context;
 
 use anamnesis_app::{
     AppError, AttachmentId, AttachmentKind, add_comment, add_file_attachment, add_link_attachment,
-    archive_task, create_relationship, delete_relationship, drop_task, edit_task, list_attachments,
-    list_comments, raise_task, resolve_kind, set_task_field_value, set_task_parent, unarchive_task,
-    view_task,
+    archive_task, create_relationship, create_task, delete_relationship, drop_task, edit_task,
+    list_attachments, list_comments, raise_task, resolve_kind, set_checklist_position,
+    set_task_field_value, set_task_parent, unarchive_task, view_task,
 };
 use anamnesis_core::{
     FieldId, Placement, RelationshipId, TaskId, builtin_blocks, builtin_duplicates,
@@ -26,10 +26,12 @@ use crate::state::AppState;
 
 use super::access;
 use super::field_form;
-use super::format::{column_is_done, field_input_value, format_field_data, format_field_kind};
+use super::format::{
+    column_is_done, column_title, field_input_value, format_field_data, format_field_kind,
+};
 use super::forms::{
-    AddCommentForm, AddLinkAttachmentForm, CreateRelationshipForm, CsrfOnlyForm, EditTaskForm,
-    RaiseTaskForm, SetFieldValueForm, SetParentForm,
+    AddChecklistItemForm, AddCommentForm, AddLinkAttachmentForm, CreateRelationshipForm,
+    CsrfOnlyForm, EditTaskForm, RaiseTaskForm, SetFieldValueForm, SetParentForm,
 };
 
 /// Resolves the role a task's own project grants `user` — every task
@@ -74,7 +76,16 @@ async fn view_task_impl(
 ) -> Result<Response, WebError> {
     let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
     let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
-    render_task_page(state, user, task_id, &aggregate.task, None, StatusCode::OK).await
+    render_task_page(
+        state,
+        user,
+        task_id,
+        &aggregate.task,
+        None,
+        None,
+        StatusCode::OK,
+    )
+    .await
 }
 
 pub async fn edit_task_handler(
@@ -113,7 +124,7 @@ async fn edit_task_impl(
         Ok(task) => {
             // Re-indexed inside `edit_task` itself — see
             // `anamnesis_app::use_cases::indexing`'s module doc comment.
-            render_task_page(state, user, task_id, &task, None, StatusCode::OK).await
+            render_task_page(state, user, task_id, &task, None, None, StatusCode::OK).await
         }
         Err(AppError::Rule(e)) => {
             let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
@@ -123,6 +134,7 @@ async fn edit_task_impl(
                 task_id,
                 &aggregate.task,
                 Some(&e.to_string()),
+                Some("title"),
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
             .await
@@ -176,6 +188,7 @@ async fn raise_task_impl(
                 task_id,
                 &aggregate.task,
                 Some("That column is already at its work-in-progress limit."),
+                Some("placement"),
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
             .await
@@ -592,12 +605,94 @@ async fn set_parent_impl(
                 task_id,
                 &aggregate.task,
                 Some(&e.to_string()),
+                None,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
             .await
         }
         Err(err) => Err(WebError::from(err)),
     }
+}
+
+/// Quick-adds a checklist item: creates a new task in this task's project
+/// and appends it as a child, in one request (`forms::AddChecklistItemForm`'s
+/// doc comment) — the create and the parent-link are two separate use-case
+/// calls, but only the first can meaningfully fail on user input (a blank or
+/// too-long title), so only it gets an inline re-render on
+/// `AppError::Rule`; a failure in the link-up or reposition step after that
+/// is already-a-server-error territory and just bubbles up.
+pub async fn add_checklist_item_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<uuid::Uuid>,
+    Form(form): Form<AddChecklistItemForm>,
+) -> Response {
+    match add_checklist_item_impl(&state, &user, TaskId::new(id), form).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn add_checklist_item_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    form: AddChecklistItemForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
+    let parent = state.tasks.load(task_id).await?.ok_or(AppError::NotFound)?;
+    let existing_siblings = state.tasks.list_children(task_id).await?;
+    let next_position = existing_siblings
+        .iter()
+        .map(|t| t.checklist_position)
+        .max()
+        .map_or(0, |max| max + 1);
+
+    let new_task = match create_task(
+        state.tasks.as_ref(),
+        state.id_gen.as_ref(),
+        state.clock.as_ref(),
+        state.search_index.as_ref(),
+        role,
+        parent.task.project_id,
+        &form.title,
+        "",
+    )
+    .await
+    {
+        Ok(task) => task,
+        Err(AppError::Rule(e)) => {
+            let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
+            return render_task_page(
+                state,
+                user,
+                task_id,
+                &aggregate.task,
+                Some(&e.to_string()),
+                None,
+                StatusCode::UNPROCESSABLE_ENTITY,
+            )
+            .await;
+        }
+        Err(err) => return Err(WebError::from(err)),
+    };
+
+    set_task_parent(
+        state.tasks.as_ref(),
+        state.clock.as_ref(),
+        role,
+        new_task.id,
+        Some(task_id),
+    )
+    .await?;
+    if next_position > 0 {
+        set_checklist_position(state.tasks.as_ref(), role, new_task.id, next_position).await?;
+    }
+
+    Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response())
 }
 
 pub async fn create_relationship_handler(
@@ -664,6 +759,7 @@ async fn create_relationship_impl(
                 task_id,
                 &aggregate.task,
                 Some(&e.to_string()),
+                None,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
             .await
@@ -726,6 +822,7 @@ async fn set_field_value_impl(
                 task_id,
                 &aggregate.task,
                 Some(&message),
+                None,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
             .await;
@@ -743,6 +840,7 @@ async fn set_field_value_impl(
                 task_id,
                 &aggregate.task,
                 Some(&e.to_string()),
+                None,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
             .await
@@ -818,6 +916,7 @@ async fn render_task_page(
     task_id: TaskId,
     task: &anamnesis_core::Task,
     error: Option<&str>,
+    open_hint: Option<&str>,
     status: StatusCode,
 ) -> Result<Response, WebError> {
     let children = state.tasks.list_children(task_id).await?;
@@ -862,6 +961,30 @@ async fn render_task_page(
         Placement::OnBoard { column, .. } => column_is_done(&columns, column),
         Placement::Below => None,
     };
+    let current_column_title = match task.placement {
+        Placement::OnBoard { column, .. } => column_title(&columns, column),
+        Placement::Below => None,
+    };
+
+    // Each checklist item's own `done` reading is the same "on the board, in
+    // an `is_done` column" test as the parent task's — checked purely for
+    // display here, distinct from actually completing anything.
+    let children_ctx: Vec<_> = children
+        .iter()
+        .map(|c| {
+            let done = match c.placement {
+                Placement::OnBoard { column, .. } => {
+                    column_is_done(&columns, column).unwrap_or(false)
+                }
+                Placement::Below => false,
+            };
+            context! {
+                id => c.id.to_string(),
+                title => c.title.as_str(),
+                done => done,
+            }
+        })
+        .collect();
 
     // Custom field definitions + this task's own values (`docs/DOMAIN.md`
     // §3): the section that made every field genuinely editable, not just
@@ -906,7 +1029,9 @@ async fn render_task_page(
             task => task,
             is_on_board => task.placement.is_on_board(),
             current_column_is_done => current_column_is_done,
-            children => children,
+            current_column_title => current_column_title,
+            open_hint => open_hint,
+            children => children_ctx,
             comments => comments,
             attachments => attachments,
             relationships => relationships,
