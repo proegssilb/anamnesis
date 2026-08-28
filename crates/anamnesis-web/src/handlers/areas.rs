@@ -69,7 +69,7 @@ async fn list_areas_impl(state: &AppState, user: &CurrentUser) -> Result<Respons
             visible.push(area);
         }
     }
-    render_areas_page(state, user, &visible, admin, None, StatusCode::OK)
+    render_areas_page(state, user, &visible, admin, None, StatusCode::OK).await
 }
 
 pub async fn create_area_handler(
@@ -129,6 +129,7 @@ async fn create_area_impl(
                 Some(&e.to_string()),
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
+            .await
         }
         Err(err) => Err(WebError::from(err)),
     }
@@ -363,7 +364,7 @@ fn parse_status(raw: &str) -> Result<ProjectStatus, WebError> {
     }
 }
 
-fn render_areas_page(
+async fn render_areas_page(
     state: &AppState,
     user: &CurrentUser,
     areas: &[anamnesis_core::Area],
@@ -371,13 +372,28 @@ fn render_areas_page(
     error: Option<&str>,
     status: StatusCode,
 ) -> Result<Response, WebError> {
+    // The "N projects" count on each card (`docs/DOMAIN.md` §3's area grid)
+    // — non-archived projects only, the same count `list_projects_in_area`
+    // already gives the area's own board.
+    let mut rows = Vec::with_capacity(areas.len());
+    for area in areas {
+        let count =
+            list_projects_in_area(state.projects.as_ref(), Some(Role::Member), area.id).await?;
+        rows.push(context! {
+            id => area.id.to_string(),
+            title => area.title.as_str(),
+            description => area.description.as_str(),
+            project_count => count.len(),
+        });
+    }
+
     let tmpl = state
         .templates
         .get_template("areas.html")
         .map_err(WebError::template)?;
     let body = tmpl
         .render(context! {
-            areas => areas,
+            areas => rows,
             can_manage => can_manage,
             // `can_manage` here is always exactly "is this caller a System
             // Admin" -- creating an area has nowhere else to hang a role

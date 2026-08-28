@@ -311,8 +311,9 @@ button:hover {
 
 .brand-nav {
   display: flex;
-  align-items: baseline;
-  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
 }
 
 .nav-link {
@@ -674,4 +675,68 @@ input[type="checkbox"] {
   min-height: var(--touch);
   color: var(--text);
   font-size: 1rem;
+}
+
+/* --- nav "Jump to…" quick search (`base.html`'s `brand-nav`) --- */
+
+.jump-form {
+  flex-direction: row;
+  margin: 0;
+  min-width: 0;
+  flex: 1 1 10rem;
+  max-width: 16rem;
+}
+
+.jump-form input[type="search"] {
+  width: 100%;
+  min-height: 2.25rem;
+  padding: 0.35rem 0.75rem;
+}
+
+/* --- projects data grid (`GET /projects`) --- */
+
+.filter-form {
+  margin: 1rem 0;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  margin: 1rem 0;
+}
+
+.data-grid {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.data-grid th,
+.data-grid td {
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.data-grid th {
+  background: var(--bg);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.data-grid th a {
+  color: inherit;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.data-grid tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.data-grid tbody tr:hover {
+  background: var(--bg);
 }

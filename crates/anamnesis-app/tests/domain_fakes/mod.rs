@@ -235,6 +235,16 @@ impl ProjectRepository for Fakes {
             .collect())
     }
 
+    async fn list_all(&self) -> Result<Vec<Project>, RepoError> {
+        Ok(self
+            .projects
+            .lock()
+            .unwrap()
+            .values()
+            .map(|agg| agg.project.clone())
+            .collect())
+    }
+
     async fn count_active(&self, excluding: Option<ProjectId>) -> Result<u32, RepoError> {
         Ok(self
             .projects

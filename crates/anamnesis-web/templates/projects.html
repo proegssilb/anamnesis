@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Projects — Anamnesis{% endblock %}
+{% block content %}
+  <h1>Projects</h1>
+  <p class="hint">Every project you have access to, across every area.</p>
+
+  <form class="inline-form filter-form" method="get" action="/projects">
+    <label for="filter-status">Status</label>
+    <select id="filter-status" name="status">
+      <option value="" {% if status != "pending" and status != "active" and status != "complete" and status != "all" %}selected{% endif %}>Active &amp; pending</option>
+      <option value="pending" {% if status == "pending" %}selected{% endif %}>Pending</option>
+      <option value="active" {% if status == "active" %}selected{% endif %}>Active</option>
+      <option value="complete" {% if status == "complete" %}selected{% endif %}>Complete</option>
+      <option value="all" {% if status == "all" %}selected{% endif %}>All statuses</option>
+    </select>
+
+    <label for="filter-area">Area</label>
+    <select id="filter-area" name="area">
+      <option value="">All areas</option>
+      {% for a in areas %}
+        <option value="{{ a.id }}" {% if area == a.id %}selected{% endif %}>{{ a.title }}</option>
+      {% endfor %}
+    </select>
+
+    <label class="checkbox-label" for="filter-archived">
+      <input id="filter-archived" type="checkbox" name="archived" value="1" {% if include_archived %}checked{% endif %}>
+      Include archived
+    </label>
+
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="dir" value="{{ dir }}">
+    <button type="submit">Apply</button>
+  </form>
+
+  {% if projects %}
+    <div class="table-scroll">
+      <table class="data-grid">
+        <thead>
+          <tr>
+            <th><a href="{{ sort_link_title }}">Title{% if sort == "title" %} {% if dir == "asc" %}▲{% else %}▼{% endif %}{% endif %}</a></th>
+            <th><a href="{{ sort_link_area }}">Area{% if sort == "area" %} {% if dir == "asc" %}▲{% else %}▼{% endif %}{% endif %}</a></th>
+            <th><a href="{{ sort_link_status }}">Status{% if sort == "status" %} {% if dir == "asc" %}▲{% else %}▼{% endif %}{% endif %}</a></th>
+            <th><a href="{{ sort_link_created }}">Created{% if sort == "created" %} {% if dir == "asc" %}▲{% else %}▼{% endif %}{% endif %}</a></th>
+            <th><a href="{{ sort_link_updated }}">Updated{% if sort == "updated" %} {% if dir == "asc" %}▲{% else %}▼{% endif %}{% endif %}</a></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in projects %}
+            <tr>
+              <td><a href="/projects/{{ p.id }}">{{ p.title }}</a></td>
+              <td><a href="/areas/{{ p.area_id }}">{{ p.area_title }}</a></td>
+              <td>
+                <span class="badge">{{ p.status }}</span>
+                {% if p.archived %}<span class="badge">archived</span>{% endif %}
+              </td>
+              <td>{{ p.created_at }}</td>
+              <td>{{ p.updated_at }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="hint">No projects match these filters.</p>
+  {% endif %}
+{% endblock %}

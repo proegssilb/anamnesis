@@ -6,6 +6,12 @@
 
   {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 
+  <section class="panel-form">
+    <h2>User Management</h2>
+    <p class="hint">Grant or revoke System Admin — the same power this Settings page requires.</p>
+    <a class="nav-link" href="/users">Manage System Admins →</a>
+  </section>
+
   {% if last_swept_at %}
     <p class="hint">The scheduled sweep last ran at unix time {{ last_swept_at }}.</p>
   {% else %}

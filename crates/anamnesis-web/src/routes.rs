@@ -13,7 +13,7 @@ use crate::handlers::{
     delete_relationship_handler, download_attachment_handler, drop_tangle_handler,
     drop_task_handler, edit_area_handler, edit_task_handler, grant_area_member_handler,
     grant_project_member_handler, grant_system_admin_handler, healthz_handler, list_areas_handler,
-    login_handler, logout_handler, raise_task_handler, reposition_handler,
+    list_projects_handler, login_handler, logout_handler, raise_task_handler, reposition_handler,
     revoke_area_member_handler, revoke_project_member_handler, revoke_system_admin_handler,
     root_handler, search_handler, set_field_value_handler, set_parent_handler,
     transition_project_status_handler, unarchive_project_handler, unarchive_task_handler,
@@ -41,6 +41,7 @@ pub fn build_router(state: AppState) -> Router {
             "/areas/{id}/members/revoke",
             post(revoke_area_member_handler),
         )
+        .route("/projects", get(list_projects_handler))
         .route("/projects/{id}", get(view_project_handler))
         .route("/projects/{id}/members", post(grant_project_member_handler))
         .route(

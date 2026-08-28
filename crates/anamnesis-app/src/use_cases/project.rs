@@ -79,6 +79,24 @@ pub async fn list_projects_in_area(
     Ok(repo.list_by_area(area_id).await?)
 }
 
+/// Lists every project in the system, across every area, archived included
+/// — the system-wide Projects data grid (`GET /projects`). Unlike
+/// [`list_projects_in_area`], this has no single Area to resolve a role
+/// *in* (the same shape [`crate::use_cases::area::list_areas`]'s doc
+/// comment already describes for the area grid): any authenticated caller
+/// may run the listing at all, and the caller narrows the result to what
+/// this particular user may actually see by cross-referencing each
+/// project's `area_id` against the areas that same caller can view.
+pub async fn list_all_projects(
+    repo: &dyn ProjectRepository,
+    role: Option<Role>,
+) -> Result<Vec<Project>, AppError> {
+    if !is_allowed(role, Action::ViewProject) {
+        return Err(AppError::Forbidden);
+    }
+    Ok(repo.list_all().await?)
+}
+
 /// Replaces a project's title and description.
 pub async fn edit_project(
     repo: &dyn ProjectRepository,

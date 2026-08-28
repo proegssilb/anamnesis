@@ -44,6 +44,7 @@ use crate::hx::is_hx_request;
 use crate::session::csrf_tokens_match;
 use crate::state::AppState;
 
+use super::access;
 use super::format::format_field_data;
 use super::forms::{AcceptSuggestionForm, AcceptTangleForm, CsrfOnlyForm, RepositionForm};
 use super::tasks::role_for_task;
@@ -319,12 +320,14 @@ async fn view_board_impl(
         return Ok((status, Html(body)).into_response());
     }
 
+    let is_system_admin = access::is_system_admin(state, &user.user_id).await?;
     render_board_page(
         state,
         user,
         &columns,
         &active_tangles,
         suggestion.as_ref(),
+        is_system_admin,
         error,
         status,
     )
@@ -618,12 +621,14 @@ async fn build_column_views(
     Ok(column_views)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn render_board_page(
     state: &AppState,
     user: &CurrentUser,
     columns: &[anamnesis_app::BoardColumn],
     active_tangles: &[Tangle],
     suggestion: Option<&Outcome>,
+    is_system_admin: bool,
     error: Option<&str>,
     status: StatusCode,
 ) -> Result<Response, WebError> {
@@ -690,6 +695,7 @@ async fn render_board_page(
             suggestion => suggestion_view,
             csrf_token => user.csrf_token,
             current_user => user.display_name,
+            is_system_admin => is_system_admin,
             error => error,
         })
         .map_err(WebError::template)?;
