@@ -755,8 +755,7 @@ input[type="checkbox"] {
   display: none;
 }
 
-.editable-block > summary:hover h1,
-.editable-block > summary:hover .placement-badge {
+.editable-block > summary:hover h1 {
   color: var(--accent);
 }
 
@@ -769,24 +768,13 @@ input[type="checkbox"] {
   min-width: 0;
 }
 
-.editable-title > summary .card-body {
+.editable-description > summary .card-body,
+.editable-description > summary .hint {
   margin-top: 0.25rem;
 }
 
 .header-actions form {
   margin: 0;
-}
-
-.placement-form-wrap {
-  margin-top: 0.75rem;
-  padding: 1rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  max-width: 24rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
 }
 
 .task-status-row {
@@ -795,6 +783,14 @@ input[type="checkbox"] {
   flex-wrap: wrap;
   gap: 0.4rem;
   margin: 0.5rem 0 1rem;
+}
+
+.placement-badge {
+  text-decoration: none;
+}
+
+.placement-badge:hover {
+  color: var(--accent);
 }
 
 /* --- checklist (task children): read-only status checkbox + quick add,

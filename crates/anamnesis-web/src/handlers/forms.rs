@@ -127,10 +127,19 @@ pub struct CreateTaskForm {
     pub description: String,
 }
 
+/// Title and description are edited independently on the task detail page
+/// (separate `<details>` blocks so the status pills can sit between them);
+/// each handler loads the untouched field itself rather than trusting a
+/// hidden input for it, so these forms carry only the field being edited.
 #[derive(Debug, Deserialize)]
-pub struct EditTaskForm {
+pub struct EditTaskTitleForm {
     pub csrf_token: String,
     pub title: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EditTaskDescriptionForm {
+    pub csrf_token: String,
     #[serde(default)]
     pub description: String,
 }

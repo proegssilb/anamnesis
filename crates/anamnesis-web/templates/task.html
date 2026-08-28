@@ -5,16 +5,11 @@
 
   <div class="page-header task-header">
     <details class="editable-block editable-title"{% if open_hint == "title" %} open{% endif %}>
-      <summary>
-        <h1>{{ task.title }}</h1>
-        {% if task.description %}<p class="card-body">{{ task.description }}</p>{% endif %}
-      </summary>
-      <form class="panel-form" method="post" action="/tasks/{{ task.id }}">
+      <summary><h1>{{ task.title }}</h1></summary>
+      <form class="panel-form" method="post" action="/tasks/{{ task.id }}/title">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label for="title">Title</label>
         <input id="title" name="title" required maxlength="200" value="{{ task.title }}">
-        <label for="description">Description</label>
-        <textarea id="description" name="description">{{ task.description }}</textarea>
         <button type="submit">Save</button>
       </form>
     </details>
@@ -34,32 +29,48 @@
   </div>
 
   <div class="hint task-status-row">
-    <details class="editable-block editable-placement"{% if open_hint == "placement" %} open{% endif %}>
-      <summary><span class="badge placement-badge">{% if is_on_board %}on the board, in {{ current_column_title }}{% else %}below the horizon{% endif %}</span></summary>
-      <div class="placement-form-wrap">
-        {% if column_options %}
-          <form method="post" action="/tasks/{{ task.id }}/raise">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <label for="column_id">{% if is_on_board %}Move to{% else %}Raise onto{% endif %} the board, in column</label>
-            <select id="column_id" name="column_id">
-              {% for c in column_options %}<option value="{{ c.id }}">{{ c.title }}</option>{% endfor %}
-            </select>
-            <button type="submit">{% if is_on_board %}Move{% else %}Raise{% endif %}</button>
-          </form>
-        {% endif %}
-        {% if is_on_board %}
-          <form method="post" action="/tasks/{{ task.id }}/drop">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit">Drop back below the horizon</button>
-          </form>
-          {% if not current_column_is_done %}
-            <p class="hint">Dropping without finishing counts as a bounce.</p>
-          {% endif %}
-        {% endif %}
-      </div>
-    </details>
+    <a href="#task-placement" class="badge placement-badge">{% if is_on_board %}on the board, in {{ current_column_title }}{% else %}below the horizon{% endif %}</a>
     {% if task.bounce_count > 0 %}<span class="badge">bounced {{ task.bounce_count }}x</span>{% endif %}
     {% if task.archived_at %}<span class="badge">archived</span>{% endif %}
+  </div>
+
+  <details class="editable-block editable-description"{% if open_hint == "description" %} open{% endif %}>
+    <summary>{% if task.description %}<p class="card-body">{{ task.description }}</p>{% else %}<p class="hint">No description — click to add one</p>{% endif %}</summary>
+    <form class="panel-form" method="post" action="/tasks/{{ task.id }}/description">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="description">Description</label>
+      <textarea id="description" name="description">{{ task.description }}</textarea>
+      <button type="submit">Save</button>
+    </form>
+  </details>
+
+  <div class="modal-overlay" id="task-placement">
+    <div class="modal" role="dialog" aria-labelledby="task-placement-title">
+      <div class="modal-header">
+        <h2 id="task-placement-title">Placement</h2>
+        <a class="modal-close" href="#" aria-label="Close">&times;</a>
+      </div>
+      <p class="hint">{% if is_on_board %}On the board, in {{ current_column_title }}{% else %}Below the horizon{% endif %}</p>
+      {% if column_options %}
+        <form class="panel-form" method="post" action="/tasks/{{ task.id }}/raise#task-placement">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label for="column_id">{% if is_on_board %}Move to{% else %}Raise onto{% endif %} the board, in column</label>
+          <select id="column_id" name="column_id">
+            {% for c in column_options %}<option value="{{ c.id }}">{{ c.title }}</option>{% endfor %}
+          </select>
+          <button type="submit">{% if is_on_board %}Move{% else %}Raise{% endif %}</button>
+        </form>
+      {% endif %}
+      {% if is_on_board %}
+        <form class="panel-form" method="post" action="/tasks/{{ task.id }}/drop#task-placement">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">Drop back below the horizon</button>
+        </form>
+        {% if not current_column_is_done %}
+          <p class="hint">Dropping without finishing counts as a bounce.</p>
+        {% endif %}
+      {% endif %}
+    </div>
   </div>
 
   {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
