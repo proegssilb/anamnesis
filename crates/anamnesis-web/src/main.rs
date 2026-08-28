@@ -121,6 +121,7 @@ async fn main() {
         search: store.clone(),
         search_index: store.clone(),
         membership: store.clone(),
+        membership_write: store.clone(),
         timezone: Arc::new(timezone),
         clock: Arc::new(clock),
         id_gen: Arc::new(id_gen),

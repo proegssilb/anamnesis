@@ -106,4 +106,80 @@ pub trait MembershipQuery: Send + Sync {
         let area_effective_role = self.effective_area_role(user, area).await?;
         Ok(project_role.max(area_effective_role))
     }
+
+    /// Every user currently holding System Admin, in no particular order.
+    ///
+    /// Two callers need this: [`crate::use_cases::membership::
+    /// revoke_system_admin`], to refuse revoking the very last one (an
+    /// empty, or single-entry, result after the target is confirmed to be
+    /// in it means "this is the last admin — refuse"), and a System-Admin-
+    /// only "grant System Admin" UI, to show who already holds it.
+    async fn list_system_admins(&self) -> Result<Vec<UserId>, RepoError>;
+
+    /// Every `(user, role)` pair holding an *explicit* role directly on
+    /// `area` — what an Area's "members" UI section lists. Deliberately not
+    /// "every user with any effective access to this area": a System Admin
+    /// with no area-level row of their own does not appear here, exactly as
+    /// [`Self::area_role`] (which this is built to complement, not
+    /// duplicate) would report `None` for them.
+    async fn list_area_members(&self, area: AreaId) -> Result<Vec<(UserId, Role)>, RepoError>;
+
+    /// Every `(user, role)` pair holding an *explicit* role directly on
+    /// `project` — the [`Self::list_area_members`] sibling for a Project's
+    /// "members" UI section.
+    async fn list_project_members(
+        &self,
+        project: ProjectId,
+    ) -> Result<Vec<(UserId, Role)>, RepoError>;
+}
+
+/// The write half of [`MembershipQuery`]: grants and revokes System Admin,
+/// and Area/Project roles.
+///
+/// Kept as a **separate trait** rather than folded into [`MembershipQuery`],
+/// for the same reason `docs/DOMAIN.md` §7 already splits `SearchQuery` from
+/// `SearchIndex`: the two halves diverge at their call sites. Every
+/// read-only use case (`view_area`, `view_project`, every permission check
+/// in `crate::policy`) only ever needs [`MembershipQuery`]; only the small,
+/// deliberately separate set of use cases in
+/// [`crate::use_cases::membership`] ever needs to *write* a grant. Keeping
+/// them apart means a future read-only caller (a report, a CLI listing) can
+/// depend on [`MembershipQuery`] alone without pulling in write capability
+/// it has no business holding — the same "narrowest port a caller actually
+/// needs" discipline every other port split in this crate already follows.
+///
+/// Promotes what were, before this port existed, inherent seams on
+/// `anamnesis_adapters::SqlStore` (`grant_system_admin`, `set_area_role`,
+/// `set_project_role`) reached into directly by `anamnesis-web::bootstrap`
+/// — the *only* place in the whole system that could ever grant a role,
+/// which is precisely the gap this port closes: nothing above bootstrap
+/// could ever grant a role to anyone else, so the bootstrap admin was
+/// permanently the only user who could hold one.
+#[async_trait]
+pub trait MembershipRepository: Send + Sync {
+    /// Grants `user` System Admin — idempotent (granting it twice is a
+    /// no-op, not an error).
+    async fn grant_system_admin(&self, user: &UserId) -> Result<(), RepoError>;
+    /// Revokes `user`'s System Admin — idempotent (revoking from a user who
+    /// does not hold it is a no-op, not an error). Callers must apply
+    /// `crate::use_cases::membership::revoke_system_admin`'s last-admin
+    /// check *before* calling this; this port method itself performs no
+    /// such check, exactly as every other port in this crate leaves domain
+    /// rules to the use-case layer above it.
+    async fn revoke_system_admin(&self, user: &UserId) -> Result<(), RepoError>;
+    /// Grants `user` `role` on `area`, upserting over any existing grant.
+    async fn set_area_role(&self, user: &UserId, area: AreaId, role: Role)
+    -> Result<(), RepoError>;
+    /// Revokes `user`'s role on `area` entirely (idempotent).
+    async fn revoke_area_role(&self, user: &UserId, area: AreaId) -> Result<(), RepoError>;
+    /// Grants `user` `role` on `project`, upserting over any existing grant.
+    async fn set_project_role(
+        &self,
+        user: &UserId,
+        project: ProjectId,
+        role: Role,
+    ) -> Result<(), RepoError>;
+    /// Revokes `user`'s role on `project` entirely (idempotent).
+    async fn revoke_project_role(&self, user: &UserId, project: ProjectId)
+    -> Result<(), RepoError>;
 }

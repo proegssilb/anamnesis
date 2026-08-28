@@ -9,6 +9,7 @@ mod attachment;
 mod board;
 mod comment;
 mod indexing;
+mod membership;
 mod project;
 mod relationship;
 mod settings;
@@ -23,6 +24,11 @@ pub use attachment::{
 };
 pub use board::{BoardItemKind, reposition_board_item};
 pub use comment::{add_comment, delete_comment, edit_comment, list_comments};
+pub use membership::{
+    grant_area_role, grant_project_role, grant_system_admin, list_area_members,
+    list_project_members, list_system_admins, revoke_area_role, revoke_project_role,
+    revoke_system_admin,
+};
 pub use project::{
     add_field_definition, add_relationship_kind, archive_project, create_project, edit_project,
     edit_project_fields, list_projects_in_area, rename_field_definition, transition_project_status,

@@ -83,6 +83,37 @@
     </section>
 
     <section class="panel-form">
+      <h2>Members</h2>
+      <p class="hint">Ordinary access to this project's tasks; Project Admin also manages its fields, kinds, and membership.</p>
+      <ul class="member-list">
+        {% for m in members %}
+          <li class="member-row">
+            <span class="member-name">{{ m.user_id }}</span>
+            <span class="member-role">{{ m.role }}</span>
+            <form method="post" action="/projects/{{ project.id }}/members/revoke">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="user_id" value="{{ m.user_id }}">
+              <button type="submit" class="danger">Revoke</button>
+            </form>
+          </li>
+        {% else %}
+          <li class="hint">Nobody has an explicit role on this project yet.</li>
+        {% endfor %}
+      </ul>
+      <form class="inline-form" method="post" action="/projects/{{ project.id }}/members">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="member-user-id">User id</label>
+        <input id="member-user-id" name="user_id" required maxlength="200"
+               placeholder="the sub claim from their identity provider">
+        <select name="role">
+          <option value="member">Member</option>
+          <option value="project_admin">Project Admin</option>
+        </select>
+        <button type="submit">Grant</button>
+      </form>
+    </section>
+
+    <section class="panel-form">
       <h2>Archive</h2>
       {% if project.archived_at %}
         <p class="hint">This project is archived — it is hidden from every view unless explicitly searched.</p>

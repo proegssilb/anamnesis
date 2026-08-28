@@ -10,11 +10,11 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
 
 use anamnesis_app::{
-    AppError, create_area, create_project, edit_area, list_areas, list_projects_in_area,
-    transition_project_status, view_area,
+    AppError, create_area, create_project, edit_area, list_area_members, list_areas,
+    list_projects_in_area, transition_project_status, view_area,
 };
 use anamnesis_core::policy::Role;
-use anamnesis_core::{AreaId, Project, ProjectStatus};
+use anamnesis_core::{AreaId, Project, ProjectStatus, UserId};
 
 use crate::auth::CurrentUser;
 use crate::error::WebError;
@@ -23,6 +23,23 @@ use crate::state::AppState;
 
 use super::access;
 use super::forms::{CreateAreaForm, CreateProjectForm, EditAreaForm, TransitionProjectStatusForm};
+use super::membership::format_role;
+
+/// The Area's "members" section, fetched only when `can_manage` — a plain
+/// Member has no business seeing who else holds a role here (the same gate
+/// `list_area_members` itself enforces; this just avoids a call that would
+/// only ever come back `Forbidden`).
+async fn area_members_for_display(
+    state: &AppState,
+    role: Option<Role>,
+    area_id: AreaId,
+    can_manage: bool,
+) -> Result<Vec<(UserId, Role)>, WebError> {
+    if !can_manage {
+        return Ok(Vec::new());
+    }
+    Ok(list_area_members(state.membership.as_ref(), role, area_id).await?)
+}
 
 pub async fn list_areas_handler(State(state): State<AppState>, user: CurrentUser) -> Response {
     match list_areas_impl(&state, &user).await {
@@ -137,11 +154,13 @@ async fn view_area_impl(
     let area = view_area(state.areas.as_ref(), role, area_id).await?;
     let projects = list_projects_in_area(state.projects.as_ref(), role, area_id).await?;
     let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
+    let members = area_members_for_display(state, role, area_id, can_manage).await?;
     render_area_page(
         state,
         user,
         &area,
         &projects,
+        &members,
         can_manage,
         None,
         StatusCode::OK,
@@ -190,11 +209,13 @@ async fn edit_area_impl(
             let area = view_area(state.areas.as_ref(), role, area_id).await?;
             let projects = list_projects_in_area(state.projects.as_ref(), role, area_id).await?;
             let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
+            let members = area_members_for_display(state, role, area_id, can_manage).await?;
             render_area_page(
                 state,
                 user,
                 &area,
                 &projects,
+                &members,
                 can_manage,
                 Some(&e.to_string()),
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -247,11 +268,13 @@ async fn create_project_impl(
             let area = view_area(state.areas.as_ref(), role, area_id).await?;
             let projects = list_projects_in_area(state.projects.as_ref(), role, area_id).await?;
             let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
+            let members = area_members_for_display(state, role, area_id, can_manage).await?;
             render_area_page(
                 state,
                 user,
                 &area,
                 &projects,
+                &members,
                 can_manage,
                 Some(&e.to_string()),
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -313,11 +336,13 @@ async fn transition_project_status_impl(
             let projects =
                 list_projects_in_area(state.projects.as_ref(), Some(Role::Member), area_id).await?;
             let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
+            let members = area_members_for_display(state, role, area_id, can_manage).await?;
             render_area_page(
                 state,
                 user,
                 &area,
                 &projects,
+                &members,
                 can_manage,
                 Some("The active project limit has been reached."),
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -367,11 +392,13 @@ fn render_areas_page(
     Ok((status, Html(body)).into_response())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_area_page(
     state: &AppState,
     user: &CurrentUser,
     area: &anamnesis_core::Area,
     projects: &[Project],
+    members: &[(UserId, Role)],
     can_manage: bool,
     error: Option<&str>,
     status: StatusCode,
@@ -388,6 +415,10 @@ fn render_area_page(
         .iter()
         .filter(|p| p.status == ProjectStatus::Complete)
         .collect();
+    let members: Vec<_> = members
+        .iter()
+        .map(|(user, role)| context! { user_id => user.to_string(), role => format_role(*role) })
+        .collect();
 
     let tmpl = state
         .templates
@@ -399,6 +430,7 @@ fn render_area_page(
             pending => pending,
             active => active,
             complete => complete,
+            members => members,
             can_manage => can_manage,
             csrf_token => user.csrf_token,
             current_user => user.display_name,

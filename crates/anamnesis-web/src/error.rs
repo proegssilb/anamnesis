@@ -70,6 +70,11 @@ impl WebError {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "That column is already at its work-in-progress limit.".to_string(),
             ),
+            WebError::App(AppError::LastSystemAdmin) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "That is the last System Admin — grant someone else System Admin first."
+                    .to_string(),
+            ),
             WebError::App(AppError::Repo(e)) => {
                 tracing::error!(error = %e, "repository error");
                 (

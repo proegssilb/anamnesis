@@ -2896,6 +2896,234 @@ async fn a_lower_explicit_project_role_does_not_demote_area_role_through_the_use
     assert!(result.is_ok());
 }
 
+// ======================= Membership: grants and revocations =======================
+//
+// `crate::use_cases::membership`: the write half of `MembershipQuery`,
+// exercised here against real `Fakes` -- not just `MembershipRepository`
+// call recording (see the tighter, escalation-focused unit tests colocated
+// with the rules they check in `crate::use_cases::membership`'s own
+// `#[cfg(test)]` module), but real `MembershipQuery` resolution afterward:
+// granting (or revoking) a role through the use case must actually change
+// what `effective_role`/`effective_area_role` reports, and hence what
+// `view_area`/`view_project`/etc. allow.
+
+#[tokio::test]
+async fn granting_an_area_role_lets_that_user_view_the_area_and_its_projects() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let area = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
+        .await
+        .unwrap();
+    create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        admin(),
+        area.id,
+        "Repaint",
+        "",
+    )
+    .await
+    .unwrap();
+
+    // Before any grant, Bob has no access at all.
+    let before = MembershipQuery::effective_area_role(&fakes, &bob(), area.id)
+        .await
+        .unwrap();
+    assert_eq!(before, None);
+    assert!(matches!(
+        view_area(&fakes, before, area.id).await,
+        Err(AppError::Forbidden)
+    ));
+
+    grant_area_role(&fakes, admin(), area.id, &bob(), Role::Member)
+        .await
+        .unwrap();
+
+    let after = MembershipQuery::effective_area_role(&fakes, &bob(), area.id)
+        .await
+        .unwrap();
+    assert_eq!(after, Some(Role::Member));
+    // Composes with the strongest-grant rule already in place: the Area
+    // grant alone is enough to view the area itself, and every project in
+    // it (`effective_role` inherits the Area grant down when there is no
+    // explicit project row -- `crate::ports::membership`'s module doc
+    // comment).
+    view_area(&fakes, after, area.id).await.unwrap();
+    let projects = list_projects_in_area(&fakes, after, area.id).await.unwrap();
+    assert_eq!(projects.len(), 1);
+}
+
+#[tokio::test]
+async fn revoking_an_area_role_removes_access() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let area = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
+        .await
+        .unwrap();
+    grant_area_role(&fakes, admin(), area.id, &bob(), Role::Member)
+        .await
+        .unwrap();
+    let granted = MembershipQuery::effective_area_role(&fakes, &bob(), area.id)
+        .await
+        .unwrap();
+    assert_eq!(granted, Some(Role::Member));
+
+    revoke_area_role(&fakes, admin(), area.id, &bob())
+        .await
+        .unwrap();
+
+    let after = MembershipQuery::effective_area_role(&fakes, &bob(), area.id)
+        .await
+        .unwrap();
+    assert_eq!(after, None);
+    assert!(matches!(
+        view_area(&fakes, after, area.id).await,
+        Err(AppError::Forbidden)
+    ));
+}
+
+#[tokio::test]
+async fn granting_a_project_role_lets_that_user_view_the_project_and_revoking_removes_it() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let area = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
+        .await
+        .unwrap();
+    let project = create_project(
+        &fakes,
+        &ids,
+        &clock,
+        &fakes,
+        admin(),
+        area.id,
+        "Repaint",
+        "",
+    )
+    .await
+    .unwrap();
+
+    grant_project_role(&fakes, admin(), project.id, &bob(), Role::Member)
+        .await
+        .unwrap();
+    let role = MembershipQuery::effective_role(&fakes, &bob(), project.id, area.id)
+        .await
+        .unwrap();
+    assert_eq!(role, Some(Role::Member));
+    view_project(&fakes, role, project.id).await.unwrap();
+
+    revoke_project_role(&fakes, admin(), project.id, &bob())
+        .await
+        .unwrap();
+    let role = MembershipQuery::effective_role(&fakes, &bob(), project.id, area.id)
+        .await
+        .unwrap();
+    assert_eq!(role, None);
+    assert!(matches!(
+        view_project(&fakes, role, project.id).await,
+        Err(AppError::Forbidden)
+    ));
+}
+
+// --- No privilege escalation, exercised against real `MembershipQuery`
+// resolution across two distinct areas (not a hand-picked `actor_role`) ---
+
+#[tokio::test]
+async fn a_project_admin_of_one_area_cannot_grant_a_role_on_a_different_area() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let home = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
+        .await
+        .unwrap();
+    let work = create_area(&fakes, &ids, &clock, &fakes, admin(), "Work", "", 1)
+        .await
+        .unwrap();
+    let priya = UserId::new("priya");
+    // Priya genuinely administers Home ...
+    fakes.set_area_role(&priya, home.id, Role::ProjectAdmin);
+
+    // ... but the role actually resolved for Work, the scope she is trying
+    // to act on, is what the use case is gated against -- exactly as a real
+    // handler resolves it per area, not a single global flag.
+    let priyas_role_on_work = MembershipQuery::effective_area_role(&fakes, &priya, work.id)
+        .await
+        .unwrap();
+    assert_eq!(priyas_role_on_work, None);
+
+    let result = grant_area_role(&fakes, priyas_role_on_work, work.id, &bob(), Role::Member).await;
+    assert_eq!(result, Err(AppError::Forbidden));
+
+    // Bob genuinely gained no access to Work.
+    let bobs_role = MembershipQuery::effective_area_role(&fakes, &bob(), work.id)
+        .await
+        .unwrap();
+    assert_eq!(bobs_role, None);
+}
+
+#[tokio::test]
+async fn a_project_admin_cannot_grant_system_admin_and_it_grants_no_global_authority_even_if_written()
+ {
+    // Belt-and-suspenders on top of the direct-refusal unit tests in
+    // `crate::use_cases::membership`: even setting aside the write-time
+    // refusal, a "system_admin" row written straight into `project_members`
+    // (bypassing the use case entirely, as if the refusal were somehow
+    // absent) must never satisfy `MembershipQuery::is_system_admin` --
+    // system-wide authority is decided by the `system_admins` table alone,
+    // never by any scoped role value.
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let project_id = ProjectId::new(ids.next());
+    let mallory = UserId::new("mallory");
+    fakes.set_project_role(&mallory, project_id, Role::SystemAdmin);
+
+    assert!(!fakes.is_system_admin(&mallory).await.unwrap());
+}
+
+// --- The last System Admin ---
+
+#[tokio::test]
+async fn revoking_the_last_system_admin_through_the_use_case_is_refused_and_leaves_them_admin() {
+    let fakes = Fakes::new();
+    let sam = UserId::new("sam");
+    fakes.make_system_admin(&sam);
+
+    let result = revoke_system_admin(&fakes, &fakes, admin(), &sam).await;
+    assert_eq!(result, Err(AppError::LastSystemAdmin));
+    assert!(fakes.is_system_admin(&sam).await.unwrap());
+}
+
+#[tokio::test]
+async fn revoking_a_system_admin_with_another_remaining_actually_removes_access() {
+    let fakes = Fakes::new();
+    let sam = UserId::new("sam");
+    let priya = UserId::new("priya");
+    fakes.make_system_admin(&sam);
+    fakes.make_system_admin(&priya);
+
+    revoke_system_admin(&fakes, &fakes, admin(), &sam)
+        .await
+        .unwrap();
+
+    assert!(!fakes.is_system_admin(&sam).await.unwrap());
+    assert!(fakes.is_system_admin(&priya).await.unwrap());
+    // And Sam genuinely loses System-Admin-gated capability -- creating an
+    // area, which only ever admits `Some(Role::SystemAdmin)`.
+    let sams_role = fakes
+        .is_system_admin(&sam)
+        .await
+        .unwrap()
+        .then_some(Role::SystemAdmin);
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let result = create_area(&fakes, &ids, &clock, &fakes, sams_role, "Garage", "", 0).await;
+    assert!(matches!(result, Err(AppError::Forbidden)));
+}
+
 // ============================== Settings ==============================
 //
 // `view_settings`/`update_settings` (`crate::use_cases::settings`): the

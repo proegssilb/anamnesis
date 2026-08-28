@@ -11,6 +11,7 @@ mod field_form;
 mod format;
 mod forms;
 mod login;
+mod membership;
 mod misc;
 mod projects;
 mod search;
@@ -26,6 +27,11 @@ pub use board::{
     drop_tangle_handler, reposition_handler, view_board_handler,
 };
 pub use login::{callback_handler, login_handler, logout_handler};
+pub use membership::{
+    grant_area_member_handler, grant_project_member_handler, grant_system_admin_handler,
+    revoke_area_member_handler, revoke_project_member_handler, revoke_system_admin_handler,
+    view_users_handler,
+};
 pub use misc::{healthz_handler, root_handler};
 pub use projects::{
     add_field_definition_handler, archive_project_handler, create_task_handler,
