@@ -777,6 +777,49 @@ input[type="checkbox"] {
   margin: 0;
 }
 
+/* --- task detail page: "more actions" menu, same pure-CSS `:target`
+   trick as the modals above -- the trigger is `<a href="#task-menu">`,
+   items and the close link land back on `<a href="#">`. --- */
+
+.menu-anchor {
+  position: relative;
+}
+
+.dropdown-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 0.25rem);
+  right: 0;
+  z-index: 10;
+  min-width: 12rem;
+  padding: 0.35rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 0.5rem 1rem color-mix(in srgb, black 20%, transparent);
+}
+
+.dropdown-menu:target {
+  display: block;
+}
+
+.dropdown-item {
+  display: block;
+  padding: 0.5rem 0.6rem;
+  border-radius: calc(var(--radius) - 0.15rem);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.dropdown-item:hover {
+  background: var(--bg);
+}
+
+.dropdown-close {
+  color: var(--muted);
+}
+
 .task-status-row {
   display: flex;
   align-items: center;
@@ -785,11 +828,13 @@ input[type="checkbox"] {
   margin: 0.5rem 0 1rem;
 }
 
-.placement-badge {
+.placement-badge,
+.parent-badge {
   text-decoration: none;
 }
 
-.placement-badge:hover {
+.placement-badge:hover,
+.parent-badge:hover {
   color: var(--accent);
 }
 

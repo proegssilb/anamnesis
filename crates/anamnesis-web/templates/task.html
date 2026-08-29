@@ -25,11 +25,19 @@
           <button type="submit" class="icon-button icon-button-danger" aria-label="Archive" title="Archive">🗄</button>
         </form>
       {% endif %}
+      <div class="menu-anchor">
+        <a href="#task-menu" class="icon-button" aria-label="More actions" title="More actions">⋯</a>
+        <div class="dropdown-menu" id="task-menu" role="menu">
+          <a class="dropdown-item" href="#task-parent" role="menuitem">{% if parent %}Change parent…{% else %}Add to a checklist…{% endif %}</a>
+          <a class="dropdown-item dropdown-close" href="#">Close</a>
+        </div>
+      </div>
     </div>
   </div>
 
   <div class="hint task-status-row">
     <a href="#task-placement" class="badge placement-badge">{% if is_on_board %}on the board, in {{ current_column_title }}{% else %}below the horizon{% endif %}</a>
+    {% if parent %}<a href="/tasks/{{ parent.id }}" class="badge parent-badge">checklist item of {{ parent.title }}</a>{% endif %}
     {% if task.bounce_count > 0 %}<span class="badge">bounced {{ task.bounce_count }}x</span>{% endif %}
     {% if task.archived_at %}<span class="badge">archived</span>{% endif %}
   </div>
@@ -144,15 +152,37 @@
     </form>
   </section>
 
-  <section class="panel-form">
-    <h2>Parent task</h2>
-    <form class="inline-form" method="post" action="/tasks/{{ task.id }}/parent">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label for="parent_task_id">This task's own parent (its id, blank to clear)</label>
-      <input id="parent_task_id" name="parent_task_id" placeholder="parent task id">
-      <button type="submit">Set parent</button>
-    </form>
-  </section>
+  <div class="modal-overlay" id="task-parent">
+    <div class="modal" role="dialog" aria-labelledby="task-parent-title">
+      <div class="modal-header">
+        <h2 id="task-parent-title">Parent task</h2>
+        <a class="modal-close" href="#" aria-label="Close">&times;</a>
+      </div>
+      {% if parent %}
+        <p>Checklist item of <a href="/tasks/{{ parent.id }}">{{ parent.title }}</a></p>
+        <form class="inline-form" method="post" action="/tasks/{{ task.id }}/parent#task-parent">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="parent_task_id" value="">
+          <button type="submit" class="danger">Remove from checklist</button>
+        </form>
+      {% else %}
+        <p class="hint">Not part of another task's checklist.</p>
+      {% endif %}
+      <details class="editable-block">
+        <summary>{% if parent %}Change parent…{% else %}Add to a checklist…{% endif %}</summary>
+        <form class="search-form" method="get" action="/tasks/{{ task.id }}/parent-candidates"
+              hx-get="/tasks/{{ task.id }}/parent-candidates" hx-trigger="submit, keyup changed delay:300ms from:#parent-q"
+              hx-target="#parent-candidates" hx-swap="outerHTML">
+          <label class="visually-hidden" for="parent-q">Search tasks by title</label>
+          <input id="parent-q" name="q" type="search" placeholder="Search tasks by title…" autocomplete="off">
+          <button type="submit">Search</button>
+        </form>
+        <div id="parent-candidates">
+          <p class="hint">Type a task title to search.</p>
+        </div>
+      </details>
+    </div>
+  </div>
 
   <section>
     <h2>Relationships</h2>

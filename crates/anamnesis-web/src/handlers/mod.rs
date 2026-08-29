@@ -43,6 +43,7 @@ pub use tasks::{
     add_checklist_item_handler, add_comment_handler, add_file_attachment_handler,
     add_link_attachment_handler, archive_task_handler, create_relationship_handler,
     delete_relationship_handler, download_attachment_handler, drop_task_handler,
-    edit_task_description_handler, edit_task_title_handler, raise_task_handler,
-    set_field_value_handler, set_parent_handler, unarchive_task_handler, view_task_handler,
+    edit_task_description_handler, edit_task_title_handler, parent_candidates_handler,
+    raise_task_handler, set_field_value_handler, set_parent_handler, unarchive_task_handler,
+    view_task_handler,
 };

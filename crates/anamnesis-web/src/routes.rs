@@ -14,12 +14,13 @@ use crate::handlers::{
     download_attachment_handler, drop_tangle_handler, drop_task_handler, edit_area_handler,
     edit_task_description_handler, edit_task_title_handler, grant_area_member_handler,
     grant_project_member_handler, grant_system_admin_handler, healthz_handler, list_areas_handler,
-    list_projects_handler, login_handler, logout_handler, raise_task_handler, reposition_handler,
-    revoke_area_member_handler, revoke_project_member_handler, revoke_system_admin_handler,
-    root_handler, search_handler, set_field_value_handler, set_parent_handler,
-    transition_project_status_handler, unarchive_project_handler, unarchive_task_handler,
-    update_settings_handler, view_area_handler, view_board_handler, view_project_handler,
-    view_settings_handler, view_task_handler, view_users_handler,
+    list_projects_handler, login_handler, logout_handler, parent_candidates_handler,
+    raise_task_handler, reposition_handler, revoke_area_member_handler,
+    revoke_project_member_handler, revoke_system_admin_handler, root_handler, search_handler,
+    set_field_value_handler, set_parent_handler, transition_project_status_handler,
+    unarchive_project_handler, unarchive_task_handler, update_settings_handler, view_area_handler,
+    view_board_handler, view_project_handler, view_settings_handler, view_task_handler,
+    view_users_handler,
 };
 use crate::state::AppState;
 use crate::static_files;
@@ -68,6 +69,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/tasks/{id}/archive", post(archive_task_handler))
         .route("/tasks/{id}/unarchive", post(unarchive_task_handler))
         .route("/tasks/{id}/parent", post(set_parent_handler))
+        .route(
+            "/tasks/{id}/parent-candidates",
+            get(parent_candidates_handler),
+        )
         .route("/tasks/{id}/children", post(add_checklist_item_handler))
         .route("/tasks/{id}/comments", post(add_comment_handler))
         .route("/tasks/{id}/attachments", post(add_link_attachment_handler))

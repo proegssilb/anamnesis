@@ -1,0 +1,29 @@
+{# Parent-task search results, fragment-addressable (`docs/DOMAIN.md` §8):
+   what `GET /tasks/{id}/parent-candidates` returns alone for an
+   `HX-Request`, and what `parent_picker.html` includes for the full-page
+   no-JS fallback. Needs `task_id`, `query`, `candidates` (`{id, title}`
+   each) and `csrf_token`. Each candidate is a one-click "use as parent"
+   form rather than a link — picking a task sets it as the parent right
+   away, no id to copy or paste. #}
+<div id="parent-candidates">
+  {% if query %}
+    {% if candidates %}
+      <ul class="task-list">
+        {% for c in candidates %}
+          <li class="relationship-row">
+            <span>{{ c.title }}</span>
+            <form class="relationship-delete-form" method="post" action="/tasks/{{ task_id }}/parent#task-parent">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="parent_task_id" value="{{ c.id }}">
+              <button type="submit">Use as parent</button>
+            </form>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="hint">No tasks match &ldquo;{{ query }}&rdquo;.</p>
+    {% endif %}
+  {% else %}
+    <p class="hint">Type a task title to search.</p>
+  {% endif %}
+</div>

@@ -3,16 +3,17 @@
 //! dropping it back (§2, §5's bounce accounting).
 
 use axum::Form;
-use axum::extract::{Multipart, Path, State};
-use axum::http::StatusCode;
+use axum::extract::{Multipart, Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
+use serde::Deserialize;
 
 use anamnesis_app::{
-    AppError, AttachmentId, AttachmentKind, add_comment, add_file_attachment, add_link_attachment,
-    archive_task, create_relationship, create_task, delete_relationship, drop_task, edit_task,
-    list_attachments, list_comments, raise_task, resolve_kind, set_checklist_position,
-    set_task_field_value, set_task_parent, unarchive_task, view_task,
+    AppError, AttachmentId, AttachmentKind, SearchHit, add_comment, add_file_attachment,
+    add_link_attachment, archive_task, create_relationship, create_task, delete_relationship,
+    drop_task, edit_task, list_attachments, list_comments, raise_task, resolve_kind,
+    set_checklist_position, set_task_field_value, set_task_parent, unarchive_task, view_task,
 };
 use anamnesis_core::{
     FieldId, Placement, RelationshipId, TaskId, builtin_blocks, builtin_duplicates,
@@ -21,6 +22,7 @@ use anamnesis_core::{
 
 use crate::auth::CurrentUser;
 use crate::error::WebError;
+use crate::hx::is_hx_request;
 use crate::session::csrf_tokens_match;
 use crate::state::AppState;
 
@@ -672,6 +674,95 @@ async fn set_parent_impl(
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ParentCandidatesParams {
+    #[serde(default)]
+    pub q: String,
+}
+
+/// Backs the parent-task picker (`templates/task.html`'s "Change parent"
+/// panel): a title search over `anamnesis_app::SearchQuery`, the same port
+/// `crate::handlers::search` uses, scoped down to `SearchHit::Task` and with
+/// this task's own id dropped from the results (it can never be its own
+/// parent — `anamnesis_core::task::set_parent` would reject it anyway, but
+/// there is no reason to ever list it as a candidate). Gated on the same
+/// `view_task` permission the task page itself requires, since the picker is
+/// reachable only from there; the candidate titles it surfaces from other
+/// projects carry the same trade-off `crate::handlers::search`'s own doc
+/// comment names for global search — a title, naming nothing beyond what its
+/// own page already reveals to whoever can reach it.
+pub async fn parent_candidates_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<uuid::Uuid>,
+    headers: HeaderMap,
+    Query(params): Query<ParentCandidatesParams>,
+) -> Response {
+    match parent_candidates_impl(&state, &user, TaskId::new(id), &headers, params.q).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn parent_candidates_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    headers: &HeaderMap,
+    query: String,
+) -> Result<Response, WebError> {
+    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
+    let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
+
+    let trimmed = query.trim().to_string();
+    let mut candidates: Vec<minijinja::Value> = Vec::new();
+    if !trimmed.is_empty() {
+        let hits = state.search.search(&trimmed).await?;
+        for hit in &hits {
+            if let SearchHit::Task { id: hit_id, title } = hit
+                && *hit_id != task_id
+            {
+                candidates.push(context! { id => hit_id.to_string(), title => title.as_str() });
+            }
+        }
+    }
+
+    // `docs/DOMAIN.md` §8: "one endpoint, two representations" — a fragment
+    // for htmx's live search, a standalone page (with its own copy of the
+    // search form) for the plain no-JS `GET` fallback.
+    if is_hx_request(headers) {
+        let tmpl = state
+            .templates
+            .get_template("_parent_candidates.html")
+            .map_err(WebError::template)?;
+        let body = tmpl
+            .render(context! {
+                task_id => task_id.to_string(),
+                query => trimmed,
+                candidates => candidates,
+                csrf_token => user.csrf_token,
+            })
+            .map_err(WebError::template)?;
+        return Ok(Html(body).into_response());
+    }
+
+    let tmpl = state
+        .templates
+        .get_template("parent_picker.html")
+        .map_err(WebError::template)?;
+    let body = tmpl
+        .render(context! {
+            task_id => task_id.to_string(),
+            task_title => aggregate.task.title.as_str(),
+            query => trimmed,
+            candidates => candidates,
+            csrf_token => user.csrf_token,
+            current_user => user.display_name,
+        })
+        .map_err(WebError::template)?;
+    Ok(Html(body).into_response())
+}
+
 /// Quick-adds a checklist item: creates a new task in this task's project
 /// and appends it as a child, in one request (`forms::AddChecklistItemForm`'s
 /// doc comment) — the create and the parent-link are two separate use-case
@@ -1010,6 +1101,23 @@ async fn render_task_page(
         });
     }
 
+    // The checklist parent, resolved the same way a relationship's other end
+    // is resolved just above — used both for the status-row badge and the
+    // "Parent task" section, so a child task's page actually shows it is one
+    // rather than leaving that only visible from the parent's own checklist.
+    let parent = match task.parent_task_id {
+        Some(parent_id) => {
+            let title = state
+                .tasks
+                .load(parent_id)
+                .await?
+                .map(|a| a.task.title.as_str().to_string())
+                .unwrap_or_else(|| "(deleted task)".to_string());
+            Some(context! { id => parent_id.to_string(), title => title })
+        }
+        None => None,
+    };
+
     let columns = state.board.columns_with_items().await?;
     let column_options: Vec<_> = columns
         .iter()
@@ -1089,6 +1197,7 @@ async fn render_task_page(
             current_column_is_done => current_column_is_done,
             current_column_title => current_column_title,
             open_hint => open_hint,
+            parent => parent,
             children => children_ctx,
             comments => comments,
             attachments => attachments,
