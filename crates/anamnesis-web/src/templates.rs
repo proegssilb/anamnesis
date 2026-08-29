@@ -41,6 +41,14 @@ const TEMPLATES: &[(&str, &str)] = &[
         "_search_results.html",
         include_str!("../templates/_search_results.html"),
     ),
+    (
+        "parent_picker.html",
+        include_str!("../templates/parent_picker.html"),
+    ),
+    (
+        "_parent_candidates.html",
+        include_str!("../templates/_parent_candidates.html"),
+    ),
     ("login.html", include_str!("../templates/login.html")),
     ("error.html", include_str!("../templates/error.html")),
     ("settings.html", include_str!("../templates/settings.html")),

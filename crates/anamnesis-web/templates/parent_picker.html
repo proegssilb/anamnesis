@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Set parent — {{ task_title }} — Anamnesis{% endblock %}
+{% block content %}
+  <p class="breadcrumb"><a href="/tasks/{{ task_id }}">{{ task_title }}</a></p>
+  <h1>Set parent for &ldquo;{{ task_title }}&rdquo;</h1>
+  <p class="hint">Search for the task this one should become a checklist item of.</p>
+  <form class="search-form" method="get" action="/tasks/{{ task_id }}/parent-candidates"
+        hx-get="/tasks/{{ task_id }}/parent-candidates" hx-trigger="submit, keyup changed delay:300ms from:#parent-q"
+        hx-target="#parent-candidates" hx-swap="outerHTML" hx-push-url="true">
+    <label class="visually-hidden" for="parent-q">Search tasks by title</label>
+    <input id="parent-q" name="q" type="search" value="{{ query }}"
+           placeholder="Search tasks by title…" autocomplete="off">
+    <button type="submit">Search</button>
+  </form>
+  {% include "_parent_candidates.html" %}
+{% endblock %}
