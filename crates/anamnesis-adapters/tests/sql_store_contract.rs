@@ -1236,6 +1236,40 @@ async fn search_contract(store: &SqlStore) {
         SearchQuery::search_archived(store, "").await.unwrap(),
         Vec::new()
     );
+
+    // Live search-as-you-type queries on every keystroke, so a partial word
+    // must find a task whose title merely *starts with* it -- see
+    // `crate::sql::search`'s module doc comment.
+    let prefix_task_id: TaskId = Uuid::new_v4().into();
+    SearchIndex::index_task(store, prefix_task_id, "test1")
+        .await
+        .unwrap();
+    let hits = SearchQuery::search(store, "tes").await.unwrap();
+    assert_eq!(
+        hits,
+        vec![SearchHit::Task {
+            id: prefix_task_id,
+            title: "test1".to_string()
+        }],
+        "a partial word must prefix-match a task title as the user is still typing it"
+    );
+
+    // But a substring that isn't a *prefix* of any token still must not
+    // match -- "est1" is inside "test1" but doesn't start it.
+    let no_hits = SearchQuery::search(store, "est1").await.unwrap();
+    assert!(
+        no_hits.is_empty(),
+        "a mid-word substring must not match, only a leading prefix: {no_hits:?}"
+    );
+
+    // Punctuation-only or otherwise unsearchable input must degrade to no
+    // results rather than erroring the query.
+    let hits = SearchQuery::search(store, "!!!").await.unwrap();
+    assert!(hits.is_empty());
+
+    SearchIndex::remove_task(store, prefix_task_id)
+        .await
+        .unwrap();
 }
 
 // --- Settings ---
