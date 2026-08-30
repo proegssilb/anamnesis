@@ -861,7 +861,6 @@ async fn search_task_candidates(
 /// The rendering half of [`task_candidates_impl`]: given the already-computed
 /// search results, picks between the htmx fragment and the standalone no-JS
 /// page per `docs/DOMAIN.md` §8's "one endpoint, two representations".
-#[allow(clippy::too_many_arguments)]
 fn render_task_candidates(
     state: &AppState,
     user: &CurrentUser,
@@ -869,10 +868,10 @@ fn render_task_candidates(
     task_title: &str,
     headers: &HeaderMap,
     search_results: (String, Vec<minijinja::Value>),
-    fragment_template: &str,
-    page_template: &str,
+    templates: (&str, &str),
 ) -> Result<Response, WebError> {
     let (trimmed, candidates) = search_results;
+    let (fragment_template, page_template) = templates;
     let (template_name, ctx) = if is_hx_request(headers) {
         (
             fragment_template,
@@ -932,8 +931,7 @@ async fn task_candidates_impl(
         aggregate.task.title.as_str(),
         headers,
         search_results,
-        fragment_template,
-        page_template,
+        (fragment_template, page_template),
     )
 }
 
