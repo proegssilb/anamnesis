@@ -868,11 +868,11 @@ fn render_task_candidates(
     task_id: TaskId,
     task_title: &str,
     headers: &HeaderMap,
-    trimmed: String,
-    candidates: Vec<minijinja::Value>,
+    search_results: (String, Vec<minijinja::Value>),
     fragment_template: &str,
     page_template: &str,
 ) -> Result<Response, WebError> {
+    let (trimmed, candidates) = search_results;
     let (template_name, ctx) = if is_hx_request(headers) {
         (
             fragment_template,
@@ -923,7 +923,7 @@ async fn task_candidates_impl(
     let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
     let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
 
-    let (trimmed, candidates) = search_task_candidates(state, task_id, query).await?;
+    let search_results = search_task_candidates(state, task_id, query).await?;
 
     render_task_candidates(
         state,
@@ -931,8 +931,7 @@ async fn task_candidates_impl(
         task_id,
         aggregate.task.title.as_str(),
         headers,
-        trimmed,
-        candidates,
+        search_results,
         fragment_template,
         page_template,
     )
