@@ -1,0 +1,191 @@
+//! Raising a task above the horizon and dropping it back (`docs/DOMAIN.md`
+//! §2, §5's bounce accounting), plus archiving and restoring it.
+
+use axum::Form;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Redirect, Response};
+
+use anamnesis_app::{AppError, archive_task, drop_task, raise_task, unarchive_task, view_task};
+use anamnesis_core::{Placement, TaskId};
+
+use crate::auth::CurrentUser;
+use crate::error::WebError;
+use crate::session::csrf_tokens_match;
+use crate::state::AppState;
+
+use crate::handlers::format::column_is_done;
+use crate::handlers::forms::{CsrfOnlyForm, RaiseTaskForm};
+
+use super::page::render_task_page;
+use super::role_for_task;
+
+pub async fn raise_task_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<uuid::Uuid>,
+    Form(form): Form<RaiseTaskForm>,
+) -> Response {
+    match raise_task_impl(&state, &user, TaskId::new(id), form).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn raise_task_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    form: RaiseTaskForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
+    let column_id = anamnesis_core::ColumnId::new(form.column_id);
+    let position = state.board.count_on_column(column_id).await?;
+
+    match raise_task(
+        state.tasks.as_ref(),
+        state.board.as_ref(),
+        state.clock.as_ref(),
+        role,
+        task_id,
+        column_id,
+        position,
+    )
+    .await
+    {
+        Ok(_) => Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response()),
+        Err(AppError::WipLimitExceeded) => {
+            let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
+            // The placement editor is a `#task-placement` modal now, not a
+            // `<details>` — it reopens itself because the raise form's
+            // `action` carries that fragment, so this render doesn't need an
+            // `open_hint` the way title/description edits still do.
+            render_task_page(
+                state,
+                user,
+                task_id,
+                &aggregate.task,
+                Some("That column is already at its work-in-progress limit."),
+                None,
+                None,
+                StatusCode::UNPROCESSABLE_ENTITY,
+            )
+            .await
+        }
+        Err(err) => Err(WebError::from(err)),
+    }
+}
+
+pub async fn drop_task_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<uuid::Uuid>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> Response {
+    match drop_task_impl(&state, &user, TaskId::new(id), form).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn drop_task_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    form: CsrfOnlyForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
+    let aggregate = state.tasks.load(task_id).await?.ok_or(AppError::NotFound)?;
+    let left_a_done_column = match aggregate.task.placement {
+        Placement::OnBoard { column, .. } => {
+            let columns = state.board.columns_with_items().await?;
+            column_is_done(&columns, column).unwrap_or(false)
+        }
+        Placement::Below => false,
+    };
+
+    drop_task(
+        state.tasks.as_ref(),
+        state.clock.as_ref(),
+        role,
+        task_id,
+        left_a_done_column,
+    )
+    .await?;
+    Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response())
+}
+
+/// Archives a task (`docs/DOMAIN.md` §2: "vanished from every view unless
+/// explicitly searched").
+pub async fn archive_task_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<uuid::Uuid>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> Response {
+    match archive_task_impl(&state, &user, TaskId::new(id), form).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn archive_task_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    form: CsrfOnlyForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
+    archive_task(
+        state.tasks.as_ref(),
+        state.clock.as_ref(),
+        state.search_index.as_ref(),
+        role,
+        task_id,
+    )
+    .await?;
+    Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response())
+}
+
+/// Restores an archived task.
+pub async fn unarchive_task_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<uuid::Uuid>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> Response {
+    match unarchive_task_impl(&state, &user, TaskId::new(id), form).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn unarchive_task_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    form: CsrfOnlyForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
+    unarchive_task(
+        state.tasks.as_ref(),
+        state.clock.as_ref(),
+        state.search_index.as_ref(),
+        role,
+        task_id,
+    )
+    .await?;
+    Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response())
+}
