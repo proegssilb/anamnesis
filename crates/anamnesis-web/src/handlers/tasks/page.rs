@@ -41,10 +41,7 @@ pub(super) async fn render_task_page(
     let parent = build_parent_context(state, task.parent_task_id).await?;
 
     let columns = state.board.columns_with_items().await?;
-    let column_options: Vec<_> = columns
-        .iter()
-        .map(|c| context! { id => c.column.id.to_string(), title => c.column.title.as_str() })
-        .collect();
+    let column_options = build_column_options(&columns);
     let (current_column_is_done, current_column_title) =
         current_column_info(&columns, task.placement);
     let children_ctx = build_children_context(&children, &columns);
@@ -138,6 +135,15 @@ async fn build_parent_context(
     Ok(Some(
         context! { id => parent_id.to_string(), title => title },
     ))
+}
+
+/// The raise-task form's column choices: every board column's id and title,
+/// in board order.
+fn build_column_options(columns: &[BoardColumn]) -> Vec<minijinja::Value> {
+    columns
+        .iter()
+        .map(|c| context! { id => c.column.id.to_string(), title => c.column.title.as_str() })
+        .collect()
 }
 
 /// Where a task currently sits on the board, for the status-row pill:

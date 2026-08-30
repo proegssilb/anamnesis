@@ -97,12 +97,21 @@ fn filename_is_safe(name: &str) -> bool {
         && !name.contains('\0')
 }
 
-async fn add_file_attachment_impl(
-    state: &AppState,
-    user: &CurrentUser,
-    task_id: TaskId,
-    mut multipart: Multipart,
-) -> Result<Response, WebError> {
+/// One parsed `multipart/form-data` upload's fields, before any validation —
+/// [`add_file_attachment_impl`] owns deciding whether these are acceptable.
+struct ParsedUpload {
+    csrf_token: String,
+    filename: Option<String>,
+    mime: String,
+    bytes: Option<Vec<u8>>,
+}
+
+/// Reads every field out of the upload, enforcing only [`MAX_ATTACHMENT_BYTES`]
+/// (checked per-field as bytes arrive, rather than after buffering the whole
+/// upload). Split out of [`add_file_attachment_impl`] so the field-by-field
+/// parsing loop reads as one step, separate from validating and acting on
+/// the result.
+async fn parse_upload_fields(mut multipart: Multipart) -> Result<ParsedUpload, WebError> {
     let mut csrf_token: Option<String> = None;
     let mut filename: Option<String> = None;
     let mut mime: String = "application/octet-stream".to_string();
@@ -143,11 +152,26 @@ async fn add_file_attachment_impl(
         }
     }
 
-    let csrf_token = csrf_token.unwrap_or_default();
-    if !csrf_tokens_match(&user.csrf_token, &csrf_token) {
+    Ok(ParsedUpload {
+        csrf_token: csrf_token.unwrap_or_default(),
+        filename,
+        mime,
+        bytes,
+    })
+}
+
+async fn add_file_attachment_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    multipart: Multipart,
+) -> Result<Response, WebError> {
+    let upload = parse_upload_fields(multipart).await?;
+    if !csrf_tokens_match(&user.csrf_token, &upload.csrf_token) {
         return Err(WebError::CsrfMismatch);
     }
-    let filename = filename
+    let filename = upload
+        .filename
         .filter(|f| !f.is_empty())
         .ok_or_else(|| WebError::BadRequest("no file was chosen".to_string()))?;
     if !filename_is_safe(&filename) {
@@ -155,7 +179,9 @@ async fn add_file_attachment_impl(
             "that filename is not allowed".to_string(),
         ));
     }
-    let bytes = bytes.ok_or_else(|| WebError::BadRequest("no file was chosen".to_string()))?;
+    let bytes = upload
+        .bytes
+        .ok_or_else(|| WebError::BadRequest("no file was chosen".to_string()))?;
 
     let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
     add_file_attachment(
@@ -166,7 +192,7 @@ async fn add_file_attachment_impl(
         role,
         task_id,
         &filename,
-        &mime,
+        &upload.mime,
         bytes,
     )
     .await?;
