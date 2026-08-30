@@ -866,6 +866,83 @@ input[type="checkbox"] {
   min-width: 8rem;
 }
 
+/* --- task detail page: "Add:" toolbar for relationships/attachments/
+   checklist items, same icon-button styling as `.header-actions`, each
+   opening a `:target` modal (below) rather than an inline form. --- */
+
+.add-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+
+.add-toolbar-label {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* --- task detail page: Relationships + Attachments side by side on wide
+   viewports, same mobile-first stack → row breakpoint as `.board`. --- */
+
+.detail-columns {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+@media (min-width: 720px) {
+  .detail-columns {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+
+  .detail-column {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}
+
+/* --- attachments: JS-enhanced link preview (`static/app.js`) -- a small
+   card with the site's own favicon, hostname, and full URL. Progressive
+   enhancement only: with JS disabled, `.attachment-link` renders as the
+   plain `.task-list a` link it already is. --- */
+
+.attachment-preview {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.attachment-favicon {
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+
+.attachment-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.attachment-host {
+  font-weight: 600;
+}
+
+.attachment-url {
+  color: var(--muted);
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* --- settings modal: pure CSS `:target` overlay, no JS required (this app
    is "no-JS server-rendered UI" throughout, `docs/DOMAIN.md`) -- the
    trigger is a plain `<a href="#…-settings">` and the close control is a
