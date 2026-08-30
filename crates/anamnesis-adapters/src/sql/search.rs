@@ -4,11 +4,17 @@
 //! behind one shared contract test (`tests/search.rs`).
 //!
 //! Matching semantics differ by design, not oversight: FTS5's `MATCH` and
-//! Postgres's `plainto_tsquery` are both *token*-based (whole-word) full
-//! text search, not substring search — searching `"regrout"` finds a title
-//! containing that whole word, not a title merely containing the substring
-//! `"grout"`. The shared contract test only ever searches for a complete
-//! word from a title for exactly this reason.
+//! Postgres's `to_tsquery` are both *token*-based (whole-word or
+//! whole-word-prefix) full text search, not substring search — searching
+//! `"grout"` never finds a title merely containing that substring inside a
+//! longer word like `"regrout"`. Both backends match each query word as a
+//! *prefix* of a document token (so a live search box that queries on every
+//! keystroke, e.g. `templates/_relationship_candidates.html`'s picker, finds
+//! `"test1"` while the user has only typed `"tes"`), joined as an implicit
+//! AND: `"the bath"` matches a title tokenizing to `... "the" "bathroom" ...`
+//! because `"bath"` is a prefix of `"bathroom"` immediately following `"the"`.
+//! The shared contract test searches for a complete word from a title for
+//! this reason — a whole word is always a valid prefix of itself.
 
 use anamnesis_app::{RepoError, SearchHit, SearchIndex, SearchQuery};
 use anamnesis_core::{AreaId, ProjectId, TaskId};
@@ -127,8 +133,11 @@ mod sqlite_impl {
             return Ok(Vec::new());
         }
         // Quote the whole input as one FTS5 phrase so user text can never be
-        // parsed as FTS5 query syntax (`OR`, `-`, `*`, ...).
-        let phrase = format!("\"{}\"", text.replace('"', "\"\""));
+        // parsed as FTS5 query syntax (`OR`, `-`, `*`, ...), then append `*`
+        // *outside* the closing quote — FTS5 treats that as a prefix query
+        // on the phrase's last token rather than an exact match, without
+        // reopening the injection risk the quoting closes off.
+        let phrase = format!("\"{}\"*", text.replace('"', "\"\""));
         let rows = sqlx::query(
             "SELECT entity_kind, entity_id, title FROM search_documents \
              WHERE search_documents MATCH ? AND archived = ? ORDER BY rank",
@@ -235,20 +244,44 @@ mod postgres_impl {
         remove(pool, "task", id.as_uuid()).await
     }
 
+    /// Builds a `to_tsquery`-ready string with every word marked as a prefix
+    /// (`word:*`), joined by `&` — `to_tsquery` still runs each word through
+    /// the `english` dictionary (stemming included), but unlike
+    /// `plainto_tsquery` it also parses its input as tsquery *syntax*
+    /// (`&`, `|`, `!`, `:`, parens, ...), so raw user text can't be handed to
+    /// it directly. Stripping everything but alphanumerics from each
+    /// whitespace-separated word closes that off. `None` means the query has
+    /// no searchable words at all (blank input, or input that was pure
+    /// punctuation) — the caller treats that as "no results" rather than
+    /// asking Postgres to parse an empty tsquery, which errors.
+    fn prefix_tsquery(text: &str) -> Option<String> {
+        let terms: Vec<String> = text
+            .split_whitespace()
+            .map(|word| word.chars().filter(|c| c.is_alphanumeric()).collect())
+            .filter(|word: &String| !word.is_empty())
+            .map(|word| format!("{word}:*"))
+            .collect();
+        if terms.is_empty() {
+            None
+        } else {
+            Some(terms.join(" & "))
+        }
+    }
+
     async fn search_filtered(
         pool: &PgPool,
         text: &str,
         archived: bool,
     ) -> Result<Vec<SearchHit>, RepoError> {
-        if text.trim().is_empty() {
+        let Some(tsquery_text) = prefix_tsquery(text) else {
             return Ok(Vec::new());
-        }
+        };
         let rows = sqlx::query(
             "SELECT entity_kind, entity_id, title FROM search_documents \
-             WHERE tsv @@ plainto_tsquery('english', $1) AND archived = $2 \
-             ORDER BY ts_rank(tsv, plainto_tsquery('english', $1)) DESC",
+             WHERE tsv @@ to_tsquery('english', $1) AND archived = $2 \
+             ORDER BY ts_rank(tsv, to_tsquery('english', $1)) DESC",
         )
-        .bind(text)
+        .bind(tsquery_text)
         .bind(archived)
         .fetch_all(pool)
         .await
