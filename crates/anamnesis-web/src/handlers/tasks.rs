@@ -873,36 +873,34 @@ fn render_task_candidates(
     fragment_template: &str,
     page_template: &str,
 ) -> Result<Response, WebError> {
-    if is_hx_request(headers) {
-        let tmpl = state
-            .templates
-            .get_template(fragment_template)
-            .map_err(WebError::template)?;
-        let body = tmpl
-            .render(context! {
+    let (template_name, ctx) = if is_hx_request(headers) {
+        (
+            fragment_template,
+            context! {
                 task_id => task_id.to_string(),
                 query => trimmed,
                 candidates => candidates,
                 csrf_token => user.csrf_token,
-            })
-            .map_err(WebError::template)?;
-        return Ok(Html(body).into_response());
-    }
-
+            },
+        )
+    } else {
+        (
+            page_template,
+            context! {
+                task_id => task_id.to_string(),
+                task_title => task_title,
+                query => trimmed,
+                candidates => candidates,
+                csrf_token => user.csrf_token,
+                current_user => user.display_name,
+            },
+        )
+    };
     let tmpl = state
         .templates
-        .get_template(page_template)
+        .get_template(template_name)
         .map_err(WebError::template)?;
-    let body = tmpl
-        .render(context! {
-            task_id => task_id.to_string(),
-            task_title => task_title,
-            query => trimmed,
-            candidates => candidates,
-            csrf_token => user.csrf_token,
-            current_user => user.display_name,
-        })
-        .map_err(WebError::template)?;
+    let body = tmpl.render(ctx).map_err(WebError::template)?;
     Ok(Html(body).into_response())
 }
 
