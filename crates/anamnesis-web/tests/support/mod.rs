@@ -265,6 +265,114 @@ fn signed_cookie_header(key: &Key, cookie: Cookie<'static>) -> String {
     set_cookie.split(';').next().unwrap().to_string()
 }
 
+/// Creates an area, a project in it, and returns the project's path — the
+/// shared setup every task-picker test needs before it can create tasks.
+pub async fn new_project(app: &TestApp, cookie: Option<&str>) -> String {
+    let area_path = location_of(
+        &app.post_form(
+            "/areas",
+            &[
+                ("csrf_token", DEV_CSRF_TOKEN),
+                ("title", "Homesteading"),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string();
+    location_of(
+        &app.post_form(
+            &format!("{area_path}/projects"),
+            &[
+                ("csrf_token", DEV_CSRF_TOKEN),
+                ("title", "Renovation"),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string()
+}
+
+/// Creates a task under `project_path` and returns its path.
+pub async fn new_task(
+    app: &TestApp,
+    project_path: &str,
+    title: &str,
+    cookie: Option<&str>,
+) -> String {
+    location_of(
+        &app.post_form(
+            &format!("{project_path}/tasks"),
+            &[
+                ("csrf_token", DEV_CSRF_TOKEN),
+                ("title", title),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string()
+}
+
+/// Bootstraps a fresh admin-owned area/project/task under real OIDC-style
+/// sessions (dev-auth-bypass off) and hands back the running app, the task's
+/// path, and a signed cookie for a "stranger" identity that has never been
+/// granted anything on it — the shared setup both the parent-picker's and
+/// the relationship-picker's "without a view grant" tests need. Bypass has
+/// to be off here — under it, every cookie resolves to the same dev user, so
+/// a *distinct* ungranted identity needs real sessions (matching
+/// `f3_admin_routes.rs`'s own "ungranted user" tests).
+pub async fn setup_task_as_admin() -> (TestApp, String, String) {
+    let app = TestApp::with_bootstrap_admin(false, "admin").await;
+    let admin_cookie = app.login_cookie_header("admin", "admin-token");
+    let area_path = location_of(
+        &app.post_form(
+            "/areas",
+            &[
+                ("csrf_token", "admin-token"),
+                ("title", "Homesteading"),
+                ("description", ""),
+            ],
+            Some(&admin_cookie),
+        )
+        .await,
+    )
+    .to_string();
+    let project_path = location_of(
+        &app.post_form(
+            &format!("{area_path}/projects"),
+            &[
+                ("csrf_token", "admin-token"),
+                ("title", "Renovation"),
+                ("description", ""),
+            ],
+            Some(&admin_cookie),
+        )
+        .await,
+    )
+    .to_string();
+    let task_path = location_of(
+        &app.post_form(
+            &format!("{project_path}/tasks"),
+            &[
+                ("csrf_token", "admin-token"),
+                ("title", "Regrout the shower"),
+                ("description", ""),
+            ],
+            Some(&admin_cookie),
+        )
+        .await,
+    )
+    .to_string();
+
+    let stranger_cookie = app.login_cookie_header("stranger", "stranger-token");
+    (app, task_path, stranger_cookie)
+}
+
 pub fn location_of(response: &Response<Body>) -> &str {
     response
         .headers()

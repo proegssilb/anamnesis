@@ -10,10 +10,11 @@ use minijinja::context;
 use serde::Deserialize;
 
 use anamnesis_app::{
-    AppError, AttachmentId, AttachmentKind, SearchHit, add_comment, add_file_attachment,
-    add_link_attachment, archive_task, create_relationship, create_task, delete_relationship,
-    drop_task, edit_task, list_attachments, list_comments, raise_task, resolve_kind,
-    set_checklist_position, set_task_field_value, set_task_parent, unarchive_task, view_task,
+    AppError, AttachmentId, AttachmentKind, BoardColumn, SearchHit, add_comment,
+    add_file_attachment, add_link_attachment, archive_task, create_relationship, create_task,
+    delete_relationship, drop_task, edit_task, list_attachments, list_comments, raise_task,
+    resolve_kind, set_checklist_position, set_task_field_value, set_task_parent, unarchive_task,
+    view_task,
 };
 use anamnesis_core::{
     FieldId, Placement, RelationshipId, TaskId, builtin_blocks, builtin_duplicates,
@@ -95,15 +96,7 @@ async fn view_task_impl(
     // rather than failing the whole page load — the same tolerance the
     // relationship-other-end title lookup a little further down already
     // extends to a stale id.
-    let relationship_prefill = match rel_to.as_deref().map(uuid::Uuid::parse_str) {
-        Some(Ok(raw)) => {
-            let candidate_id = TaskId::new(raw);
-            state.tasks.load(candidate_id).await?.map(
-                |a| context! { id => candidate_id.to_string(), title => a.task.title.as_str() },
-            )
-        }
-        _ => None,
-    };
+    let relationship_prefill = resolve_rel_to_context(state, rel_to.as_deref()).await?;
 
     render_task_page(
         state,
@@ -116,6 +109,26 @@ async fn view_task_impl(
         StatusCode::OK,
     )
     .await
+}
+
+/// Resolves an incoming `?rel_to=<id>` into the context the relationship
+/// modal needs to show it as already selected — `None` for a missing param,
+/// an unparseable id, or an id that no longer names a task, all treated
+/// alike as "no prefill" rather than an error (see [`view_task_impl`]'s doc
+/// comment on this same tolerance).
+async fn resolve_rel_to_context(
+    state: &AppState,
+    rel_to: Option<&str>,
+) -> Result<Option<minijinja::Value>, WebError> {
+    let Some(Ok(raw)) = rel_to.map(uuid::Uuid::parse_str) else {
+        return Ok(None);
+    };
+    let candidate_id = TaskId::new(raw);
+    Ok(state
+        .tasks
+        .load(candidate_id)
+        .await?
+        .map(|a| context! { id => candidate_id.to_string(), title => a.task.title.as_str() }))
 }
 
 pub async fn edit_task_title_handler(
@@ -141,14 +154,77 @@ async fn edit_task_title_impl(
     }
     let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
     let current = state.tasks.load(task_id).await?.ok_or(AppError::NotFound)?;
+    apply_task_edit(
+        state,
+        user,
+        task_id,
+        role,
+        &form.title,
+        current.task.description.as_str(),
+        "title",
+    )
+    .await
+}
+
+pub async fn edit_task_description_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<uuid::Uuid>,
+    Form(form): Form<EditTaskDescriptionForm>,
+) -> Response {
+    match edit_task_description_impl(&state, &user, TaskId::new(id), form).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn edit_task_description_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    form: EditTaskDescriptionForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
+    let current = state.tasks.load(task_id).await?.ok_or(AppError::NotFound)?;
+    apply_task_edit(
+        state,
+        user,
+        task_id,
+        role,
+        current.task.title.as_str(),
+        &form.description,
+        "description",
+    )
+    .await
+}
+
+/// The shared body of [`edit_task_title_impl`] and
+/// [`edit_task_description_impl`]: both call `edit_task` with one field
+/// changed and the other held at its current value, then handle the result
+/// identically — re-rendering the task page either way, an inline
+/// `422 error` re-render on a rule violation, or bubbling any other error up.
+/// `open_hint` names which edit form the re-render should reopen on a rule
+/// violation.
+async fn apply_task_edit(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    role: Option<anamnesis_core::policy::Role>,
+    title: &str,
+    description: &str,
+    open_hint: &'static str,
+) -> Result<Response, WebError> {
     match edit_task(
         state.tasks.as_ref(),
         state.clock.as_ref(),
         state.search_index.as_ref(),
         role,
         task_id,
-        &form.title,
-        current.task.description.as_str(),
+        title,
+        description,
     )
     .await
     {
@@ -175,72 +251,7 @@ async fn edit_task_title_impl(
                 task_id,
                 &aggregate.task,
                 Some(&e.to_string()),
-                Some("title"),
-                None,
-                StatusCode::UNPROCESSABLE_ENTITY,
-            )
-            .await
-        }
-        Err(err) => Err(WebError::from(err)),
-    }
-}
-
-pub async fn edit_task_description_handler(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Path(id): Path<uuid::Uuid>,
-    Form(form): Form<EditTaskDescriptionForm>,
-) -> Response {
-    match edit_task_description_impl(&state, &user, TaskId::new(id), form).await {
-        Ok(response) => response,
-        Err(err) => err.into_response_with(&state.templates),
-    }
-}
-
-async fn edit_task_description_impl(
-    state: &AppState,
-    user: &CurrentUser,
-    task_id: TaskId,
-    form: EditTaskDescriptionForm,
-) -> Result<Response, WebError> {
-    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
-        return Err(WebError::CsrfMismatch);
-    }
-    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
-    let current = state.tasks.load(task_id).await?.ok_or(AppError::NotFound)?;
-    match edit_task(
-        state.tasks.as_ref(),
-        state.clock.as_ref(),
-        state.search_index.as_ref(),
-        role,
-        task_id,
-        current.task.title.as_str(),
-        &form.description,
-    )
-    .await
-    {
-        Ok(task) => {
-            render_task_page(
-                state,
-                user,
-                task_id,
-                &task,
-                None,
-                None,
-                None,
-                StatusCode::OK,
-            )
-            .await
-        }
-        Err(AppError::Rule(e)) => {
-            let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
-            render_task_page(
-                state,
-                user,
-                task_id,
-                &aggregate.task,
-                Some(&e.to_string()),
-                Some("description"),
+                Some(open_hint),
                 None,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
@@ -764,56 +775,16 @@ async fn parent_candidates_impl(
     headers: &HeaderMap,
     query: String,
 ) -> Result<Response, WebError> {
-    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
-    let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
-
-    let trimmed = query.trim().to_string();
-    let mut candidates: Vec<minijinja::Value> = Vec::new();
-    if !trimmed.is_empty() {
-        let hits = state.search.search(&trimmed).await?;
-        for hit in &hits {
-            if let SearchHit::Task { id: hit_id, title } = hit
-                && *hit_id != task_id
-            {
-                candidates.push(context! { id => hit_id.to_string(), title => title.as_str() });
-            }
-        }
-    }
-
-    // `docs/DOMAIN.md` §8: "one endpoint, two representations" — a fragment
-    // for htmx's live search, a standalone page (with its own copy of the
-    // search form) for the plain no-JS `GET` fallback.
-    if is_hx_request(headers) {
-        let tmpl = state
-            .templates
-            .get_template("_parent_candidates.html")
-            .map_err(WebError::template)?;
-        let body = tmpl
-            .render(context! {
-                task_id => task_id.to_string(),
-                query => trimmed,
-                candidates => candidates,
-                csrf_token => user.csrf_token,
-            })
-            .map_err(WebError::template)?;
-        return Ok(Html(body).into_response());
-    }
-
-    let tmpl = state
-        .templates
-        .get_template("parent_picker.html")
-        .map_err(WebError::template)?;
-    let body = tmpl
-        .render(context! {
-            task_id => task_id.to_string(),
-            task_title => aggregate.task.title.as_str(),
-            query => trimmed,
-            candidates => candidates,
-            csrf_token => user.csrf_token,
-            current_user => user.display_name,
-        })
-        .map_err(WebError::template)?;
-    Ok(Html(body).into_response())
+    task_candidates_impl(
+        state,
+        user,
+        task_id,
+        headers,
+        query,
+        "_parent_candidates.html",
+        "parent_picker.html",
+    )
+    .await
 }
 
 #[derive(Debug, Deserialize)]
@@ -851,6 +822,33 @@ async fn relationship_candidates_impl(
     headers: &HeaderMap,
     query: String,
 ) -> Result<Response, WebError> {
+    task_candidates_impl(
+        state,
+        user,
+        task_id,
+        headers,
+        query,
+        "_relationship_candidates.html",
+        "relationship_picker.html",
+    )
+    .await
+}
+
+/// The shared body of [`parent_candidates_impl`] and
+/// [`relationship_candidates_impl`]: both are a title search over
+/// `anamnesis_app::SearchQuery`, scoped down to `SearchHit::Task` and with
+/// this task's own id dropped from the results, differing only in which pair
+/// of templates (an htmx fragment, and the standalone no-JS page) they
+/// render the candidates into.
+async fn task_candidates_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    headers: &HeaderMap,
+    query: String,
+    fragment_template: &str,
+    page_template: &str,
+) -> Result<Response, WebError> {
     let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
     let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
 
@@ -873,7 +871,7 @@ async fn relationship_candidates_impl(
     if is_hx_request(headers) {
         let tmpl = state
             .templates
-            .get_template("_relationship_candidates.html")
+            .get_template(fragment_template)
             .map_err(WebError::template)?;
         let body = tmpl
             .render(context! {
@@ -888,7 +886,7 @@ async fn relationship_candidates_impl(
 
     let tmpl = state
         .templates
-        .get_template("relationship_picker.html")
+        .get_template(page_template)
         .map_err(WebError::template)?;
     let body = tmpl
         .render(context! {
@@ -933,12 +931,7 @@ async fn add_checklist_item_impl(
     }
     let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
     let parent = state.tasks.load(task_id).await?.ok_or(AppError::NotFound)?;
-    let existing_siblings = state.tasks.list_children(task_id).await?;
-    let next_position = existing_siblings
-        .iter()
-        .map(|t| t.checklist_position)
-        .max()
-        .map_or(0, |max| max + 1);
+    let next_position = next_checklist_position(state, task_id).await?;
 
     let new_task = match create_task(
         state.tasks.as_ref(),
@@ -970,19 +963,45 @@ async fn add_checklist_item_impl(
         Err(err) => return Err(WebError::from(err)),
     };
 
+    link_checklist_item(state, role, new_task.id, task_id, next_position).await?;
+
+    Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response())
+}
+
+/// The next free checklist position under `task_id` — one past the highest
+/// position among its existing children, or `0` if it has none yet.
+async fn next_checklist_position(state: &AppState, task_id: TaskId) -> Result<u32, WebError> {
+    let existing_siblings = state.tasks.list_children(task_id).await?;
+    Ok(existing_siblings
+        .iter()
+        .map(|t| t.checklist_position)
+        .max()
+        .map_or(0, |max| max + 1))
+}
+
+/// Links a freshly created task in as `parent_id`'s checklist child, and —
+/// only when it isn't already first — repositions it to `position`. Split
+/// out of [`add_checklist_item_impl`] so the create-then-optionally-reposition
+/// sequence reads as one step there instead of three inline calls.
+async fn link_checklist_item(
+    state: &AppState,
+    role: Option<anamnesis_core::policy::Role>,
+    child_id: TaskId,
+    parent_id: TaskId,
+    position: u32,
+) -> Result<(), WebError> {
     set_task_parent(
         state.tasks.as_ref(),
         state.clock.as_ref(),
         role,
-        new_task.id,
-        Some(task_id),
+        child_id,
+        Some(parent_id),
     )
     .await?;
-    if next_position > 0 {
-        set_checklist_position(state.tasks.as_ref(), role, new_task.id, next_position).await?;
+    if position > 0 {
+        set_checklist_position(state.tasks.as_ref(), role, child_id, position).await?;
     }
-
-    Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response())
+    Ok(())
 }
 
 pub async fn create_relationship_handler(
@@ -994,6 +1013,21 @@ pub async fn create_relationship_handler(
     match create_relationship_impl(&state, &user, TaskId::new(id), form).await {
         Ok(response) => response,
         Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+/// Maps the form's plain-string `kind` to the built-in relationship kind id
+/// it names — pure input parsing, kept separate from
+/// [`create_relationship_impl`]'s handling of the async `create_relationship`
+/// result.
+fn relationship_kind_id(kind: &str) -> Result<anamnesis_core::KindId, WebError> {
+    match kind {
+        "blocks" => Ok(builtin_blocks().id),
+        "relates_to" => Ok(builtin_relates_to().id),
+        "duplicates" => Ok(builtin_duplicates().id),
+        other => Err(WebError::BadRequest(format!(
+            "{other:?} is not a known relationship kind"
+        ))),
     }
 }
 
@@ -1014,16 +1048,7 @@ async fn create_relationship_impl(
         .await?
         .ok_or_else(|| WebError::BadRequest("that target task does not exist".to_string()))?;
 
-    let kind_id = match form.kind.as_str() {
-        "blocks" => builtin_blocks().id,
-        "relates_to" => builtin_relates_to().id,
-        "duplicates" => builtin_duplicates().id,
-        other => {
-            return Err(WebError::BadRequest(format!(
-                "{other:?} is not a known relationship kind"
-            )));
-        }
-    };
+    let kind_id = relationship_kind_id(&form.kind)?;
     let _ = resolve_kind(state.projects.as_ref(), kind_id).await?; // built-ins always resolve; keeps this call site honest about going through the same lookup create_relationship itself uses.
 
     match create_relationship(
@@ -1218,119 +1243,18 @@ async fn render_task_page(
     let comments = list_comments(state.comments.as_ref(), Some(member_role()), task_id).await?;
     let attachments =
         list_attachments(state.attachments.as_ref(), Some(member_role()), task_id).await?;
-    let raw_relationships = state.relationships.list_for_task(task_id).await?;
-
-    let mut relationships = Vec::with_capacity(raw_relationships.len());
-    for rel in &raw_relationships {
-        let (other_id, forward) = if rel.from_task_id == task_id {
-            (rel.to_task_id, true)
-        } else {
-            (rel.from_task_id, false)
-        };
-        let kind = resolve_kind(state.projects.as_ref(), rel.kind_id).await?;
-        let label = if forward {
-            kind.forward_label.as_str().to_string()
-        } else {
-            kind.reverse_label.as_str().to_string()
-        };
-        let other_title = state
-            .tasks
-            .load(other_id)
-            .await?
-            .map(|a| a.task.title.as_str().to_string())
-            .unwrap_or_else(|| "(deleted task)".to_string());
-        relationships.push(context! {
-            id => rel.id.to_string(),
-            label => label,
-            other_id => other_id.to_string(),
-            other_title => other_title,
-        });
-    }
-
-    // The checklist parent, resolved the same way a relationship's other end
-    // is resolved just above — used both for the status-row badge and the
-    // "Parent task" section, so a child task's page actually shows it is one
-    // rather than leaving that only visible from the parent's own checklist.
-    let parent = match task.parent_task_id {
-        Some(parent_id) => {
-            let title = state
-                .tasks
-                .load(parent_id)
-                .await?
-                .map(|a| a.task.title.as_str().to_string())
-                .unwrap_or_else(|| "(deleted task)".to_string());
-            Some(context! { id => parent_id.to_string(), title => title })
-        }
-        None => None,
-    };
+    let relationships = build_relationships_context(state, task_id).await?;
+    let parent = build_parent_context(state, task.parent_task_id).await?;
 
     let columns = state.board.columns_with_items().await?;
     let column_options: Vec<_> = columns
         .iter()
         .map(|c| context! { id => c.column.id.to_string(), title => c.column.title.as_str() })
         .collect();
-    let current_column_is_done = match task.placement {
-        Placement::OnBoard { column, .. } => column_is_done(&columns, column),
-        Placement::Below => None,
-    };
-    let current_column_title = match task.placement {
-        Placement::OnBoard { column, .. } => column_title(&columns, column),
-        Placement::Below => None,
-    };
-
-    // Each checklist item's own `done` reading is the same "on the board, in
-    // an `is_done` column" test as the parent task's — checked purely for
-    // display here, distinct from actually completing anything.
-    let children_ctx: Vec<_> = children
-        .iter()
-        .map(|c| {
-            let done = match c.placement {
-                Placement::OnBoard { column, .. } => {
-                    column_is_done(&columns, column).unwrap_or(false)
-                }
-                Placement::Below => false,
-            };
-            context! {
-                id => c.id.to_string(),
-                title => c.title.as_str(),
-                done => done,
-            }
-        })
-        .collect();
-
-    // Custom field definitions + this task's own values (`docs/DOMAIN.md`
-    // §3): the section that made every field genuinely editable, not just
-    // displayed (`super::field_form`'s module doc comment).
-    let field_definitions = state
-        .projects
-        .load(task.project_id)
-        .await?
-        .map(|a| a.field_definitions)
-        .unwrap_or_default();
-    let field_values = state
-        .tasks
-        .load(task_id)
-        .await?
-        .map(|a| a.field_values)
-        .unwrap_or_default();
-    let fields: Vec<_> = field_definitions
-        .iter()
-        .map(|def| {
-            let stored = field_values.iter().find(|v| v.field_id == def.id);
-            let (input_value, currency_code) = stored
-                .map(|v| field_input_value(&v.data, state.timezone.as_ref(), &state.timezone_name))
-                .unwrap_or_default();
-            context! {
-                id => def.id.to_string(),
-                name => def.name.as_str(),
-                kind => format_field_kind(def.kind),
-                show_on_card => def.show_on_card,
-                display_value => stored.map(|v| format_field_data(&v.data)),
-                input_value => input_value,
-                currency_code => currency_code.unwrap_or_default(),
-            }
-        })
-        .collect();
+    let (current_column_is_done, current_column_title) =
+        current_column_info(&columns, task.placement);
+    let children_ctx = build_children_context(&children, &columns);
+    let fields = build_fields_context(state, task).await?;
 
     let tmpl = state
         .templates
@@ -1357,6 +1281,153 @@ async fn render_task_page(
         })
         .map_err(WebError::template)?;
     Ok((status, Html(body)).into_response())
+}
+
+/// Builds the "Relationships" section's context: each edge's label (forward
+/// or reverse, depending on which end `task_id` is), and the other end's
+/// title (or a placeholder if that task has since been deleted). Split out
+/// of [`render_task_page`] — this is the one part of the page that needs a
+/// database round trip per relationship.
+async fn build_relationships_context(
+    state: &AppState,
+    task_id: TaskId,
+) -> Result<Vec<minijinja::Value>, WebError> {
+    let raw_relationships = state.relationships.list_for_task(task_id).await?;
+    let mut relationships = Vec::with_capacity(raw_relationships.len());
+    for rel in &raw_relationships {
+        let (other_id, forward) = if rel.from_task_id == task_id {
+            (rel.to_task_id, true)
+        } else {
+            (rel.from_task_id, false)
+        };
+        let kind = resolve_kind(state.projects.as_ref(), rel.kind_id).await?;
+        let label = if forward {
+            kind.forward_label.as_str().to_string()
+        } else {
+            kind.reverse_label.as_str().to_string()
+        };
+        let other_title = state
+            .tasks
+            .load(other_id)
+            .await?
+            .map(|a| a.task.title.as_str().to_string())
+            .unwrap_or_else(|| "(deleted task)".to_string());
+        relationships.push(context! {
+            id => rel.id.to_string(),
+            label => label,
+            other_id => other_id.to_string(),
+            other_title => other_title,
+        });
+    }
+    Ok(relationships)
+}
+
+/// The checklist parent's display context — resolved the same way a
+/// relationship's other end is resolved in
+/// [`build_relationships_context`] — used both for the status-row badge and
+/// the "Parent task" section, so a child task's page actually shows it is
+/// one rather than leaving that only visible from the parent's own
+/// checklist.
+async fn build_parent_context(
+    state: &AppState,
+    parent_task_id: Option<TaskId>,
+) -> Result<Option<minijinja::Value>, WebError> {
+    let Some(parent_id) = parent_task_id else {
+        return Ok(None);
+    };
+    let title = state
+        .tasks
+        .load(parent_id)
+        .await?
+        .map(|a| a.task.title.as_str().to_string())
+        .unwrap_or_else(|| "(deleted task)".to_string());
+    Ok(Some(
+        context! { id => parent_id.to_string(), title => title },
+    ))
+}
+
+/// Where a task currently sits on the board, for the status-row pill:
+/// `(is_done, column_title)`, both `None` for a task that has dropped below
+/// the horizon (`Placement::Below`). The one place `render_task_page` needs
+/// to match on `Placement` for this — [`build_children_context`] below has
+/// its own, narrower need (just a `done` bool) and is intentionally kept
+/// separate rather than sharing this tuple shape.
+fn current_column_info(
+    columns: &[BoardColumn],
+    placement: Placement,
+) -> (Option<bool>, Option<String>) {
+    match placement {
+        Placement::OnBoard { column, .. } => (
+            column_is_done(columns, column),
+            column_title(columns, column),
+        ),
+        Placement::Below => (None, None),
+    }
+}
+
+/// Each checklist child's card context: its title and the same "on the
+/// board, in an `is_done` column" `done` reading the parent task's own
+/// status pill uses — checked purely for display here, distinct from
+/// actually completing anything.
+fn build_children_context(
+    children: &[anamnesis_core::Task],
+    columns: &[BoardColumn],
+) -> Vec<minijinja::Value> {
+    children
+        .iter()
+        .map(|c| {
+            let done = match c.placement {
+                Placement::OnBoard { column, .. } => {
+                    column_is_done(columns, column).unwrap_or(false)
+                }
+                Placement::Below => false,
+            };
+            context! {
+                id => c.id.to_string(),
+                title => c.title.as_str(),
+                done => done,
+            }
+        })
+        .collect()
+}
+
+/// Custom field definitions + this task's own values (`docs/DOMAIN.md` §3):
+/// the section that made every field genuinely editable, not just displayed
+/// (`super::field_form`'s module doc comment).
+async fn build_fields_context(
+    state: &AppState,
+    task: &anamnesis_core::Task,
+) -> Result<Vec<minijinja::Value>, WebError> {
+    let field_definitions = state
+        .projects
+        .load(task.project_id)
+        .await?
+        .map(|a| a.field_definitions)
+        .unwrap_or_default();
+    let field_values = state
+        .tasks
+        .load(task.id)
+        .await?
+        .map(|a| a.field_values)
+        .unwrap_or_default();
+    Ok(field_definitions
+        .iter()
+        .map(|def| {
+            let stored = field_values.iter().find(|v| v.field_id == def.id);
+            let (input_value, currency_code) = stored
+                .map(|v| field_input_value(&v.data, state.timezone.as_ref(), &state.timezone_name))
+                .unwrap_or_default();
+            context! {
+                id => def.id.to_string(),
+                name => def.name.as_str(),
+                kind => format_field_kind(def.kind),
+                show_on_card => def.show_on_card,
+                display_value => stored.map(|v| format_field_data(&v.data)),
+                input_value => input_value,
+                currency_code => currency_code.unwrap_or_default(),
+            }
+        })
+        .collect())
 }
 
 /// The task detail page's own read-side calls (`list_comments`,
