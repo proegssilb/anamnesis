@@ -834,24 +834,15 @@ async fn relationship_candidates_impl(
     .await
 }
 
-/// The shared body of [`parent_candidates_impl`] and
-/// [`relationship_candidates_impl`]: both are a title search over
-/// `anamnesis_app::SearchQuery`, scoped down to `SearchHit::Task` and with
-/// this task's own id dropped from the results, differing only in which pair
-/// of templates (an htmx fragment, and the standalone no-JS page) they
-/// render the candidates into.
-async fn task_candidates_impl(
+/// The search half of [`task_candidates_impl`]: trims the query, and (when
+/// non-empty) runs it through `anamnesis_app::SearchQuery`, scoped down to
+/// `SearchHit::Task` and with this task's own id dropped from the results.
+/// Split out from the rendering so each half reads as one job.
+async fn search_task_candidates(
     state: &AppState,
-    user: &CurrentUser,
     task_id: TaskId,
-    headers: &HeaderMap,
     query: String,
-    fragment_template: &str,
-    page_template: &str,
-) -> Result<Response, WebError> {
-    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
-    let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
-
+) -> Result<(String, Vec<minijinja::Value>), WebError> {
     let trimmed = query.trim().to_string();
     let mut candidates: Vec<minijinja::Value> = Vec::new();
     if !trimmed.is_empty() {
@@ -864,10 +855,24 @@ async fn task_candidates_impl(
             }
         }
     }
+    Ok((trimmed, candidates))
+}
 
-    // `docs/DOMAIN.md` §8: "one endpoint, two representations" — a fragment
-    // for htmx's live search, a standalone page (with its own copy of the
-    // search form) for the plain no-JS `GET` fallback.
+/// The rendering half of [`task_candidates_impl`]: given the already-computed
+/// search results, picks between the htmx fragment and the standalone no-JS
+/// page per `docs/DOMAIN.md` §8's "one endpoint, two representations".
+#[allow(clippy::too_many_arguments)]
+fn render_task_candidates(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    task_title: &str,
+    headers: &HeaderMap,
+    trimmed: String,
+    candidates: Vec<minijinja::Value>,
+    fragment_template: &str,
+    page_template: &str,
+) -> Result<Response, WebError> {
     if is_hx_request(headers) {
         let tmpl = state
             .templates
@@ -891,7 +896,7 @@ async fn task_candidates_impl(
     let body = tmpl
         .render(context! {
             task_id => task_id.to_string(),
-            task_title => aggregate.task.title.as_str(),
+            task_title => task_title,
             query => trimmed,
             candidates => candidates,
             csrf_token => user.csrf_token,
@@ -899,6 +904,40 @@ async fn task_candidates_impl(
         })
         .map_err(WebError::template)?;
     Ok(Html(body).into_response())
+}
+
+/// The shared body of [`parent_candidates_impl`] and
+/// [`relationship_candidates_impl`]: both are a title search over
+/// `anamnesis_app::SearchQuery`, scoped down to `SearchHit::Task` and with
+/// this task's own id dropped from the results, differing only in which pair
+/// of templates (an htmx fragment, and the standalone no-JS page) they
+/// render the candidates into. A thin orchestrator over
+/// [`search_task_candidates`] and [`render_task_candidates`].
+async fn task_candidates_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    headers: &HeaderMap,
+    query: String,
+    fragment_template: &str,
+    page_template: &str,
+) -> Result<Response, WebError> {
+    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
+    let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
+
+    let (trimmed, candidates) = search_task_candidates(state, task_id, query).await?;
+
+    render_task_candidates(
+        state,
+        user,
+        task_id,
+        aggregate.task.title.as_str(),
+        headers,
+        trimmed,
+        candidates,
+        fragment_template,
+        page_template,
+    )
 }
 
 /// Quick-adds a checklist item: creates a new task in this task's project
@@ -1391,6 +1430,31 @@ fn build_children_context(
         .collect()
 }
 
+/// One field definition's template context: its stored value (if any) in
+/// this task's `field_values`, rendered both for display
+/// ([`format_field_data`]) and as a form prefill ([`field_input_value`]).
+/// Split out of [`build_fields_context`] so the `map` there reads as one
+/// step, not an inline closure doing the lookup and the rendering both.
+fn field_context(
+    state: &AppState,
+    def: &anamnesis_core::FieldDefinition,
+    field_values: &[anamnesis_core::FieldValue],
+) -> minijinja::Value {
+    let stored = field_values.iter().find(|v| v.field_id == def.id);
+    let (input_value, currency_code) = stored
+        .map(|v| field_input_value(&v.data, state.timezone.as_ref(), &state.timezone_name))
+        .unwrap_or_default();
+    context! {
+        id => def.id.to_string(),
+        name => def.name.as_str(),
+        kind => format_field_kind(def.kind),
+        show_on_card => def.show_on_card,
+        display_value => stored.map(|v| format_field_data(&v.data)),
+        input_value => input_value,
+        currency_code => currency_code.unwrap_or_default(),
+    }
+}
+
 /// Custom field definitions + this task's own values (`docs/DOMAIN.md` §3):
 /// the section that made every field genuinely editable, not just displayed
 /// (`super::field_form`'s module doc comment).
@@ -1412,21 +1476,7 @@ async fn build_fields_context(
         .unwrap_or_default();
     Ok(field_definitions
         .iter()
-        .map(|def| {
-            let stored = field_values.iter().find(|v| v.field_id == def.id);
-            let (input_value, currency_code) = stored
-                .map(|v| field_input_value(&v.data, state.timezone.as_ref(), &state.timezone_name))
-                .unwrap_or_default();
-            context! {
-                id => def.id.to_string(),
-                name => def.name.as_str(),
-                kind => format_field_kind(def.kind),
-                show_on_card => def.show_on_card,
-                display_value => stored.map(|v| format_field_data(&v.data)),
-                input_value => input_value,
-                currency_code => currency_code.unwrap_or_default(),
-            }
-        })
+        .map(|def| field_context(state, def, &field_values))
         .collect())
 }
 
