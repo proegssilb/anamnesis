@@ -1,0 +1,27 @@
+{# Relationship-target search results, fragment-addressable
+   (`docs/DOMAIN.md` §8): what `GET /tasks/{id}/relationship-candidates`
+   returns alone for an `HX-Request`, and what `relationship_picker.html`
+   includes for the full-page no-JS fallback. Needs `task_id`, `query`,
+   `candidates` (`{id, title}` each). Unlike `_parent_candidates.html`, each
+   candidate is a plain link rather than a one-click submit form: creating a
+   relationship also needs a `kind`, so selecting one just prefills
+   `#task-add-relationship`'s `to_task_id` back on the task page rather than
+   submitting anything. #}
+<div id="relationship-candidates">
+  {% if query %}
+    {% if candidates %}
+      <ul class="task-list">
+        {% for c in candidates %}
+          <li class="relationship-row">
+            <span>{{ c.title }}</span>
+            <a href="/tasks/{{ task_id }}?rel_to={{ c.id }}#task-add-relationship">Select</a>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="hint">No tasks match &ldquo;{{ query }}&rdquo;.</p>
+    {% endif %}
+  {% else %}
+    <p class="hint">Type a task title to search.</p>
+  {% endif %}
+</div>

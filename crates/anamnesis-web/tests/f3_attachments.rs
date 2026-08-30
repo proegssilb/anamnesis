@@ -80,12 +80,21 @@ async fn a_file_round_trips_through_upload_and_download() {
         "the uploaded filename must appear on the task page: {task_body}"
     );
 
+    // Anchor on the actual download link's `/download` suffix rather than
+    // the first `/attachments/` substring on the page: the task page also
+    // links to the "Add attachment" modal, whose file-upload form posts to
+    // `/tasks/{id}/attachments/file` — a `/attachments/` occurrence that can
+    // land earlier in the markup than the download link itself.
     let download_marker = "/attachments/";
-    let start = task_body
-        .find(download_marker)
+    let end = task_body
+        .find("/download")
         .expect("a download link must be rendered");
-    let after = &task_body[start + download_marker.len()..];
-    let attachment_id: String = after.chars().take_while(|c| *c != '/').collect();
+    let before = &task_body[..end];
+    let start = before
+        .rfind(download_marker)
+        .expect("a download link must be rendered")
+        + download_marker.len();
+    let attachment_id = &before[start..];
 
     let download = app
         .get(&format!("/attachments/{attachment_id}/download"), None)

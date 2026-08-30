@@ -61,12 +61,19 @@ pub(super) async fn role_for_task(
     Ok((project_id, role))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ViewTaskParams {
+    #[serde(default)]
+    pub rel_to: Option<String>,
+}
+
 pub async fn view_task_handler(
     State(state): State<AppState>,
     user: CurrentUser,
     Path(id): Path<uuid::Uuid>,
+    Query(params): Query<ViewTaskParams>,
 ) -> Response {
-    match view_task_impl(&state, &user, TaskId::new(id)).await {
+    match view_task_impl(&state, &user, TaskId::new(id), params.rel_to).await {
         Ok(response) => response,
         Err(err) => err.into_response_with(&state.templates),
     }
@@ -76,9 +83,28 @@ async fn view_task_impl(
     state: &AppState,
     user: &CurrentUser,
     task_id: TaskId,
+    rel_to: Option<String>,
 ) -> Result<Response, WebError> {
     let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
     let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
+
+    // Lands here after a "Select" click in the relationship-candidate search
+    // (`_relationship_candidates.html`): the id is just a UI hint to prefill
+    // `#task-add-relationship`'s `to_task_id`, not itself a permission
+    // decision, so an unparseable or now-missing id degrades to "no prefill"
+    // rather than failing the whole page load — the same tolerance the
+    // relationship-other-end title lookup a little further down already
+    // extends to a stale id.
+    let relationship_prefill = match rel_to.as_deref().map(uuid::Uuid::parse_str) {
+        Some(Ok(raw)) => {
+            let candidate_id = TaskId::new(raw);
+            state.tasks.load(candidate_id).await?.map(
+                |a| context! { id => candidate_id.to_string(), title => a.task.title.as_str() },
+            )
+        }
+        _ => None,
+    };
+
     render_task_page(
         state,
         user,
@@ -86,6 +112,7 @@ async fn view_task_impl(
         &aggregate.task,
         None,
         None,
+        relationship_prefill,
         StatusCode::OK,
     )
     .await
@@ -128,7 +155,17 @@ async fn edit_task_title_impl(
         Ok(task) => {
             // Re-indexed inside `edit_task` itself — see
             // `anamnesis_app::use_cases::indexing`'s module doc comment.
-            render_task_page(state, user, task_id, &task, None, None, StatusCode::OK).await
+            render_task_page(
+                state,
+                user,
+                task_id,
+                &task,
+                None,
+                None,
+                None,
+                StatusCode::OK,
+            )
+            .await
         }
         Err(AppError::Rule(e)) => {
             let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
@@ -139,6 +176,7 @@ async fn edit_task_title_impl(
                 &aggregate.task,
                 Some(&e.to_string()),
                 Some("title"),
+                None,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
             .await
@@ -181,7 +219,19 @@ async fn edit_task_description_impl(
     )
     .await
     {
-        Ok(task) => render_task_page(state, user, task_id, &task, None, None, StatusCode::OK).await,
+        Ok(task) => {
+            render_task_page(
+                state,
+                user,
+                task_id,
+                &task,
+                None,
+                None,
+                None,
+                StatusCode::OK,
+            )
+            .await
+        }
         Err(AppError::Rule(e)) => {
             let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
             render_task_page(
@@ -191,6 +241,7 @@ async fn edit_task_description_impl(
                 &aggregate.task,
                 Some(&e.to_string()),
                 Some("description"),
+                None,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
             .await
@@ -248,6 +299,7 @@ async fn raise_task_impl(
                 task_id,
                 &aggregate.task,
                 Some("That column is already at its work-in-progress limit."),
+                None,
                 None,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
@@ -666,6 +718,7 @@ async fn set_parent_impl(
                 &aggregate.task,
                 Some(&e.to_string()),
                 None,
+                None,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
             .await
@@ -763,6 +816,93 @@ async fn parent_candidates_impl(
     Ok(Html(body).into_response())
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RelationshipCandidatesParams {
+    #[serde(default)]
+    pub q: String,
+}
+
+/// Backs the relationship-target picker (`templates/task.html`'s "Add
+/// relationship" modal): a title search structurally identical to
+/// [`parent_candidates_impl`], scoped down to `SearchHit::Task` and with this
+/// task's own id dropped (a task can't relate to itself —
+/// `create_relationship_impl` would reject it anyway). Unlike the parent
+/// picker, selecting a candidate here can't self-submit: creating a
+/// relationship also needs a `kind`, so each result is a plain "Select" link
+/// that round-trips back to the task page with `?rel_to=<id>` and lets
+/// `view_task_impl` prefill the relationship form instead.
+pub async fn relationship_candidates_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<uuid::Uuid>,
+    headers: HeaderMap,
+    Query(params): Query<RelationshipCandidatesParams>,
+) -> Response {
+    match relationship_candidates_impl(&state, &user, TaskId::new(id), &headers, params.q).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn relationship_candidates_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    headers: &HeaderMap,
+    query: String,
+) -> Result<Response, WebError> {
+    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
+    let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
+
+    let trimmed = query.trim().to_string();
+    let mut candidates: Vec<minijinja::Value> = Vec::new();
+    if !trimmed.is_empty() {
+        let hits = state.search.search(&trimmed).await?;
+        for hit in &hits {
+            if let SearchHit::Task { id: hit_id, title } = hit
+                && *hit_id != task_id
+            {
+                candidates.push(context! { id => hit_id.to_string(), title => title.as_str() });
+            }
+        }
+    }
+
+    // `docs/DOMAIN.md` §8: "one endpoint, two representations" — a fragment
+    // for htmx's live search, a standalone page (with its own copy of the
+    // search form) for the plain no-JS `GET` fallback.
+    if is_hx_request(headers) {
+        let tmpl = state
+            .templates
+            .get_template("_relationship_candidates.html")
+            .map_err(WebError::template)?;
+        let body = tmpl
+            .render(context! {
+                task_id => task_id.to_string(),
+                query => trimmed,
+                candidates => candidates,
+                csrf_token => user.csrf_token,
+            })
+            .map_err(WebError::template)?;
+        return Ok(Html(body).into_response());
+    }
+
+    let tmpl = state
+        .templates
+        .get_template("relationship_picker.html")
+        .map_err(WebError::template)?;
+    let body = tmpl
+        .render(context! {
+            task_id => task_id.to_string(),
+            task_title => aggregate.task.title.as_str(),
+            query => trimmed,
+            candidates => candidates,
+            csrf_token => user.csrf_token,
+            current_user => user.display_name,
+        })
+        .map_err(WebError::template)?;
+    Ok(Html(body).into_response())
+}
+
 /// Quick-adds a checklist item: creates a new task in this task's project
 /// and appends it as a child, in one request (`forms::AddChecklistItemForm`'s
 /// doc comment) — the create and the parent-link are two separate use-case
@@ -821,6 +961,7 @@ async fn add_checklist_item_impl(
                 task_id,
                 &aggregate.task,
                 Some(&e.to_string()),
+                None,
                 None,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
@@ -909,6 +1050,7 @@ async fn create_relationship_impl(
                 &aggregate.task,
                 Some(&e.to_string()),
                 None,
+                None,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
             .await
@@ -972,6 +1114,7 @@ async fn set_field_value_impl(
                 &aggregate.task,
                 Some(&message),
                 None,
+                None,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
             .await;
@@ -989,6 +1132,7 @@ async fn set_field_value_impl(
                 task_id,
                 &aggregate.task,
                 Some(&e.to_string()),
+                None,
                 None,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
@@ -1059,6 +1203,7 @@ async fn delete_relationship_impl(
 /// checklist children, comments, attachments, relationships (with the other
 /// end's title resolved for display), and the board columns available for
 /// the raise-task form.
+#[allow(clippy::too_many_arguments)]
 async fn render_task_page(
     state: &AppState,
     user: &CurrentUser,
@@ -1066,6 +1211,7 @@ async fn render_task_page(
     task: &anamnesis_core::Task,
     error: Option<&str>,
     open_hint: Option<&str>,
+    relationship_prefill: Option<minijinja::Value>,
     status: StatusCode,
 ) -> Result<Response, WebError> {
     let children = state.tasks.list_children(task_id).await?;
@@ -1197,6 +1343,7 @@ async fn render_task_page(
             current_column_is_done => current_column_is_done,
             current_column_title => current_column_title,
             open_hint => open_hint,
+            relationship_prefill => relationship_prefill,
             parent => parent,
             children => children_ctx,
             comments => comments,

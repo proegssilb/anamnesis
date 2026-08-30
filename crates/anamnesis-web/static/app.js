@@ -18,6 +18,61 @@
     }
   }
 
+  // Link-attachment preview: client-side only, no server fetch. Enhances
+  // each `.attachment-link` into a small card (site favicon + hostname +
+  // full URL) using the target site's own `/favicon.ico` -- deliberately
+  // not a third-party favicon CDN, so visiting a task page never leaks its
+  // attachment URLs to Google or similar. Runs independently of
+  // Sortable/htmx below: without JS this is just the plain `<a>` already
+  // rendered server-side (`templates/task.html`'s Attachments section).
+  ready(function () {
+    document.querySelectorAll(".attachment-link").forEach(function (a) {
+      var href = a.getAttribute("href");
+      if (!href) {
+        return;
+      }
+      var url;
+      try {
+        url = new URL(href, window.location.href);
+      } catch (e) {
+        return;
+      }
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        return;
+      }
+
+      var favicon = document.createElement("img");
+      favicon.className = "attachment-favicon";
+      favicon.alt = "";
+      favicon.src = url.origin + "/favicon.ico";
+      favicon.onerror = function () {
+        favicon.remove();
+      };
+
+      var host = document.createElement("span");
+      host.className = "attachment-host";
+      host.textContent = url.hostname;
+
+      var full = document.createElement("span");
+      full.className = "attachment-url";
+      full.textContent = url.href;
+
+      var text = document.createElement("span");
+      text.className = "attachment-text";
+      text.appendChild(host);
+      text.appendChild(full);
+
+      var card = document.createElement("span");
+      card.className = "attachment-preview";
+      card.appendChild(favicon);
+      card.appendChild(text);
+
+      a.textContent = "";
+      a.appendChild(card);
+      a.classList.add("attachment-link-enhanced");
+    });
+  });
+
   ready(function () {
     if (typeof window.Sortable === "undefined" || typeof window.htmx === "undefined") {
       return;

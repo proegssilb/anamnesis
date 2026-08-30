@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Add relationship — {{ task_title }} — Anamnesis{% endblock %}
+{% block content %}
+  <p class="breadcrumb"><a href="/tasks/{{ task_id }}">{{ task_title }}</a></p>
+  <h1>Add a relationship for &ldquo;{{ task_title }}&rdquo;</h1>
+  <p class="hint">Search for the task to relate this one to.</p>
+  <form class="search-form" method="get" action="/tasks/{{ task_id }}/relationship-candidates"
+        hx-get="/tasks/{{ task_id }}/relationship-candidates" hx-trigger="submit, keyup changed delay:300ms from:#relationship-q"
+        hx-target="#relationship-candidates" hx-swap="outerHTML" hx-push-url="true">
+    <label class="visually-hidden" for="relationship-q">Search tasks by title</label>
+    <input id="relationship-q" name="q" type="search" value="{{ query }}"
+           placeholder="Search tasks by title…" autocomplete="off">
+    <button type="submit">Search</button>
+  </form>
+  {% include "_relationship_candidates.html" %}
+{% endblock %}

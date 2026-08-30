@@ -83,9 +83,9 @@
 
   {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 
-  <section>
-    <h2>Fields</h2>
-    {% if fields %}
+  {% if fields %}
+    <section>
+      <h2>Fields</h2>
       <ul class="task-list field-list">
         {% for f in fields %}
           <li class="field-row">
@@ -125,14 +125,124 @@
           </li>
         {% endfor %}
       </ul>
-    {% else %}
-      <p class="hint">This project defines no custom fields.</p>
-    {% endif %}
-  </section>
+    </section>
+  {% endif %}
 
-  <section>
-    <h2>Checklist</h2>
-    {% if children %}
+  <div class="add-toolbar">
+    <span class="add-toolbar-label">Add:</span>
+    <a class="icon-button" href="#task-add-relationship" aria-label="Add relationship" title="Add relationship">🔗</a>
+    <a class="icon-button" href="#task-add-attachment" aria-label="Add attachment" title="Add attachment">📎</a>
+    <a class="icon-button" href="#task-add-checklist" aria-label="Add checklist item" title="Add checklist item">☑</a>
+  </div>
+
+  <div class="modal-overlay" id="task-add-relationship">
+    <div class="modal" role="dialog" aria-labelledby="task-add-relationship-title">
+      <div class="modal-header">
+        <h2 id="task-add-relationship-title">Add relationship</h2>
+        <a class="modal-close" href="#" aria-label="Close">&times;</a>
+      </div>
+      {% if relationship_prefill %}
+        <form class="panel-form" method="post" action="/tasks/{{ task.id }}/relationships#task-add-relationship">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label>Related task</label>
+          <p class="hint">Selected: {{ relationship_prefill.title }} — <a href="/tasks/{{ task.id }}#task-add-relationship">change…</a></p>
+          <input type="hidden" name="to_task_id" value="{{ relationship_prefill.id }}">
+          <select name="kind">
+            <option value="blocks">blocks</option>
+            <option value="relates_to">relates to</option>
+            <option value="duplicates">duplicates</option>
+          </select>
+          <button type="submit">Link</button>
+        </form>
+      {% else %}
+        <form class="search-form" method="get" action="/tasks/{{ task.id }}/relationship-candidates"
+              hx-get="/tasks/{{ task.id }}/relationship-candidates" hx-trigger="submit, keyup changed delay:300ms from:#relationship-q"
+              hx-target="#relationship-candidates" hx-swap="outerHTML">
+          <label class="visually-hidden" for="relationship-q">Search tasks by title</label>
+          <input id="relationship-q" name="q" type="search" placeholder="Search tasks by title…" autocomplete="off">
+          <button type="submit">Search</button>
+        </form>
+        <div id="relationship-candidates">
+          <p class="hint">Type a task title to search.</p>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="task-add-attachment">
+    <div class="modal" role="dialog" aria-labelledby="task-add-attachment-title">
+      <div class="modal-header">
+        <h2 id="task-add-attachment-title">Add attachment</h2>
+        <a class="modal-close" href="#" aria-label="Close">&times;</a>
+      </div>
+      <form class="panel-form" method="post" action="/tasks/{{ task.id }}/attachments#task-add-attachment">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="url">Attach a link</label>
+        <input id="url" name="url" required type="url" placeholder="https://...">
+        <button type="submit">Attach</button>
+      </form>
+      <form class="panel-form" method="post" action="/tasks/{{ task.id }}/attachments/file#task-add-attachment" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="file">Attach a file</label>
+        <input id="file" name="file" type="file" required>
+        <button type="submit">Upload</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="task-add-checklist">
+    <div class="modal" role="dialog" aria-labelledby="task-add-checklist-title">
+      <div class="modal-header">
+        <h2 id="task-add-checklist-title">Add checklist item</h2>
+        <a class="modal-close" href="#" aria-label="Close">&times;</a>
+      </div>
+      <form class="panel-form" method="post" action="/tasks/{{ task.id }}/children#task-add-checklist">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="checklist-item-title">Title</label>
+        <input id="checklist-item-title" name="title" required maxlength="200" placeholder="Add a checklist item…">
+        <button type="submit">Add</button>
+      </form>
+    </div>
+  </div>
+
+  {% if relationships or attachments %}
+    <div class="detail-columns">
+      {% if relationships %}
+        <section class="detail-column">
+          <h2>Relationships</h2>
+          <ul class="task-list">
+            {% for r in relationships %}
+              <li class="relationship-row">
+                <span>{{ r.label }} <a href="/tasks/{{ r.other_id }}">{{ r.other_title }}</a></span>
+                <form class="relationship-delete-form" method="post" action="/tasks/{{ task.id }}/relationships/{{ r.id }}/delete">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button type="submit" class="danger">Remove</button>
+                </form>
+              </li>
+            {% endfor %}
+          </ul>
+        </section>
+      {% endif %}
+
+      {% if attachments %}
+        <section class="detail-column">
+          <h2>Attachments</h2>
+          <ul class="task-list">
+            {% for a in attachments %}
+              <li>
+                {% if a.kind.Link %}<a class="attachment-link" href="{{ a.kind.Link.url }}">{{ a.kind.Link.url }}</a>{% endif %}
+                {% if a.kind.File %}<a href="/attachments/{{ a.id }}/download">{{ a.kind.File.filename }}</a>{% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        </section>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {% if children %}
+    <section>
+      <h2>Checklist</h2>
       <ul class="task-list checklist">
         {% for c in children %}
           <li class="checklist-item">
@@ -141,16 +251,8 @@
           </li>
         {% endfor %}
       </ul>
-    {% else %}
-      <p class="hint">No checklist items yet.</p>
-    {% endif %}
-    <form class="inline-form checklist-add-form" method="post" action="/tasks/{{ task.id }}/children">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label for="checklist-item-title" class="visually-hidden">Add a checklist item</label>
-      <input id="checklist-item-title" name="title" required maxlength="200" placeholder="Add a checklist item…">
-      <button type="submit">Add</button>
-    </form>
-  </section>
+    </section>
+  {% endif %}
 
   <div class="modal-overlay" id="task-parent">
     <div class="modal" role="dialog" aria-labelledby="task-parent-title">
@@ -185,36 +287,6 @@
   </div>
 
   <section>
-    <h2>Relationships</h2>
-    {% if relationships %}
-      <ul class="task-list">
-        {% for r in relationships %}
-          <li class="relationship-row">
-            <span>{{ r.label }} <a href="/tasks/{{ r.other_id }}">{{ r.other_title }}</a></span>
-            <form class="relationship-delete-form" method="post" action="/tasks/{{ task.id }}/relationships/{{ r.id }}/delete">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button type="submit" class="danger">Remove</button>
-            </form>
-          </li>
-        {% endfor %}
-      </ul>
-    {% else %}
-      <p class="hint">No relationships yet.</p>
-    {% endif %}
-    <form class="inline-form" method="post" action="/tasks/{{ task.id }}/relationships">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label for="to_task_id">Related task id</label>
-      <input id="to_task_id" name="to_task_id" required placeholder="task id">
-      <select name="kind">
-        <option value="blocks">blocks</option>
-        <option value="relates_to">relates to</option>
-        <option value="duplicates">duplicates</option>
-      </select>
-      <button type="submit">Link</button>
-    </form>
-  </section>
-
-  <section>
     <h2>Comments</h2>
     {% if comments %}
       <ul class="comment-list">
@@ -230,34 +302,6 @@
       <label for="body">Add a comment</label>
       <textarea id="body" name="body" required></textarea>
       <button type="submit">Comment</button>
-    </form>
-  </section>
-
-  <section>
-    <h2>Attachments</h2>
-    {% if attachments %}
-      <ul class="task-list">
-        {% for a in attachments %}
-          <li>
-            {% if a.kind.Link %}<a href="{{ a.kind.Link.url }}">{{ a.kind.Link.url }}</a>{% endif %}
-            {% if a.kind.File %}<a href="/attachments/{{ a.id }}/download">{{ a.kind.File.filename }}</a>{% endif %}
-          </li>
-        {% endfor %}
-      </ul>
-    {% else %}
-      <p class="hint">No attachments yet.</p>
-    {% endif %}
-    <form class="inline-form" method="post" action="/tasks/{{ task.id }}/attachments">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label for="url">Attach a link</label>
-      <input id="url" name="url" required type="url" placeholder="https://...">
-      <button type="submit">Attach</button>
-    </form>
-    <form class="inline-form" method="post" action="/tasks/{{ task.id }}/attachments/file" enctype="multipart/form-data">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label for="file">Attach a file</label>
-      <input id="file" name="file" type="file" required>
-      <button type="submit">Upload</button>
     </form>
   </section>
 {% endblock %}
