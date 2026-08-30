@@ -27,8 +27,7 @@ pub async fn set_field_value_handler(
     Path((id, field_id)): Path<(uuid::Uuid, uuid::Uuid)>,
     Form(form): Form<SetFieldValueForm>,
 ) -> Response {
-    match set_field_value_impl(&state, &user, TaskId::new(id), FieldId::new(field_id), form).await
-    {
+    match set_field_value_impl(&state, &user, TaskId::new(id), FieldId::new(field_id), form).await {
         Ok(response) => response,
         Err(err) => err.into_response_with(&state.templates),
     }

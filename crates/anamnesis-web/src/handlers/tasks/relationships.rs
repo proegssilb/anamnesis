@@ -4,9 +4,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use serde::Deserialize;
 
-use anamnesis_app::{
-    AppError, create_relationship, delete_relationship, resolve_kind, view_task,
-};
+use anamnesis_app::{AppError, create_relationship, delete_relationship, resolve_kind, view_task};
 use anamnesis_core::{
     RelationshipId, TaskId, builtin_blocks, builtin_duplicates, builtin_relates_to,
 };
