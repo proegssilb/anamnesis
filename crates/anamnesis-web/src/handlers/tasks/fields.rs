@@ -64,18 +64,7 @@ async fn set_field_value_impl(
     ) {
         Ok(data) => data,
         Err(WebError::BadRequest(message)) => {
-            let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
-            return render_task_page(
-                state,
-                user,
-                task_id,
-                &aggregate.task,
-                Some(&message),
-                None,
-                None,
-                StatusCode::UNPROCESSABLE_ENTITY,
-            )
-            .await;
+            return render_field_value_error(state, user, role, task_id, &message).await;
         }
         Err(err) => return Err(err),
     };
@@ -83,19 +72,33 @@ async fn set_field_value_impl(
     match set_task_field_value(state.tasks.as_ref(), role, definition, task_id, data).await {
         Ok(_) => Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response()),
         Err(AppError::Rule(e)) => {
-            let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
-            render_task_page(
-                state,
-                user,
-                task_id,
-                &aggregate.task,
-                Some(&e.to_string()),
-                None,
-                None,
-                StatusCode::UNPROCESSABLE_ENTITY,
-            )
-            .await
+            render_field_value_error(state, user, role, task_id, &e.to_string()).await
         }
         Err(err) => Err(WebError::from(err)),
     }
+}
+
+/// Re-renders the task page with a `422` and `message` set as the inline
+/// error — the shared tail of [`set_field_value_impl`]'s two failure paths
+/// (a field value that fails to parse, and one that parses but violates a
+/// domain rule on save).
+async fn render_field_value_error(
+    state: &AppState,
+    user: &CurrentUser,
+    role: Option<anamnesis_core::policy::Role>,
+    task_id: TaskId,
+    message: &str,
+) -> Result<Response, WebError> {
+    let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
+    render_task_page(
+        state,
+        user,
+        task_id,
+        &aggregate.task,
+        Some(message),
+        None,
+        None,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await
 }
