@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__codacy__codacy_cli_analyze",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sid=$(jq -r '.session_id'); mkdir -p /tmp/claude-codacy-analyzed && touch \"/tmp/claude-codacy-analyzed/$sid\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git commit *)",
+            "command": "sid=$(jq -r '.session_id'); rm -f \"/tmp/claude-codacy-analyzed/$sid\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git commit *)",
+            "command": "sid=$(jq -r '.session_id'); if [ -f \"/tmp/claude-codacy-analyzed/$sid\" ]; then echo '{}'; else echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"Codacy scans all PRs for this repo. Run the codacy_cli_analyze MCP tool on your changed files and fix any flagged issues before committing.\"}}'; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
