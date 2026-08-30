@@ -7,54 +7,7 @@ mod support;
 
 use axum::http::StatusCode;
 
-use support::{TestApp, body_text, location_of};
-
-/// Creates an area, a project in it, and returns the project's path — the
-/// shared setup every test here needs before it can create tasks.
-async fn new_project(app: &TestApp, cookie: Option<&str>) -> String {
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Homesteading"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Renovation"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string()
-}
-
-async fn new_task(app: &TestApp, project_path: &str, title: &str, cookie: Option<&str>) -> String {
-    location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", title),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string()
-}
+use support::{TestApp, body_text, new_project, new_task};
 
 #[tokio::test]
 async fn a_task_with_no_parent_shows_no_checklist_badge_and_the_plain_hint() {
@@ -215,52 +168,7 @@ async fn an_hx_candidate_search_gets_only_the_fragment_a_plain_request_gets_the_
 
 #[tokio::test]
 async fn a_user_without_a_view_grant_on_the_task_cannot_use_the_parent_picker() {
-    // Dev-auth-bypass off, matching `f3_admin_routes.rs`'s own
-    // "ungranted user" tests — under bypass, every cookie resolves to the
-    // same dev user, so a *distinct* ungranted identity needs real sessions.
-    let app = TestApp::with_bootstrap_admin(false, "admin").await;
-    let admin_cookie = app.login_cookie_header("admin", "admin-token");
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", "admin-token"),
-                ("title", "Homesteading"),
-                ("description", ""),
-            ],
-            Some(&admin_cookie),
-        )
-        .await,
-    )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", "admin-token"),
-                ("title", "Renovation"),
-                ("description", ""),
-            ],
-            Some(&admin_cookie),
-        )
-        .await,
-    )
-    .to_string();
-    let task_path = location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", "admin-token"),
-                ("title", "Regrout the shower"),
-                ("description", ""),
-            ],
-            Some(&admin_cookie),
-        )
-        .await,
-    )
-    .to_string();
-
-    let stranger_cookie = app.login_cookie_header("stranger", "stranger-token");
+    let (app, task_path, stranger_cookie) = support::setup_task_as_admin().await;
     let response = app
         .get(
             &format!("{task_path}/parent-candidates?q=Regrout"),
