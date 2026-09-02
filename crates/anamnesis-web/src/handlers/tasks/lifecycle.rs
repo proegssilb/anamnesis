@@ -6,7 +6,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 
-use anamnesis_app::{AppError, archive_task, raise_task, unarchive_task, view_task};
+use anamnesis_app::{archive_task, unarchive_task, view_task};
 use anamnesis_core::TaskId;
 
 use crate::auth::CurrentUser;
@@ -17,7 +17,10 @@ use crate::state::AppState;
 use crate::handlers::forms::{CsrfOnlyForm, RaiseTaskForm};
 
 use super::page::render_task_page;
-use super::{drop_task_with_bounce_accounting, role_for_task};
+use super::{
+    RaiseOutcome, WIP_LIMIT_MESSAGE, drop_task_with_bounce_accounting, raise_task_to_column,
+    role_for_task,
+};
 
 pub async fn raise_task_handler(
     State(state): State<AppState>,
@@ -42,21 +45,10 @@ async fn raise_task_impl(
     }
     let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
     let column_id = anamnesis_core::ColumnId::new(form.column_id);
-    let position = state.board.count_on_column(column_id).await?;
 
-    match raise_task(
-        state.tasks.as_ref(),
-        state.board.as_ref(),
-        state.clock.as_ref(),
-        role,
-        task_id,
-        column_id,
-        position,
-    )
-    .await
-    {
-        Ok(_) => Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response()),
-        Err(AppError::WipLimitExceeded) => {
+    match raise_task_to_column(state, role, task_id, column_id).await? {
+        RaiseOutcome::Raised => Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response()),
+        RaiseOutcome::WipLimitExceeded => {
             let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
             // The placement editor is a `#task-placement` modal now, not a
             // `<details>` — it reopens itself because the raise form's
@@ -67,14 +59,13 @@ async fn raise_task_impl(
                 user,
                 task_id,
                 &aggregate.task,
-                Some("That column is already at its work-in-progress limit."),
+                Some(WIP_LIMIT_MESSAGE),
                 None,
                 None,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
             .await
         }
-        Err(err) => Err(WebError::from(err)),
     }
 }
 

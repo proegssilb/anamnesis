@@ -11,7 +11,7 @@ use minijinja::context;
 use serde::Deserialize;
 
 use anamnesis_app::{
-    AppError, archive_project, create_task, list_all_projects, list_project_members, raise_task,
+    AppError, archive_project, create_task, list_all_projects, list_project_members,
     unarchive_project, view_project,
 };
 use anamnesis_core::UserId;
@@ -29,7 +29,10 @@ use super::field_form;
 use super::format::format_field_kind;
 use super::forms::{AddFieldDefinitionForm, CreateTaskForm, CsrfOnlyForm};
 use super::membership::format_role;
-use super::tasks::{drop_task_with_bounce_accounting, role_for_task};
+use super::tasks::{
+    RaiseOutcome, WIP_LIMIT_MESSAGE, drop_task_with_bounce_accounting, raise_task_to_column,
+    role_for_task,
+};
 
 /// The Project's "members" section, fetched only when `can_manage` — the
 /// [`crate::handlers::areas::area_members_for_display`] sibling.
@@ -197,39 +200,26 @@ async fn raise_project_task_impl(
     let entry = columns
         .first()
         .ok_or_else(|| WebError::BadRequest("no board columns are configured".to_string()))?;
-    let position = state.board.count_on_column(entry.column.id).await?;
 
-    match raise_task(
-        state.tasks.as_ref(),
-        state.board.as_ref(),
-        state.clock.as_ref(),
-        role,
-        task_id,
-        entry.column.id,
-        position,
-    )
-    .await
+    if let RaiseOutcome::WipLimitExceeded =
+        raise_task_to_column(state, role, task_id, entry.column.id).await?
     {
-        Ok(_) => {}
         // Silently reverts on the hx path -- the re-rendered lists reflect
         // the true (unchanged) DB state, exactly like
         // `crate::handlers::board::reposition_impl`'s hx branch on the same
         // error.
-        Err(AppError::WipLimitExceeded) if is_hx_request(headers) => {
+        if is_hx_request(headers) {
             return render_project_lists_fragment(state, project_id, &user.csrf_token).await;
         }
-        Err(AppError::WipLimitExceeded) => {
-            return render_project_page_reloaded(
-                state,
-                user,
-                role,
-                project_id,
-                Some("That column is already at its work-in-progress limit."),
-                StatusCode::UNPROCESSABLE_ENTITY,
-            )
-            .await;
-        }
-        Err(err) => return Err(WebError::from(err)),
+        return render_project_page_reloaded(
+            state,
+            user,
+            role,
+            project_id,
+            Some(WIP_LIMIT_MESSAGE),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        )
+        .await;
     }
 
     if is_hx_request(headers) {
