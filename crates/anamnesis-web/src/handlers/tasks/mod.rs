@@ -68,6 +68,36 @@ pub(super) async fn role_for_task(
     Ok((project_id, role))
 }
 
+/// Drops a task below the horizon, first reading whether it was leaving a
+/// Done column so the bounce count stays honest (`docs/DOMAIN.md` §5).
+/// Shared by [`lifecycle::drop_task_impl`] and
+/// [`crate::handlers::projects::drop_project_task_impl`] — the drag target
+/// for dropping a card back off a project's board.
+pub(super) async fn drop_task_with_bounce_accounting(
+    state: &AppState,
+    role: Option<anamnesis_core::policy::Role>,
+    task_id: TaskId,
+) -> Result<(), WebError> {
+    let aggregate = state.tasks.load(task_id).await?.ok_or(AppError::NotFound)?;
+    let left_a_done_column = match aggregate.task.placement {
+        anamnesis_core::Placement::OnBoard { column, .. } => {
+            let columns = state.board.columns_with_items().await?;
+            super::format::column_is_done(&columns, column).unwrap_or(false)
+        }
+        anamnesis_core::Placement::Below => false,
+    };
+
+    anamnesis_app::drop_task(
+        state.tasks.as_ref(),
+        state.clock.as_ref(),
+        role,
+        task_id,
+        left_a_done_column,
+    )
+    .await?;
+    Ok(())
+}
+
 /// The task detail page's own read-side calls (`list_comments`,
 /// `list_attachments`) are gated identically to `ViewTask`
 /// (`can_view_project`), and by the time `render_task_page` runs, the

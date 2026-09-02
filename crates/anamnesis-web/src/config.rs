@@ -67,46 +67,11 @@ impl Config {
 
         let database_url = require(&get, "ANAMNESIS_DATABASE_URL")?;
         let base_url = require(&get, "ANAMNESIS_BASE_URL")?;
-
-        let bind_addr = match get("ANAMNESIS_BIND_ADDR") {
-            Some(raw) => SocketAddr::from_str(&raw).map_err(|e| ConfigError::Invalid {
-                name: "ANAMNESIS_BIND_ADDR",
-                reason: e.to_string(),
-            })?,
-            None => SocketAddr::from_str(DEFAULT_BIND_ADDR).expect("default bind addr is valid"),
-        };
-
-        let session_secret = require(&get, "ANAMNESIS_SESSION_SECRET")?;
-        if session_secret.len() < MIN_SESSION_SECRET_BYTES {
-            return Err(ConfigError::Invalid {
-                name: "ANAMNESIS_SESSION_SECRET",
-                reason: format!(
-                    "must be at least {MIN_SESSION_SECRET_BYTES} bytes, got {}",
-                    session_secret.len()
-                ),
-            });
-        }
-
-        let oidc_scopes = get("ANAMNESIS_OIDC_SCOPES")
-            .unwrap_or_else(|| DEFAULT_OIDC_SCOPES.to_string())
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
-
-        let (oidc_issuer_url, oidc_client_id, oidc_client_secret) = if dev_auth_bypass {
-            (
-                get("ANAMNESIS_OIDC_ISSUER_URL"),
-                get("ANAMNESIS_OIDC_CLIENT_ID"),
-                get("ANAMNESIS_OIDC_CLIENT_SECRET"),
-            )
-        } else {
-            (
-                Some(require(&get, "ANAMNESIS_OIDC_ISSUER_URL")?),
-                Some(require(&get, "ANAMNESIS_OIDC_CLIENT_ID")?),
-                Some(require(&get, "ANAMNESIS_OIDC_CLIENT_SECRET")?),
-            )
-        };
-
+        let bind_addr = resolve_bind_addr(&get)?;
+        let session_secret = resolve_session_secret(&get)?;
+        let oidc_scopes = resolve_oidc_scopes(&get);
+        let (oidc_issuer_url, oidc_client_id, oidc_client_secret) =
+            resolve_oidc_credentials(&get, dev_auth_bypass)?;
         let timezone = require(&get, "ANAMNESIS_TIMEZONE")?;
         let bootstrap_admin = require(&get, "ANAMNESIS_BOOTSTRAP_ADMIN")?;
         let blob_root = get("ANAMNESIS_BLOB_ROOT").unwrap_or_else(|| DEFAULT_BLOB_ROOT.to_string());
@@ -141,6 +106,72 @@ fn require(
     get(name)
         .filter(|v| !v.is_empty())
         .ok_or(ConfigError::Missing(name))
+}
+
+/// `ANAMNESIS_BIND_ADDR`, defaulting to [`DEFAULT_BIND_ADDR`] when unset.
+fn resolve_bind_addr(get: &impl Fn(&str) -> Option<String>) -> Result<SocketAddr, ConfigError> {
+    match get("ANAMNESIS_BIND_ADDR") {
+        Some(raw) => SocketAddr::from_str(&raw).map_err(|e| ConfigError::Invalid {
+            name: "ANAMNESIS_BIND_ADDR",
+            reason: e.to_string(),
+        }),
+        None => Ok(SocketAddr::from_str(DEFAULT_BIND_ADDR).expect("default bind addr is valid")),
+    }
+}
+
+/// `ANAMNESIS_SESSION_SECRET`, required and enforced to be at least
+/// [`MIN_SESSION_SECRET_BYTES`] long.
+fn resolve_session_secret(get: &impl Fn(&str) -> Option<String>) -> Result<String, ConfigError> {
+    let session_secret = require(get, "ANAMNESIS_SESSION_SECRET")?;
+    if session_secret.len() < MIN_SESSION_SECRET_BYTES {
+        return Err(ConfigError::Invalid {
+            name: "ANAMNESIS_SESSION_SECRET",
+            reason: format!(
+                "must be at least {MIN_SESSION_SECRET_BYTES} bytes, got {}",
+                session_secret.len()
+            ),
+        });
+    }
+    Ok(session_secret)
+}
+
+/// `ANAMNESIS_OIDC_SCOPES`, whitespace-split, defaulting to
+/// [`DEFAULT_OIDC_SCOPES`] when unset.
+fn resolve_oidc_scopes(get: &impl Fn(&str) -> Option<String>) -> Vec<String> {
+    get("ANAMNESIS_OIDC_SCOPES")
+        .unwrap_or_else(|| DEFAULT_OIDC_SCOPES.to_string())
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+/// `(oidc_issuer_url, oidc_client_id, oidc_client_secret)`, all `Some` once
+/// [`resolve_oidc_credentials`] succeeds unless `dev_auth_bypass` left them
+/// unset. Named so the signature below reads instead of forcing clippy's
+/// `type_complexity` lint to spell the tuple out.
+type OidcCredentials = (Option<String>, Option<String>, Option<String>);
+
+/// The OIDC issuer/client-id/client-secret triple. Required when
+/// `dev_auth_bypass` is off (a real deployment must be able to authenticate
+/// against a real provider); merely read-through-if-present when it is on
+/// (the dev bypass never needs them, but a caller may still want to see
+/// what's configured).
+fn resolve_oidc_credentials(
+    get: &impl Fn(&str) -> Option<String>,
+    dev_auth_bypass: bool,
+) -> Result<OidcCredentials, ConfigError> {
+    if dev_auth_bypass {
+        return Ok((
+            get("ANAMNESIS_OIDC_ISSUER_URL"),
+            get("ANAMNESIS_OIDC_CLIENT_ID"),
+            get("ANAMNESIS_OIDC_CLIENT_SECRET"),
+        ));
+    }
+    Ok((
+        Some(require(get, "ANAMNESIS_OIDC_ISSUER_URL")?),
+        Some(require(get, "ANAMNESIS_OIDC_CLIENT_ID")?),
+        Some(require(get, "ANAMNESIS_OIDC_CLIENT_SECRET")?),
+    ))
 }
 
 fn parse_bool(raw: &str) -> bool {

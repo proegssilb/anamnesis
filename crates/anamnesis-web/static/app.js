@@ -81,40 +81,52 @@
     var csrfMeta = document.querySelector('meta[name="csrf-token"]');
     var csrfToken = csrfMeta ? csrfMeta.content : "";
 
-    function initBoardSortable() {
-      document.querySelectorAll(".card-list[data-column-id]").forEach(function (list) {
+    // Shared by all three init functions below: guard against re-attaching
+    // Sortable to a list that already has an instance, then wire up the
+    // options every list shares (only `group`/`ghostClass`/`onEnd` vary per
+    // list kind).
+    function initSortable(selector, group, ghostClass, onEnd) {
+      document.querySelectorAll(selector).forEach(function (list) {
         if (window.Sortable.get(list)) {
           return;
         }
         new window.Sortable(list, {
-          group: "anamnesis-board-cards",
+          group: group,
           animation: 150,
-          ghostClass: "card-drag-ghost",
+          ghostClass: ghostClass,
           // A touch-friendly delay so an ordinary tap/scroll on mobile is
           // not mistaken for a drag start.
           delay: 120,
           delayOnTouchOnly: true,
-          onEnd: function (evt) {
-            var card = evt.item;
-            var kind = card.getAttribute("data-item-kind");
-            var id = card.getAttribute("data-item-id");
-            var columnId = evt.to.getAttribute("data-column-id");
-            var position = evt.newIndex;
-            if (!kind || !id || !columnId || position === null || position === undefined) {
-              return;
-            }
-            window.htmx.ajax("POST", "/board/reposition", {
-              source: card,
-              target: "body",
-              swap: "none",
-              values: {
-                csrf_token: csrfToken,
-                item_kind: kind,
-                item_id: id,
-                column_id: columnId,
-                position: String(position),
-              },
-            });
+          onEnd: onEnd,
+        });
+      });
+    }
+
+    // The task board's columns. Unlike the two lists below, there is a
+    // position to persist *within* a column (`data-item-kind`/-id order), so
+    // this is the one init function with no `evt.from === evt.to` guard --
+    // an intra-column drag is a real reposition, not a no-op.
+    function initBoardSortable() {
+      initSortable(".card-list[data-column-id]", "anamnesis-board-cards", "card-drag-ghost", function (evt) {
+        var card = evt.item;
+        var kind = card.getAttribute("data-item-kind");
+        var id = card.getAttribute("data-item-id");
+        var columnId = evt.to.getAttribute("data-column-id");
+        var position = evt.newIndex;
+        if (!kind || !id || !columnId || position === null || position === undefined) {
+          return;
+        }
+        window.htmx.ajax("POST", "/board/reposition", {
+          source: card,
+          target: "body",
+          swap: "none",
+          values: {
+            csrf_token: csrfToken,
+            item_kind: kind,
+            item_id: id,
+            column_id: columnId,
+            position: String(position),
           },
         });
       });
@@ -128,35 +140,23 @@
     // is a no-op; only crossing from one list to the other raises or drops
     // the task.
     function initProjectSortable() {
-      document.querySelectorAll(".task-list.drag-list[data-role]").forEach(function (list) {
-        if (window.Sortable.get(list)) {
+      initSortable(".task-list.drag-list[data-role]", "anamnesis-project-tasks", "task-drag-ghost", function (evt) {
+        if (evt.from === evt.to) {
           return;
         }
-        new window.Sortable(list, {
-          group: "anamnesis-project-tasks",
-          animation: 150,
-          ghostClass: "task-drag-ghost",
-          delay: 120,
-          delayOnTouchOnly: true,
-          onEnd: function (evt) {
-            if (evt.from === evt.to) {
-              return;
-            }
-            var item = evt.item;
-            var taskId = item.getAttribute("data-item-id");
-            var projectId = evt.to.getAttribute("data-project-id");
-            var destRole = evt.to.getAttribute("data-role");
-            if (!taskId || !projectId || !destRole) {
-              return;
-            }
-            var action = destRole === "on_board" ? "raise" : "drop";
-            window.htmx.ajax("POST", "/projects/" + projectId + "/tasks/" + taskId + "/" + action, {
-              source: item,
-              target: "body",
-              swap: "none",
-              values: { csrf_token: csrfToken },
-            });
-          },
+        var item = evt.item;
+        var taskId = item.getAttribute("data-item-id");
+        var projectId = evt.to.getAttribute("data-project-id");
+        var destRole = evt.to.getAttribute("data-role");
+        if (!taskId || !projectId || !destRole) {
+          return;
+        }
+        var action = destRole === "on_board" ? "raise" : "drop";
+        window.htmx.ajax("POST", "/projects/" + projectId + "/tasks/" + taskId + "/" + action, {
+          source: item,
+          target: "body",
+          swap: "none",
+          values: { csrf_token: csrfToken },
         });
       });
     }
@@ -172,58 +172,48 @@
     // manage the area (`can_manage` in the template) -- a plain Member sees
     // static, non-interactive cards.
     function initAreaSortable() {
-      document.querySelectorAll(".card-list.drag-list[data-role][data-area-id]").forEach(function (list) {
-        if (window.Sortable.get(list)) {
-          return;
+      initSortable(
+        ".card-list.drag-list[data-role][data-area-id]",
+        "anamnesis-area-projects",
+        "card-drag-ghost",
+        function (evt) {
+          if (evt.from === evt.to) {
+            return;
+          }
+          var item = evt.item;
+          var projectId = item.getAttribute("data-item-id");
+          var destRole = evt.to.getAttribute("data-role");
+          if (!projectId || !destRole) {
+            return;
+          }
+          window.htmx.ajax("POST", "/projects/" + projectId + "/status", {
+            source: item,
+            target: "body",
+            swap: "none",
+            values: { csrf_token: csrfToken, status: destRole },
+          });
         }
-        new window.Sortable(list, {
-          group: "anamnesis-area-projects",
-          animation: 150,
-          ghostClass: "card-drag-ghost",
-          delay: 120,
-          delayOnTouchOnly: true,
-          onEnd: function (evt) {
-            if (evt.from === evt.to) {
-              return;
-            }
-            var item = evt.item;
-            var projectId = item.getAttribute("data-item-id");
-            var destRole = evt.to.getAttribute("data-role");
-            if (!projectId || !destRole) {
-              return;
-            }
-            window.htmx.ajax("POST", "/projects/" + projectId + "/status", {
-              source: item,
-              target: "body",
-              swap: "none",
-              values: { csrf_token: csrfToken, status: destRole },
-            });
-          },
-        });
-      });
+      );
     }
 
-    initBoardSortable();
-    initProjectSortable();
-    initAreaSortable();
+    function initAllSortables() {
+      initBoardSortable();
+      initProjectSortable();
+      initAreaSortable();
+    }
+
+    initAllSortables();
 
     // Both raise/drop and reposition persist by having the server swap a
     // fresh `<ul>` in out-of-band (`hx-swap-oob="true"`, `_column.html` and
     // `_project_task_list.html`) rather than patching the existing one —
     // the new node replaces the old Sortable-instrumented one wholesale, so
-    // its Sortable instance (and listeners) are gone. Re-running both init
-    // functions after every htmx swap re-attaches Sortable to whatever list
-    // nodes are now in the DOM; the `Sortable.get` guard above makes this a
-    // no-op for any list an oob swap didn't touch.
-    document.body.addEventListener("htmx:afterSwap", function () {
-      initBoardSortable();
-      initProjectSortable();
-      initAreaSortable();
-    });
-    document.body.addEventListener("htmx:oobAfterSwap", function () {
-      initBoardSortable();
-      initProjectSortable();
-      initAreaSortable();
-    });
+    // its Sortable instance (and listeners) are gone. Re-running all three
+    // init functions after every htmx swap re-attaches Sortable to whatever
+    // list nodes are now in the DOM; the `Sortable.get` guard in
+    // `initSortable` above makes this a no-op for any list an oob swap
+    // didn't touch.
+    document.body.addEventListener("htmx:afterSwap", initAllSortables);
+    document.body.addEventListener("htmx:oobAfterSwap", initAllSortables);
   });
 })();

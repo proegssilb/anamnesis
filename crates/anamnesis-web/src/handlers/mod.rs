@@ -40,6 +40,30 @@ pub use projects::{
 };
 pub use search::search_handler;
 pub use settings::{update_settings_handler, view_settings_handler};
+
+use axum::response::{Html, IntoResponse, Response};
+
+use crate::error::WebError;
+
+/// Renders `template_name` once per `contexts` entry and concatenates the
+/// results — the `hx-swap-oob="true"` multi-fragment response shape every
+/// drag-and-drop endpoint uses to re-sync the one or two lists/lanes/columns
+/// a move touched, without a full page reload. Each context is expected to
+/// already carry `oob => true`.
+pub(super) fn render_oob_fragments(
+    templates: &minijinja::Environment<'static>,
+    template_name: &str,
+    contexts: impl IntoIterator<Item = minijinja::Value>,
+) -> Result<Response, WebError> {
+    let tmpl = templates
+        .get_template(template_name)
+        .map_err(WebError::template)?;
+    let mut body = String::new();
+    for context in contexts {
+        body.push_str(&tmpl.render(context).map_err(WebError::template)?);
+    }
+    Ok(Html(body).into_response())
+}
 pub use tasks::{
     add_checklist_item_handler, add_comment_handler, add_file_attachment_handler,
     add_link_attachment_handler, archive_task_handler, create_relationship_handler,

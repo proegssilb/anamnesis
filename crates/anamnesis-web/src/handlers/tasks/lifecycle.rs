@@ -6,19 +6,18 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 
-use anamnesis_app::{AppError, archive_task, drop_task, raise_task, unarchive_task, view_task};
-use anamnesis_core::{Placement, TaskId};
+use anamnesis_app::{AppError, archive_task, raise_task, unarchive_task, view_task};
+use anamnesis_core::TaskId;
 
 use crate::auth::CurrentUser;
 use crate::error::WebError;
 use crate::session::csrf_tokens_match;
 use crate::state::AppState;
 
-use crate::handlers::format::column_is_done;
 use crate::handlers::forms::{CsrfOnlyForm, RaiseTaskForm};
 
 use super::page::render_task_page;
-use super::role_for_task;
+use super::{drop_task_with_bounce_accounting, role_for_task};
 
 pub async fn raise_task_handler(
     State(state): State<AppState>,
@@ -101,23 +100,7 @@ async fn drop_task_impl(
         return Err(WebError::CsrfMismatch);
     }
     let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
-    let aggregate = state.tasks.load(task_id).await?.ok_or(AppError::NotFound)?;
-    let left_a_done_column = match aggregate.task.placement {
-        Placement::OnBoard { column, .. } => {
-            let columns = state.board.columns_with_items().await?;
-            column_is_done(&columns, column).unwrap_or(false)
-        }
-        Placement::Below => false,
-    };
-
-    drop_task(
-        state.tasks.as_ref(),
-        state.clock.as_ref(),
-        role,
-        task_id,
-        left_a_done_column,
-    )
-    .await?;
+    drop_task_with_bounce_accounting(state, role, task_id).await?;
     Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response())
 }
 

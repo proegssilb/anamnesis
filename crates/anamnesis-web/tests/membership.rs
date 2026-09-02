@@ -392,6 +392,175 @@ async fn granting_system_admin_without_a_valid_csrf_token_is_rejected() {
 // token -- proves the routes are wired end to end under the same mode
 // `cargo run`'s dev bypass uses. ---
 
+// --- Project status transitions: the area page's drag-and-drop hx branches
+// (`crate::handlers::areas::transition_project_status_impl`,
+// `render_area_lanes_fragment`) -- every plain `/status` post elsewhere in
+// this test suite (here, and in `tests/settings.rs`, `tests/suggestion.rs`,
+// `tests/tangle_board.rs`) is setup-only and asserts nothing about the
+// response itself, so neither hx branch was covered anywhere. ---
+
+#[tokio::test]
+async fn transitioning_a_projects_status_via_hx_returns_all_three_area_lanes_as_oob_fragments() {
+    let app = TestApp::new(true).await;
+    let cookie: Option<&str> = None;
+    let area_path = location_of(
+        &app.post_form(
+            "/areas",
+            &[
+                ("csrf_token", DEV_CSRF_TOKEN),
+                ("title", "Home"),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string();
+    let project_path = location_of(
+        &app.post_form(
+            &format!("{area_path}/projects"),
+            &[
+                ("csrf_token", DEV_CSRF_TOKEN),
+                ("title", "Repaint"),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string();
+
+    let response = app
+        .post_form_hx(
+            &format!("{project_path}/status"),
+            &[("csrf_token", DEV_CSRF_TOKEN), ("status", "active")],
+            cookie,
+        )
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "an HX-Request status change returns the fragment directly, not a redirect"
+    );
+    let body = body_text(response).await;
+    assert!(
+        !body.contains("<!doctype html>") && !body.contains("<html"),
+        "an HX-Request must get bare fragments, not the page shell: {body}"
+    );
+    assert!(body.contains("hx-swap-oob=\"true\""));
+    assert!(body.contains(r#"id="pending-list""#));
+    assert!(body.contains(r#"id="active-list""#));
+    assert!(body.contains(r#"id="complete-list""#));
+    assert!(
+        body.contains("Repaint"),
+        "the moved project must appear in the returned lanes: {body}"
+    );
+}
+
+#[tokio::test]
+async fn transitioning_a_projects_status_via_hx_silently_reverts_when_the_active_project_limit_is_exceeded()
+ {
+    let app = TestApp::new(true).await;
+    let cookie: Option<&str> = None;
+
+    // Lower the active-project limit to 1, exactly like
+    // `tests/settings.rs::updating_active_project_limit_through_settings_changes_the_enforced_limit`.
+    let save = app
+        .post_form(
+            "/settings",
+            &[
+                ("csrf_token", DEV_CSRF_TOKEN),
+                ("active_project_limit", "1"),
+                ("cooldown_seconds", "259200"),
+                ("high_bounce_threshold", "3"),
+                ("sweep_kind", "never"),
+            ],
+            cookie,
+        )
+        .await;
+    assert_eq!(save.status(), StatusCode::SEE_OTHER);
+
+    let area_path = location_of(
+        &app.post_form(
+            "/areas",
+            &[
+                ("csrf_token", DEV_CSRF_TOKEN),
+                ("title", "Home"),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string();
+    let first_project = location_of(
+        &app.post_form(
+            &format!("{area_path}/projects"),
+            &[
+                ("csrf_token", DEV_CSRF_TOKEN),
+                ("title", "One"),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string();
+    let second_project = location_of(
+        &app.post_form(
+            &format!("{area_path}/projects"),
+            &[
+                ("csrf_token", DEV_CSRF_TOKEN),
+                ("title", "Two"),
+                ("description", ""),
+            ],
+            cookie,
+        )
+        .await,
+    )
+    .to_string();
+
+    // Fill the limit of 1 with the first project.
+    let first_active = app
+        .post_form(
+            &format!("{first_project}/status"),
+            &[("csrf_token", DEV_CSRF_TOKEN), ("status", "active")],
+            cookie,
+        )
+        .await;
+    assert_eq!(first_active.status(), StatusCode::SEE_OTHER);
+
+    // The second project's hx status change silently reverts -- 200 with
+    // the unchanged lanes, no error text, exactly like
+    // `crate::handlers::projects::raise_project_task_impl`'s
+    // `WipLimitExceeded` branch on the same shape of problem.
+    let second_active = app
+        .post_form_hx(
+            &format!("{second_project}/status"),
+            &[("csrf_token", DEV_CSRF_TOKEN), ("status", "active")],
+            cookie,
+        )
+        .await;
+    assert_eq!(second_active.status(), StatusCode::OK);
+    let body = body_text(second_active).await;
+    assert!(
+        !body.contains("active project limit"),
+        "the hx path has no per-card spot to show the limit error: {body}"
+    );
+
+    // The true (unchanged) DB state: "Two" is still Pending, not Active.
+    let area_page = body_text(app.get(&area_path, cookie).await).await;
+    let pending_section = area_page
+        .split(r#"id="pending-list""#)
+        .nth(1)
+        .and_then(|s| s.split(r#"id="active-list""#).next())
+        .expect("area page has a pending-list section before active-list");
+    assert!(
+        pending_section.contains("Two"),
+        "a reverted hx status change must leave the project in its original lane: {area_page}"
+    );
+}
+
 #[tokio::test]
 async fn dev_bypass_admin_can_grant_an_area_role() {
     let app = TestApp::new(true).await;

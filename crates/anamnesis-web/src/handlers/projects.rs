@@ -11,12 +11,12 @@ use minijinja::context;
 use serde::Deserialize;
 
 use anamnesis_app::{
-    AppError, archive_project, create_task, drop_task, list_all_projects, list_project_members,
-    raise_task, unarchive_project, view_project,
+    AppError, archive_project, create_task, list_all_projects, list_project_members, raise_task,
+    unarchive_project, view_project,
 };
 use anamnesis_core::UserId;
 use anamnesis_core::policy::Role;
-use anamnesis_core::{Placement, Project, ProjectId, ProjectStatus, TaskId};
+use anamnesis_core::{Area, Project, ProjectId, ProjectStatus, TaskId};
 
 use crate::auth::CurrentUser;
 use crate::error::WebError;
@@ -26,10 +26,10 @@ use crate::state::AppState;
 
 use super::access;
 use super::field_form;
-use super::format::{column_is_done, format_field_kind};
+use super::format::format_field_kind;
 use super::forms::{AddFieldDefinitionForm, CreateTaskForm, CsrfOnlyForm};
 use super::membership::format_role;
-use super::tasks::role_for_task;
+use super::tasks::{drop_task_with_bounce_accounting, role_for_task};
 
 /// The Project's "members" section, fetched only when `can_manage` — the
 /// [`crate::handlers::areas::area_members_for_display`] sibling.
@@ -43,6 +43,27 @@ async fn project_members_for_display(
         return Ok(Vec::new());
     }
     Ok(list_project_members(state.membership.as_ref(), role, project_id).await?)
+}
+
+/// Rebuilds the project page from scratch: the four reads
+/// [`render_project_page`] needs (aggregate, tasks, `can_manage`, members).
+/// Shared by every mutation handler that must re-render the page to show an
+/// `error` after a failed write, rather than redirect to a fresh `GET`.
+async fn render_project_page_reloaded(
+    state: &AppState,
+    user: &CurrentUser,
+    role: Option<Role>,
+    project_id: ProjectId,
+    error: Option<&str>,
+    status: StatusCode,
+) -> Result<Response, WebError> {
+    let aggregate = view_project(state.projects.as_ref(), role, project_id).await?;
+    let tasks = state.tasks.list_by_project(project_id).await?;
+    let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
+    let members = project_members_for_display(state, role, project_id, can_manage).await?;
+    render_project_page(
+        state, user, &aggregate, &tasks, &members, can_manage, error, status,
+    )
 }
 
 pub async fn view_project_handler(
@@ -68,20 +89,7 @@ async fn view_project_impl(
         .ok_or(AppError::NotFound)?;
     let area_id = aggregate.project.area_id;
     let role = access::project_role(state, &user.user_id, project_id, area_id).await?;
-    let aggregate = view_project(state.projects.as_ref(), role, project_id).await?;
-    let tasks = state.tasks.list_by_project(project_id).await?;
-    let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
-    let members = project_members_for_display(state, role, project_id, can_manage).await?;
-    render_project_page(
-        state,
-        user,
-        &aggregate,
-        &tasks,
-        &members,
-        can_manage,
-        None,
-        StatusCode::OK,
-    )
+    render_project_page_reloaded(state, user, role, project_id, None, StatusCode::OK).await
 }
 
 pub async fn create_task_handler(
@@ -131,20 +139,15 @@ async fn create_task_impl(
             Ok(Redirect::to(&format!("/tasks/{}", task.id)).into_response())
         }
         Err(AppError::Rule(e)) => {
-            let aggregate = view_project(state.projects.as_ref(), role, project_id).await?;
-            let tasks = state.tasks.list_by_project(project_id).await?;
-            let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
-            let members = project_members_for_display(state, role, project_id, can_manage).await?;
-            render_project_page(
+            render_project_page_reloaded(
                 state,
                 user,
-                &aggregate,
-                &tasks,
-                &members,
-                can_manage,
+                role,
+                project_id,
                 Some(&e.to_string()),
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
+            .await
         }
         Err(err) => Err(WebError::from(err)),
     }
@@ -207,35 +210,32 @@ async fn raise_project_task_impl(
     )
     .await
     {
-        Ok(_) if is_hx_request(headers) => {
-            render_project_lists_fragment(state, project_id, &user.csrf_token).await
-        }
-        Ok(_) => Ok(Redirect::to(&format!("/projects/{project_id}")).into_response()),
+        Ok(_) => {}
         // Silently reverts on the hx path -- the re-rendered lists reflect
         // the true (unchanged) DB state, exactly like
         // `crate::handlers::board::reposition_impl`'s hx branch on the same
         // error.
         Err(AppError::WipLimitExceeded) if is_hx_request(headers) => {
-            render_project_lists_fragment(state, project_id, &user.csrf_token).await
+            return render_project_lists_fragment(state, project_id, &user.csrf_token).await;
         }
         Err(AppError::WipLimitExceeded) => {
-            let aggregate = view_project(state.projects.as_ref(), role, project_id).await?;
-            let tasks = state.tasks.list_by_project(project_id).await?;
-            let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
-            let members = project_members_for_display(state, role, project_id, can_manage).await?;
-            render_project_page(
+            return render_project_page_reloaded(
                 state,
                 user,
-                &aggregate,
-                &tasks,
-                &members,
-                can_manage,
+                role,
+                project_id,
                 Some("That column is already at its work-in-progress limit."),
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
+            .await;
         }
-        Err(err) => Err(WebError::from(err)),
+        Err(err) => return Err(WebError::from(err)),
     }
+
+    if is_hx_request(headers) {
+        return render_project_lists_fragment(state, project_id, &user.csrf_token).await;
+    }
+    Ok(Redirect::to(&format!("/projects/{project_id}")).into_response())
 }
 
 /// Drops a task from this project back below the horizon — the drag target
@@ -277,23 +277,7 @@ async fn drop_project_task_impl(
         return Err(WebError::CsrfMismatch);
     }
     let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
-    let aggregate = state.tasks.load(task_id).await?.ok_or(AppError::NotFound)?;
-    let left_a_done_column = match aggregate.task.placement {
-        Placement::OnBoard { column, .. } => {
-            let columns = state.board.columns_with_items().await?;
-            column_is_done(&columns, column).unwrap_or(false)
-        }
-        Placement::Below => false,
-    };
-
-    drop_task(
-        state.tasks.as_ref(),
-        state.clock.as_ref(),
-        role,
-        task_id,
-        left_a_done_column,
-    )
-    .await?;
+    drop_task_with_bounce_accounting(state, role, task_id).await?;
 
     if is_hx_request(headers) {
         return render_project_lists_fragment(state, project_id, &user.csrf_token).await;
@@ -435,20 +419,15 @@ async fn add_field_definition_impl(
     {
         Ok(_) => Ok(Redirect::to(&format!("/projects/{project_id}")).into_response()),
         Err(AppError::Rule(e)) => {
-            let aggregate = view_project(state.projects.as_ref(), role, project_id).await?;
-            let tasks = state.tasks.list_by_project(project_id).await?;
-            let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
-            let members = project_members_for_display(state, role, project_id, can_manage).await?;
-            render_project_page(
+            render_project_page_reloaded(
                 state,
                 user,
-                &aggregate,
-                &tasks,
-                &members,
-                can_manage,
+                role,
+                project_id,
                 Some(&e.to_string()),
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
+            .await
         }
         Err(err) => Err(WebError::from(err)),
     }
@@ -569,24 +548,15 @@ async fn render_project_lists_fragment(
 ) -> Result<Response, WebError> {
     let tasks = state.tasks.list_by_project(project_id).await?;
     let sections = build_board_sections(&tasks);
-    let tmpl = state
-        .templates
-        .get_template("_project_task_list.html")
-        .map_err(WebError::template)?;
-    let mut body = String::new();
-    for section in sections {
-        body.push_str(
-            &tmpl
-                .render(context! {
-                    section => section,
-                    project_id => project_id.to_string(),
-                    csrf_token => csrf_token,
-                    oob => true,
-                })
-                .map_err(WebError::template)?,
-        );
-    }
-    Ok(Html(body).into_response())
+    let contexts = sections.into_iter().map(|section| {
+        context! {
+            section => section,
+            project_id => project_id.to_string(),
+            csrf_token => csrf_token,
+            oob => true,
+        }
+    });
+    super::render_oob_fragments(&state.templates, "_project_task_list.html", contexts)
 }
 
 /// Filter/sort state for the system-wide Projects data grid (`GET
@@ -627,18 +597,17 @@ pub async fn list_projects_handler(
     }
 }
 
-async fn list_projects_impl(
+/// Every area `user` may see at all — the same per-area membership filter
+/// `crate::handlers::areas::list_areas_impl` applies to the area grid,
+/// reused here so a project never leaks through a listing that has no
+/// area-level scoping of its own (see `list_all_projects`'s doc comment).
+/// Sorted by title, the order the area filter `<select>` and the sort-by-area
+/// column both expect.
+async fn visible_areas_for(
     state: &AppState,
     user: &CurrentUser,
-    params: ProjectListParams,
-) -> Result<Response, WebError> {
-    let admin = access::is_system_admin(state, &user.user_id).await?;
-
-    // Every area this caller may see at all — the same per-area membership
-    // filter `crate::handlers::areas::list_areas_impl` applies to the area
-    // grid, reused here so a project never leaks through a listing that has
-    // no area-level scoping of its own (see `list_all_projects`'s doc
-    // comment).
+    admin: bool,
+) -> Result<Vec<Area>, WebError> {
     let all_areas = state.areas.list().await?;
     let mut visible_areas = Vec::with_capacity(all_areas.len());
     for area in all_areas {
@@ -651,21 +620,24 @@ async fn list_projects_impl(
         }
     }
     visible_areas.sort_by(|a, b| a.title.as_str().cmp(b.title.as_str()));
+    Ok(visible_areas)
+}
 
+/// The Projects grid's filter chain: scoped to `user`'s visible areas (an
+/// area not in `area_titles` is invisible to this caller), then `params`'s
+/// archived/status/area query-string filters in turn.
+fn filter_projects(
+    all_projects: Vec<Project>,
+    area_titles: &std::collections::HashMap<anamnesis_core::AreaId, String>,
+    params: &ProjectListParams,
+) -> Vec<Project> {
     let area_filter = uuid::Uuid::parse_str(params.area.trim())
         .ok()
         .map(anamnesis_core::AreaId::new);
-
-    let all_projects = list_all_projects(state.projects.as_ref(), Some(Role::Member)).await?;
-    let area_titles: std::collections::HashMap<_, _> = visible_areas
-        .iter()
-        .map(|a| (a.id, a.title.as_str().to_string()))
-        .collect();
-
     let include_archived = !params.archived.is_empty();
     let status_filter = params.status.as_str();
 
-    let mut projects: Vec<Project> = all_projects
+    all_projects
         .into_iter()
         .filter(|p| area_titles.contains_key(&p.area_id))
         .filter(|p| include_archived || p.archived_at.is_none())
@@ -678,13 +650,17 @@ async fn list_projects_impl(
             _ => p.status != ProjectStatus::Complete,
         })
         .filter(|p| area_filter.is_none_or(|area_id| p.area_id == area_id))
-        .collect();
+        .collect()
+}
 
-    let sort = match params.sort.as_str() {
-        "area" | "status" | "created" | "updated" => params.sort.as_str(),
-        _ => "title",
-    };
-    let dir_desc = params.dir == "desc";
+/// Sorts `projects` in place by `sort` (already validated by the caller to
+/// one of the grid's five known column names), reversed when `dir_desc`.
+fn sort_projects(
+    projects: &mut [Project],
+    area_titles: &std::collections::HashMap<anamnesis_core::AreaId, String>,
+    sort: &str,
+    dir_desc: bool,
+) {
     projects.sort_by(|a, b| {
         let ordering = match sort {
             "area" => area_titles
@@ -707,6 +683,32 @@ async fn list_projects_impl(
             ordering
         }
     });
+}
+
+async fn list_projects_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    params: ProjectListParams,
+) -> Result<Response, WebError> {
+    let admin = access::is_system_admin(state, &user.user_id).await?;
+    let visible_areas = visible_areas_for(state, user, admin).await?;
+
+    let all_projects = list_all_projects(state.projects.as_ref(), Some(Role::Member)).await?;
+    let area_titles: std::collections::HashMap<_, _> = visible_areas
+        .iter()
+        .map(|a| (a.id, a.title.as_str().to_string()))
+        .collect();
+
+    let include_archived = !params.archived.is_empty();
+    let status_filter = params.status.as_str();
+    let mut projects = filter_projects(all_projects, &area_titles, &params);
+
+    let sort = match params.sort.as_str() {
+        "area" | "status" | "created" | "updated" => params.sort.as_str(),
+        _ => "title",
+    };
+    let dir_desc = params.dir == "desc";
+    sort_projects(&mut projects, &area_titles, sort, dir_desc);
 
     let rows: Vec<_> = projects
         .iter()

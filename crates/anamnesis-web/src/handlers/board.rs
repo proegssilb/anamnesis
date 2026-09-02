@@ -206,27 +206,16 @@ async fn render_reposition_fragment(
         targets.push(prev);
     }
 
-    let tmpl = state
-        .templates
-        .get_template("_column.html")
-        .map_err(WebError::template)?;
-    let mut body = String::new();
-    for target in targets {
-        let Some(idx) = columns.iter().position(|bc| bc.column.id == target) else {
-            continue;
-        };
-        body.push_str(
-            &tmpl
-                .render(context! {
-                    c => column_views[idx].clone(),
-                    columns => column_views,
-                    csrf_token => user.csrf_token,
-                    oob => true,
-                })
-                .map_err(WebError::template)?,
-        );
-    }
-    Ok(Html(body).into_response())
+    let contexts = targets.into_iter().filter_map(|target| {
+        let idx = columns.iter().position(|bc| bc.column.id == target)?;
+        Some(context! {
+            c => column_views[idx].clone(),
+            columns => column_views.clone(),
+            csrf_token => user.csrf_token,
+            oob => true,
+        })
+    });
+    super::render_oob_fragments(&state.templates, "_column.html", contexts)
 }
 
 /// Resolves the role to authorize a placement action on `tangle_id` against

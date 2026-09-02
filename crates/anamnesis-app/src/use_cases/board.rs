@@ -22,7 +22,7 @@ use anamnesis_core::{self as core, ColumnId, Placement};
 
 use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
-use crate::ports::{BoardItem, BoardQuery, Clock, TangleRepository, TaskRepository};
+use crate::ports::{BoardColumn, BoardItem, BoardQuery, Clock, TangleRepository, TaskRepository};
 
 /// Which kind of board item [`reposition_board_item`] is moving — the two
 /// variants of [`BoardItem`], but carrying just the id a caller already has
@@ -70,36 +70,9 @@ pub async fn reposition_board_item(
     }
 
     let columns = board.columns_with_items().await?;
-
-    let mut prev_column: Option<ColumnId> = None;
-    let mut dest: Vec<BoardItemKind> = Vec::new();
-    for bc in &columns {
-        let ids: Vec<BoardItemKind> = bc.items.iter().map(identity_of).collect();
-        if ids.contains(&item) {
-            prev_column = Some(bc.column.id);
-        }
-        if bc.column.id == column {
-            dest = ids;
-        }
-    }
-
-    let already_in_dest = dest.contains(&item);
-    if !already_in_dest {
-        let state = board.board_state(column).await?;
-        if let Some(limit) = state.wip_limit
-            && state.current_count >= limit
-        {
-            return Err(AppError::WipLimitExceeded);
-        }
-    }
-
-    dest.retain(|i| *i != item);
-    let clamped = (position as usize).min(dest.len());
-    dest.insert(clamped, item);
-
-    for (idx, ident) in dest.into_iter().enumerate() {
-        write_position(task_repo, tangle_repo, clock, ident, column, idx as u32).await?;
-    }
+    let (prev_column, already_in_dest, dest) = plan_column_order(&columns, item, column, position);
+    check_wip_limit(board, column, already_in_dest).await?;
+    renumber_column(task_repo, tangle_repo, clock, dest, column).await?;
 
     if let Some(prev) = prev_column
         && prev != column
@@ -110,11 +83,86 @@ pub async fn reposition_board_item(
             .map(|bc| bc.items.iter().map(identity_of).collect())
             .unwrap_or_default();
         src.retain(|i| *i != item);
-        for (idx, ident) in src.into_iter().enumerate() {
-            write_position(task_repo, tangle_repo, clock, ident, prev, idx as u32).await?;
+        renumber_column(task_repo, tangle_repo, clock, src, prev).await?;
+    }
+
+    Ok(())
+}
+
+/// Scans `columns` for `item`'s current placement and computes the
+/// destination column's final item order after moving `item` to `position`
+/// — the pure planning step [`reposition_board_item`] then just carries out.
+/// `position` is clamped to the destination's length (after `item` is
+/// removed from consideration), so an out-of-range value (a stale client, a
+/// hand-edited form) lands at the nearest valid end rather than erroring.
+///
+/// Returns `(item's source column, if any and other than the destination;
+/// whether item was already in the destination column; the destination's
+/// final order)`. The middle value is what [`check_wip_limit`] needs — it
+/// must be read from the *original* order, before `item` is inserted, since
+/// after insertion the destination always contains it.
+fn plan_column_order(
+    columns: &[BoardColumn],
+    item: BoardItemKind,
+    column: ColumnId,
+    position: u32,
+) -> (Option<ColumnId>, bool, Vec<BoardItemKind>) {
+    let mut prev_column: Option<ColumnId> = None;
+    let mut dest: Vec<BoardItemKind> = Vec::new();
+    for bc in columns {
+        let ids: Vec<BoardItemKind> = bc.items.iter().map(identity_of).collect();
+        if ids.contains(&item) {
+            prev_column = Some(bc.column.id);
+        }
+        if bc.column.id == column {
+            dest = ids;
         }
     }
 
+    let already_in_dest = dest.contains(&item);
+    dest.retain(|i| *i != item);
+    let clamped = (position as usize).min(dest.len());
+    dest.insert(clamped, item);
+
+    (prev_column, already_in_dest, dest)
+}
+
+/// Rejects the move if `column` is at its WIP limit and the item would be a
+/// genuine new arrival there. Skipped entirely when `already_in_dest` —
+/// reordering within a column already at its limit must still work, exactly
+/// like `crate::use_cases::task::raise_task`'s own exemption, since it does
+/// not change `current_count`.
+async fn check_wip_limit(
+    board: &dyn BoardQuery,
+    column: ColumnId,
+    already_in_dest: bool,
+) -> Result<(), AppError> {
+    if already_in_dest {
+        return Ok(());
+    }
+    let state = board.board_state(column).await?;
+    if let Some(limit) = state.wip_limit
+        && state.current_count >= limit
+    {
+        return Err(AppError::WipLimitExceeded);
+    }
+    Ok(())
+}
+
+/// Writes out `items`' new order in `column` — shared by
+/// [`reposition_board_item`]'s destination-column write and its
+/// source-column renumber, which were previously the same three lines
+/// copy-pasted twice.
+async fn renumber_column(
+    task_repo: &dyn TaskRepository,
+    tangle_repo: &dyn TangleRepository,
+    clock: &dyn Clock,
+    items: Vec<BoardItemKind>,
+    column: ColumnId,
+) -> Result<(), AppError> {
+    for (idx, ident) in items.into_iter().enumerate() {
+        write_position(task_repo, tangle_repo, clock, ident, column, idx as u32).await?;
+    }
     Ok(())
 }
 
