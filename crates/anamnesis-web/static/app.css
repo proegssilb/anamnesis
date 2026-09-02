@@ -598,6 +598,24 @@ button:hover {
   opacity: 0.4;
 }
 
+/* --- project page: dragging a task between "On the board" and "Below the
+   horizon" (`templates/_project_task_list.html`) -- the same drag-and-drop
+   pattern as the board's cards above, applied to `.task-list`'s row-cards
+   instead. --- */
+
+.task-list.drag-list {
+  min-height: var(--touch);
+  touch-action: pan-y;
+}
+
+.task-list.drag-list li {
+  cursor: grab;
+}
+
+.task-drag-ghost {
+  opacity: 0.4;
+}
+
 /* --- custom field values on the task detail page (`docs/DOMAIN.md` §3) --- */
 
 .field-row {

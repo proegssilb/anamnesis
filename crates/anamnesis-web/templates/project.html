@@ -17,27 +17,9 @@
 
   {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 
-  <h2>On the board</h2>
-  {% if on_board %}
-    <ul class="task-list">
-      {% for t in on_board %}
-        <li><a href="/tasks/{{ t.id }}">{{ t.title }}</a></li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <p class="hint">Nothing from this project is above the horizon right now.</p>
-  {% endif %}
-
-  <h2>Below the horizon</h2>
-  {% if below %}
-    <ul class="task-list">
-      {% for t in below %}
-        <li><a href="/tasks/{{ t.id }}">{{ t.title }}</a></li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <p class="hint">Nothing waiting in the backlog.</p>
-  {% endif %}
+  {% for section in board_sections %}
+    {% include "_project_task_list.html" %}
+  {% endfor %}
 
   <div class="modal-overlay" id="new-task">
     <div class="modal" role="dialog" aria-labelledby="new-task-title">

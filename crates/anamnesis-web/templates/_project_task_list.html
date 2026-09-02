@@ -1,0 +1,32 @@
+{# One of the project page's two flat task lists — on-board or
+   below-the-horizon (`docs/DOMAIN.md` §8: fragment-addressable, the
+   `_column.html` sibling for this page). Needs `section`
+   (`{title, list_id, role, tasks, empty_hint}`, from the enclosing
+   `{% for section in board_sections %}`), `project_id` and `csrf_token`.
+   `oob`, if set, marks this as an htmx out-of-band swap — the raise/drop
+   endpoints' HX-Request response renders both sections this way, so
+   whichever list actually changed reflects the true post-move state
+   (`crate::handlers::projects::render_project_lists_fragment`). #}
+<h2>{{ section.title }}</h2>
+<ul class="task-list drag-list" id="{{ section.list_id }}"
+    data-role="{{ section.role }}" data-project-id="{{ project_id }}"
+    {% if oob %}hx-swap-oob="true"{% endif %}>
+  {% for t in section.tasks %}
+    <li class="relationship-row" data-item-id="{{ t.id }}">
+      <a href="/tasks/{{ t.id }}">{{ t.title }}</a>
+      {% if section.role == "on_board" %}
+        <form method="post" action="/projects/{{ project_id }}/tasks/{{ t.id }}/drop">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">Drop to backlog</button>
+        </form>
+      {% else %}
+        <form method="post" action="/projects/{{ project_id }}/tasks/{{ t.id }}/raise">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">Raise to board</button>
+        </form>
+      {% endif %}
+    </li>
+  {% else %}
+    <li class="hint">{{ section.empty_hint }}</li>
+  {% endfor %}
+</ul>
