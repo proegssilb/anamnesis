@@ -109,6 +109,50 @@ fn encode_field_data(data: &FieldData) -> EncodedFieldData {
     }
 }
 
+/// A stored field value is missing the column its `FieldKind` requires —
+/// shared by every arm of [`decode_field_data`] and its per-kind helpers,
+/// replacing what was previously a closure re-created on every call.
+fn missing(col: &str) -> RepoError {
+    RepoError::new(format!("stored field value missing {col}"))
+}
+
+fn decode_number(
+    value_int: Option<i64>,
+    value_num_scale: Option<i32>,
+) -> Result<FieldData, RepoError> {
+    let units = value_int.ok_or_else(|| missing("value_int"))?;
+    let scale = value_num_scale.ok_or_else(|| missing("value_num_scale"))?;
+    let scale = u8::try_from(scale)
+        .map_err(|e| RepoError::from_source("stored number scale out of range", e))?;
+    Ok(FieldData::Number(NumberValue { units, scale }))
+}
+
+fn decode_currency(
+    value_int: Option<i64>,
+    value_currency_code: Option<String>,
+) -> Result<FieldData, RepoError> {
+    let minor_units = value_int.ok_or_else(|| missing("value_int"))?;
+    let code = value_currency_code.ok_or_else(|| missing("value_currency_code"))?;
+    let currency = CurrencyCode::new(&code)
+        .map_err(|e| RepoError::from_source("invalid stored currency code", e))?;
+    Ok(FieldData::Currency(CurrencyAmount {
+        minor_units,
+        currency,
+    }))
+}
+
+/// The three `FieldKind` variants that share one stored column
+/// (`value_ts`) and differ only in how it is converted back to a value.
+fn decode_temporal(kind: FieldKind, value_ts: Option<i64>) -> Result<FieldData, RepoError> {
+    let ts = value_ts.ok_or_else(|| missing("value_ts"))?;
+    match kind {
+        FieldKind::Date => Ok(FieldData::Date(days_to_date(ts)?)),
+        FieldKind::Time => Ok(FieldData::Time(seconds_to_time(ts)?)),
+        FieldKind::DateTime => Ok(FieldData::DateTime(timestamp_from_seconds(ts)?)),
+        _ => unreachable!("decode_temporal is only called for Date/Time/DateTime"),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn decode_field_data(
     kind: FieldKind,
@@ -118,37 +162,10 @@ fn decode_field_data(
     value_text: Option<String>,
     value_ts: Option<i64>,
 ) -> Result<FieldData, RepoError> {
-    let missing = |col: &str| RepoError::new(format!("stored field value missing {col}"));
     match kind {
-        FieldKind::Number => {
-            let units = value_int.ok_or_else(|| missing("value_int"))?;
-            let scale = value_num_scale.ok_or_else(|| missing("value_num_scale"))?;
-            let scale = u8::try_from(scale)
-                .map_err(|e| RepoError::from_source("stored number scale out of range", e))?;
-            Ok(FieldData::Number(NumberValue { units, scale }))
-        }
-        FieldKind::Currency => {
-            let minor_units = value_int.ok_or_else(|| missing("value_int"))?;
-            let code = value_currency_code.ok_or_else(|| missing("value_currency_code"))?;
-            let currency = CurrencyCode::new(&code)
-                .map_err(|e| RepoError::from_source("invalid stored currency code", e))?;
-            Ok(FieldData::Currency(CurrencyAmount {
-                minor_units,
-                currency,
-            }))
-        }
-        FieldKind::Date => {
-            let days = value_ts.ok_or_else(|| missing("value_ts"))?;
-            Ok(FieldData::Date(days_to_date(days)?))
-        }
-        FieldKind::Time => {
-            let secs = value_ts.ok_or_else(|| missing("value_ts"))?;
-            Ok(FieldData::Time(seconds_to_time(secs)?))
-        }
-        FieldKind::DateTime => {
-            let secs = value_ts.ok_or_else(|| missing("value_ts"))?;
-            Ok(FieldData::DateTime(timestamp_from_seconds(secs)?))
-        }
+        FieldKind::Number => decode_number(value_int, value_num_scale),
+        FieldKind::Currency => decode_currency(value_int, value_currency_code),
+        FieldKind::Date | FieldKind::Time | FieldKind::DateTime => decode_temporal(kind, value_ts),
         FieldKind::Line => Ok(FieldData::Line(
             value_text.ok_or_else(|| missing("value_text"))?,
         )),

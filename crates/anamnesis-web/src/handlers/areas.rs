@@ -42,6 +42,32 @@ async fn area_members_for_display(
     Ok(list_area_members(state.membership.as_ref(), role, area_id).await?)
 }
 
+/// Rebuilds the area page from scratch — the four reads `render_area_page`
+/// needs — for the error paths that must re-render it after a failed
+/// mutation. Mirrors `crate::handlers::projects::render_project_page_reloaded`.
+///
+/// `view_area`/`list_projects_in_area` are read at a fixed `Some(Role::Member)`
+/// rather than `role`, matching the one pre-existing call site
+/// (`transition_project_status_impl`'s error arm) this helper replaces —
+/// preserved as-is rather than changed as a drive-by.
+async fn render_area_page_reloaded(
+    state: &AppState,
+    user: &CurrentUser,
+    role: Option<Role>,
+    area_id: AreaId,
+    can_manage: bool,
+    error: Option<&str>,
+    status: StatusCode,
+) -> Result<Response, WebError> {
+    let area = view_area(state.areas.as_ref(), Some(Role::Member), area_id).await?;
+    let projects =
+        list_projects_in_area(state.projects.as_ref(), Some(Role::Member), area_id).await?;
+    let members = area_members_for_display(state, role, area_id, can_manage).await?;
+    render_area_page(
+        state, user, &area, &projects, &members, can_manage, error, status,
+    )
+}
+
 pub async fn list_areas_handler(State(state): State<AppState>, user: CurrentUser) -> Response {
     match list_areas_impl(&state, &user).await {
         Ok(response) => response,
@@ -325,7 +351,12 @@ async fn transition_project_status_impl(
     // enforced on the very next request.
     let active_project_limit = state.settings.load().await?.active_project_limit;
 
-    match transition_project_status(
+    // Silently reverts on the hx path -- there is no per-card spot to
+    // surface an error during a drag, exactly like
+    // `crate::handlers::projects::raise_project_task_impl`'s
+    // `WipLimitExceeded` branch on the same shape of problem. The
+    // re-rendered lanes reflect the true (unchanged) DB state.
+    let message = match transition_project_status(
         state.projects.as_ref(),
         state.clock.as_ref(),
         role,
@@ -335,38 +366,34 @@ async fn transition_project_status_impl(
     )
     .await
     {
-        Ok(_) if is_hx_request(headers) => {
-            render_area_lanes_fragment(state, area_id, can_manage, &user.csrf_token).await
-        }
-        Ok(_) => Ok(Redirect::to(&format!("/areas/{area_id}")).into_response()),
-        // Silently reverts on the hx path -- there is no per-card spot to
-        // surface an error during a drag, exactly like
-        // `crate::handlers::projects::raise_project_task_impl`'s
-        // `WipLimitExceeded` branch on the same shape of problem. The
-        // re-rendered lanes reflect the true (unchanged) DB state.
+        Ok(_) => None,
         Err(AppError::ActiveProjectLimitExceeded) | Err(AppError::Rule(_))
             if is_hx_request(headers) =>
         {
-            render_area_lanes_fragment(state, area_id, can_manage, &user.csrf_token).await
+            return render_area_lanes_fragment(state, area_id, can_manage, &user.csrf_token).await;
         }
-        Err(AppError::ActiveProjectLimitExceeded) | Err(AppError::Rule(_)) => {
-            let area = view_area(state.areas.as_ref(), Some(Role::Member), area_id).await?;
-            let projects =
-                list_projects_in_area(state.projects.as_ref(), Some(Role::Member), area_id).await?;
-            let members = area_members_for_display(state, role, area_id, can_manage).await?;
-            render_area_page(
-                state,
-                user,
-                &area,
-                &projects,
-                &members,
-                can_manage,
-                Some("The active project limit has been reached."),
-                StatusCode::UNPROCESSABLE_ENTITY,
-            )
+        Err(AppError::ActiveProjectLimitExceeded) => {
+            Some("The active project limit has been reached.".to_string())
         }
-        Err(err) => Err(WebError::from(err)),
+        Err(AppError::Rule(e)) => Some(e.to_string()),
+        Err(err) => return Err(WebError::from(err)),
+    };
+    if let Some(message) = message {
+        return render_area_page_reloaded(
+            state,
+            user,
+            role,
+            area_id,
+            can_manage,
+            Some(&message),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        )
+        .await;
     }
+    if is_hx_request(headers) {
+        return render_area_lanes_fragment(state, area_id, can_manage, &user.csrf_token).await;
+    }
+    Ok(Redirect::to(&format!("/areas/{area_id}")).into_response())
 }
 
 fn parse_status(raw: &str) -> Result<ProjectStatus, WebError> {
@@ -485,25 +512,16 @@ async fn render_area_lanes_fragment(
     let projects =
         list_projects_in_area(state.projects.as_ref(), Some(Role::Member), area_id).await?;
     let sections = build_area_sections(&projects);
-    let tmpl = state
-        .templates
-        .get_template("_area_project_list.html")
-        .map_err(WebError::template)?;
-    let mut body = String::new();
-    for section in sections {
-        body.push_str(
-            &tmpl
-                .render(context! {
-                    section => section,
-                    area_id => area_id.to_string(),
-                    can_manage => can_manage,
-                    csrf_token => csrf_token,
-                    oob => true,
-                })
-                .map_err(WebError::template)?,
-        );
-    }
-    Ok(Html(body).into_response())
+    let contexts = sections.into_iter().map(|section| {
+        context! {
+            section => section,
+            area_id => area_id.to_string(),
+            can_manage => can_manage,
+            csrf_token => csrf_token,
+            oob => true,
+        }
+    });
+    super::render_oob_fragments(&state.templates, "_area_project_list.html", contexts)
 }
 
 #[allow(clippy::too_many_arguments)]
