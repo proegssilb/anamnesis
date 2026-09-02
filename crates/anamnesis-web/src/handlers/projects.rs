@@ -5,29 +5,31 @@
 
 use axum::Form;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
 use serde::Deserialize;
 
 use anamnesis_app::{
-    AppError, archive_project, create_task, list_all_projects, list_project_members,
-    unarchive_project, view_project,
+    AppError, archive_project, create_task, drop_task, list_all_projects, list_project_members,
+    raise_task, unarchive_project, view_project,
 };
 use anamnesis_core::UserId;
 use anamnesis_core::policy::Role;
-use anamnesis_core::{Project, ProjectId, ProjectStatus};
+use anamnesis_core::{Placement, Project, ProjectId, ProjectStatus, TaskId};
 
 use crate::auth::CurrentUser;
 use crate::error::WebError;
+use crate::hx::is_hx_request;
 use crate::session::csrf_tokens_match;
 use crate::state::AppState;
 
 use super::access;
 use super::field_form;
-use super::format::format_field_kind;
+use super::format::{column_is_done, format_field_kind};
 use super::forms::{AddFieldDefinitionForm, CreateTaskForm, CsrfOnlyForm};
 use super::membership::format_role;
+use super::tasks::role_for_task;
 
 /// The Project's "members" section, fetched only when `can_manage` — the
 /// [`crate::handlers::areas::area_members_for_display`] sibling.
@@ -146,6 +148,157 @@ async fn create_task_impl(
         }
         Err(err) => Err(WebError::from(err)),
     }
+}
+
+/// Raises a task from this project straight onto the board's entry column
+/// (its first, lowest-position column) — the drag target for dropping a
+/// card from "Below the horizon" onto "On the board" on the project page,
+/// and its no-JS form fallback. The same "entry column" convention
+/// `crate::handlers::board::accept_suggestion_impl` already uses: this page
+/// has no per-column picker, so drag-raising here can't ask which column.
+pub async fn raise_project_task_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    headers: HeaderMap,
+    Path((project_id, task_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> Response {
+    match raise_project_task_impl(
+        &state,
+        &user,
+        &headers,
+        ProjectId::new(project_id),
+        TaskId::new(task_id),
+        form,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn raise_project_task_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    headers: &HeaderMap,
+    project_id: ProjectId,
+    task_id: TaskId,
+    form: CsrfOnlyForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
+    let columns = state.board.columns_with_items().await?;
+    let entry = columns
+        .first()
+        .ok_or_else(|| WebError::BadRequest("no board columns are configured".to_string()))?;
+    let position = state.board.count_on_column(entry.column.id).await?;
+
+    match raise_task(
+        state.tasks.as_ref(),
+        state.board.as_ref(),
+        state.clock.as_ref(),
+        role,
+        task_id,
+        entry.column.id,
+        position,
+    )
+    .await
+    {
+        Ok(_) if is_hx_request(headers) => {
+            render_project_lists_fragment(state, project_id, &user.csrf_token).await
+        }
+        Ok(_) => Ok(Redirect::to(&format!("/projects/{project_id}")).into_response()),
+        // Silently reverts on the hx path -- the re-rendered lists reflect
+        // the true (unchanged) DB state, exactly like
+        // `crate::handlers::board::reposition_impl`'s hx branch on the same
+        // error.
+        Err(AppError::WipLimitExceeded) if is_hx_request(headers) => {
+            render_project_lists_fragment(state, project_id, &user.csrf_token).await
+        }
+        Err(AppError::WipLimitExceeded) => {
+            let aggregate = view_project(state.projects.as_ref(), role, project_id).await?;
+            let tasks = state.tasks.list_by_project(project_id).await?;
+            let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
+            let members = project_members_for_display(state, role, project_id, can_manage).await?;
+            render_project_page(
+                state,
+                user,
+                &aggregate,
+                &tasks,
+                &members,
+                can_manage,
+                Some("That column is already at its work-in-progress limit."),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            )
+        }
+        Err(err) => Err(WebError::from(err)),
+    }
+}
+
+/// Drops a task from this project back below the horizon — the drag target
+/// for the reverse direction, and its no-JS form fallback. Mirrors
+/// `crate::handlers::tasks::lifecycle::drop_task_impl`'s bounce-accounting
+/// lookup exactly; drop never fails on a WIP limit, so there is only the one
+/// success path to branch on hx-vs-redirect.
+pub async fn drop_project_task_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    headers: HeaderMap,
+    Path((project_id, task_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> Response {
+    match drop_project_task_impl(
+        &state,
+        &user,
+        &headers,
+        ProjectId::new(project_id),
+        TaskId::new(task_id),
+        form,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn drop_project_task_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    headers: &HeaderMap,
+    project_id: ProjectId,
+    task_id: TaskId,
+    form: CsrfOnlyForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
+    let aggregate = state.tasks.load(task_id).await?.ok_or(AppError::NotFound)?;
+    let left_a_done_column = match aggregate.task.placement {
+        Placement::OnBoard { column, .. } => {
+            let columns = state.board.columns_with_items().await?;
+            column_is_done(&columns, column).unwrap_or(false)
+        }
+        Placement::Below => false,
+    };
+
+    drop_task(
+        state.tasks.as_ref(),
+        state.clock.as_ref(),
+        role,
+        task_id,
+        left_a_done_column,
+    )
+    .await?;
+
+    if is_hx_request(headers) {
+        return render_project_lists_fragment(state, project_id, &user.csrf_token).await;
+    }
+    Ok(Redirect::to(&format!("/projects/{project_id}")).into_response())
 }
 
 /// Archives a project (`docs/DOMAIN.md` §2), gated on Project Admin (or
@@ -312,8 +465,7 @@ fn render_project_page(
     error: Option<&str>,
     status: StatusCode,
 ) -> Result<Response, WebError> {
-    let below: Vec<_> = tasks.iter().filter(|t| t.placement.is_below()).collect();
-    let on_board: Vec<_> = tasks.iter().filter(|t| t.placement.is_on_board()).collect();
+    let board_sections = build_board_sections(tasks);
 
     // This project's own custom field vocabulary (`docs/DOMAIN.md` §3) — the
     // house-hunting example's price/viewing-date/... definitions, so a
@@ -342,8 +494,8 @@ fn render_project_page(
     let body = tmpl
         .render(context! {
             project => aggregate.project,
-            below => below,
-            on_board => on_board,
+            project_id => aggregate.project.id.to_string(),
+            board_sections => board_sections,
             fields => fields,
             members => members,
             can_manage => can_manage,
@@ -353,6 +505,88 @@ fn render_project_page(
         })
         .map_err(WebError::template)?;
     Ok((status, Html(body)).into_response())
+}
+
+/// Splits `tasks` into the project page's two lists — "On the board"
+/// (`Placement::OnBoard`) and "Below the horizon" (`Placement::Below`) —
+/// each shaped for `_project_task_list.html`
+/// (`title`/`list_id`/`role`/`tasks`/`empty_hint`), fragment-addressable
+/// like `crate::handlers::board`'s `_column.html` (`docs/DOMAIN.md` §8).
+/// Shared by `render_project_page` (the full page) and
+/// `render_project_lists_fragment` (the raise/drop htmx response) so both
+/// render identical markup from the same source of truth.
+fn build_board_sections(tasks: &[anamnesis_core::Task]) -> Vec<minijinja::Value> {
+    fn section(
+        title: &str,
+        list_id: &str,
+        role: &str,
+        items: &[&anamnesis_core::Task],
+        empty_hint: &str,
+    ) -> minijinja::Value {
+        let views: Vec<_> = items
+            .iter()
+            .map(|t| context! { id => t.id.to_string(), title => t.title.as_str() })
+            .collect();
+        context! {
+            title => title,
+            list_id => list_id,
+            role => role,
+            tasks => views,
+            empty_hint => empty_hint,
+        }
+    }
+
+    let below: Vec<_> = tasks.iter().filter(|t| t.placement.is_below()).collect();
+    let on_board: Vec<_> = tasks.iter().filter(|t| t.placement.is_on_board()).collect();
+    vec![
+        section(
+            "On the board",
+            "on-board-list",
+            "on_board",
+            &on_board,
+            "Nothing from this project is above the horizon right now.",
+        ),
+        section(
+            "Below the horizon",
+            "below-list",
+            "below",
+            &below,
+            "Nothing waiting in the backlog.",
+        ),
+    ]
+}
+
+/// The `HX-Request` response for raising/dropping a task from the project
+/// page: both `_project_task_list.html` sections, each marked
+/// `hx-swap-oob="true"` — the `_column.html`-pair shape
+/// `crate::handlers::board::render_reposition_fragment` already uses, since
+/// a raise/drop always potentially touches both lists (the task leaves one,
+/// joins the other).
+async fn render_project_lists_fragment(
+    state: &AppState,
+    project_id: ProjectId,
+    csrf_token: &str,
+) -> Result<Response, WebError> {
+    let tasks = state.tasks.list_by_project(project_id).await?;
+    let sections = build_board_sections(&tasks);
+    let tmpl = state
+        .templates
+        .get_template("_project_task_list.html")
+        .map_err(WebError::template)?;
+    let mut body = String::new();
+    for section in sections {
+        body.push_str(
+            &tmpl
+                .render(context! {
+                    section => section,
+                    project_id => project_id.to_string(),
+                    csrf_token => csrf_token,
+                    oob => true,
+                })
+                .map_err(WebError::template)?,
+        );
+    }
+    Ok(Html(body).into_response())
 }
 
 /// Filter/sort state for the system-wide Projects data grid (`GET

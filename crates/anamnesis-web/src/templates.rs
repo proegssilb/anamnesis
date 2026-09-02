@@ -33,6 +33,10 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("_column.html", include_str!("../templates/_column.html")),
     ("_card.html", include_str!("../templates/_card.html")),
     (
+        "_project_task_list.html",
+        include_str!("../templates/_project_task_list.html"),
+    ),
+    (
         "_reposition_form.html",
         include_str!("../templates/_reposition_form.html"),
     ),

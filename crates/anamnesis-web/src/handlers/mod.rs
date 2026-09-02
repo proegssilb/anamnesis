@@ -35,7 +35,8 @@ pub use membership::{
 pub use misc::{healthz_handler, root_handler};
 pub use projects::{
     add_field_definition_handler, archive_project_handler, create_task_handler,
-    list_projects_handler, unarchive_project_handler, view_project_handler,
+    drop_project_task_handler, list_projects_handler, raise_project_task_handler,
+    unarchive_project_handler, view_project_handler,
 };
 pub use search::search_handler;
 pub use settings::{update_settings_handler, view_settings_handler};
