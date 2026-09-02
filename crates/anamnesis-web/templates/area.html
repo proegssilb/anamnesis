@@ -1,35 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ area.title }} — Anamnesis{% endblock %}
 
-{% macro lane(label, value, projects) %}
-  <section class="column">
-    <div class="column-header">
-      <h2 class="column-title">{{ label }}</h2>
-    </div>
-    <div class="card-list">
-      {% for p in projects %}
-        <div class="card">
-          <a class="card-title" href="/projects/{{ p.id }}">{{ p.title }}</a>
-          {% if p.description %}<p class="card-body">{{ p.description }}</p>{% endif %}
-          {% if can_manage %}
-            <form class="status-form" method="post" action="/projects/{{ p.id }}/status">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <select name="status">
-                <option value="pending" {% if value == "pending" %}selected{% endif %}>Pending</option>
-                <option value="active" {% if value == "active" %}selected{% endif %}>Active</option>
-                <option value="complete" {% if value == "complete" %}selected{% endif %}>Complete</option>
-              </select>
-              <button type="submit">Move</button>
-            </form>
-          {% endif %}
-        </div>
-      {% else %}
-        <p class="hint">Nothing here.</p>
-      {% endfor %}
-    </div>
-  </section>
-{% endmacro %}
-
 {% block content %}
   <p class="breadcrumb"><a href="/areas">Areas</a></p>
   <div class="page-header">
@@ -46,9 +17,9 @@
   {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 
   <div class="board">
-    {{ lane("Pending", "pending", pending) }}
-    {{ lane("Active", "active", active) }}
-    {{ lane("Complete", "complete", complete) }}
+    {% for section in board_sections %}
+      {% include "_area_project_list.html" %}
+    {% endfor %}
   </div>
 
   {% if can_manage %}

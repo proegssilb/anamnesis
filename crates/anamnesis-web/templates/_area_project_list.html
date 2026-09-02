@@ -1,0 +1,42 @@
+{# One lane of the area page's Pending/Active/Complete project board
+   (`docs/DOMAIN.md` §3 — a kanban of *projects*, not tasks; the
+   `_project_task_list.html` sibling for `area.html`). Needs `section`
+   (`{title, list_id, role, projects}`, from the enclosing
+   `{% for section in board_sections %}`), `area_id`, `can_manage` and
+   `csrf_token`. `oob`, if set, marks this as an htmx out-of-band swap — the
+   status-transition endpoint's HX-Request response renders all three lanes
+   this way, so whichever lane actually changed reflects the true post-move
+   state (`crate::handlers::areas::render_area_lanes_fragment`).
+
+   Only rendered as an interactive drag target (and only given the
+   select+button "Move" form) when `can_manage` — a plain Member sees the
+   same static cards as before this page had any status-changing affordance
+   at all. #}
+<section class="column">
+  <div class="column-header">
+    <h2 class="column-title">{{ section.title }}</h2>
+  </div>
+  <div class="card-list {% if can_manage %}drag-list{% endif %}" id="{{ section.list_id }}"
+       {% if can_manage %}data-role="{{ section.role }}" data-area-id="{{ area_id }}"{% endif %}
+       {% if oob %}hx-swap-oob="true"{% endif %}>
+    {% for p in section.projects %}
+      <div class="card" {% if can_manage %}data-item-id="{{ p.id }}"{% endif %}>
+        <a class="card-title" href="/projects/{{ p.id }}">{{ p.title }}</a>
+        {% if p.description %}<p class="card-body">{{ p.description }}</p>{% endif %}
+        {% if can_manage %}
+          <form class="status-form" method="post" action="/projects/{{ p.id }}/status">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <select name="status">
+              <option value="pending" {% if section.role == "pending" %}selected{% endif %}>Pending</option>
+              <option value="active" {% if section.role == "active" %}selected{% endif %}>Active</option>
+              <option value="complete" {% if section.role == "complete" %}selected{% endif %}>Complete</option>
+            </select>
+            <button type="submit">Move</button>
+          </form>
+        {% endif %}
+      </div>
+    {% else %}
+      <p class="hint">Nothing here.</p>
+    {% endfor %}
+  </div>
+</section>

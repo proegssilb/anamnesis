@@ -161,8 +161,51 @@
       });
     }
 
+    // The area page's Pending/Active/Complete project lanes
+    // (`templates/_area_project_list.html`) -- a third Sortable `group`,
+    // separate from the board's cards and the project page's task lists
+    // above, so dragging never crosses between page types. Like the project
+    // task lists, there is no position to persist within a lane; dragging a
+    // project card into a different lane fires the same
+    // `/projects/{id}/status` transition the select+button "Move" form
+    // already posts to. Only rendered as a drag target for callers who can
+    // manage the area (`can_manage` in the template) -- a plain Member sees
+    // static, non-interactive cards.
+    function initAreaSortable() {
+      document.querySelectorAll(".card-list.drag-list[data-role][data-area-id]").forEach(function (list) {
+        if (window.Sortable.get(list)) {
+          return;
+        }
+        new window.Sortable(list, {
+          group: "anamnesis-area-projects",
+          animation: 150,
+          ghostClass: "card-drag-ghost",
+          delay: 120,
+          delayOnTouchOnly: true,
+          onEnd: function (evt) {
+            if (evt.from === evt.to) {
+              return;
+            }
+            var item = evt.item;
+            var projectId = item.getAttribute("data-item-id");
+            var destRole = evt.to.getAttribute("data-role");
+            if (!projectId || !destRole) {
+              return;
+            }
+            window.htmx.ajax("POST", "/projects/" + projectId + "/status", {
+              source: item,
+              target: "body",
+              swap: "none",
+              values: { csrf_token: csrfToken, status: destRole },
+            });
+          },
+        });
+      });
+    }
+
     initBoardSortable();
     initProjectSortable();
+    initAreaSortable();
 
     // Both raise/drop and reposition persist by having the server swap a
     // fresh `<ul>` in out-of-band (`hx-swap-oob="true"`, `_column.html` and
@@ -175,10 +218,12 @@
     document.body.addEventListener("htmx:afterSwap", function () {
       initBoardSortable();
       initProjectSortable();
+      initAreaSortable();
     });
     document.body.addEventListener("htmx:oobAfterSwap", function () {
       initBoardSortable();
       initProjectSortable();
+      initAreaSortable();
     });
   });
 })();
