@@ -71,5 +71,20 @@ fmt-check:
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
-# Everything CI's `check` job runs, in the same order.
-check: fmt-check clippy test
+# Complexity/parameter-count/length check via Lizard, run standalone since
+# Codacy's own CLI/MCP can't analyze Rust in this environment (see
+# CLAUDE.md). Uses Lizard's own default thresholds (CCN 15, length 1000)
+# since this repo has no checked-in .codacy.yml telling us what Codacy's
+# cloud scan is actually configured to use — treat a pass here as a local
+# proxy, not proof Codacy's PR scan agrees, and a fail as a prompt to look
+# at the actual function, not to restructure around this tool's counting
+# behavior.
+lizard:
+    python3 -m lizard -l rust crates -w
+
+# The two static-analysis proxies for what Codacy checks on a PR.
+quality: clippy lizard
+
+# Everything CI's `check` job runs, plus the Codacy proxies (stricter than
+# CI, which doesn't run Lizard yet).
+check: fmt-check quality test

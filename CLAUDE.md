@@ -1,5 +1,14 @@
 # Codacy
 
-Codacy scans every PR opened against this repo. Before running `git commit`, use the Codacy MCP server (`codacy_cli_analyze`) to analyze the files you changed and fix anything it flags — don't wait for CI to catch it.
+Codacy scans every PR opened against this repo — but its CLI/MCP integration cannot analyze Rust in this flatpak environment, so `codacy_cli_analyze` is not a usable local gate here. Before running `git commit`, run `just quality` (or `just check`, which includes it) instead. It runs the two tools that actually work locally and approximate what Codacy checks:
 
-A hook in `.claude/settings.json` enforces this: `git commit` is gated on `codacy_cli_analyze` having run since the last commit in this session.
+- `cargo clippy --workspace --all-targets -- -D warnings` — correctness, idioms, common bug patterns.
+- `lizard` (`just lizard`) — cyclomatic complexity, parameter count, and function length. This is a real standalone proxy for Codacy's complexity metrics even though Codacy's own tool can't run here.
+
+A hook in `.claude/settings.json` enforces this: `git commit` is gated on both having run since the last commit in this session.
+
+**Fix the underlying issue, not the metric.** When either tool flags something, the fix is to genuinely reduce complexity or clarify the design — extract a real sub-function, cut unnecessary parameters, simplify branching. Do not restructure code's surface shape (e.g. bundling unrelated parameters into a struct, or splitting a function's logic without reducing its actual complexity) purely to change how a tool counts or parses something. That produces code that looks compliant but isn't actually better, and it's a much easier trap to fall into for an AI than for a human — a human patching a Codacy complaint will usually make a half-hearted attempt to also address the intent behind the rule; left unchecked, an AI will happily optimize the metric to zero while leaving the real problem untouched.
+
+Commit `9e6be4d` is the cautionary example: its own message admits "Patch around the codacy rule until the code smells can be cleaned up for real," and it replaced tuple parameters with wrapper structs specifically to change how the parameter count was tallied. Testing the actual installed `lizard` directly against the real pre-commit function confirms the technical premise was even correct — `lizard` reported 9 parameters for a function with 5 scalar parameters and 2 parameters of 2-position tuples (7 raw paramets, 2 extra parameters hiding in the tuples). Lizard counts this way as an attempt to resist the obvious gaming of functions of too many parameters; packing unrelated arguments into a tuple is no longer the easy path out. Unfortunately, making a struct to smuggle the extra values in is still a way to game the system, but the code still smells; the function is still operating on too many discrete, unrelated bits of data. The same "game the metric" problem happens with every linter rule. And each one is there to try and nudge coders in the direction of actually writing better code.
+
+If `just quality` is clean but Codacy still flags something on the PR, treat that as new information about a real design issue to address on its own terms, not a cue to reverse-engineer Codacy's exact thresholds and code around them.

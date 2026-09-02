@@ -2,21 +2,42 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "mcp__codacy__codacy_cli_analyze",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sid=$(jq -r '.session_id'); mkdir -p /tmp/claude-codacy-analyzed && touch \"/tmp/claude-codacy-analyzed/$sid\""
-          }
-        ]
-      },
-      {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
+            "if": "Bash(just clippy*)",
+            "command": "sid=$(jq -r '.session_id'); mkdir -p /tmp/claude-quality-clean && touch \"/tmp/claude-quality-clean/$sid.clippy\""
+          },
+          {
+            "type": "command",
+            "if": "Bash(just lizard*)",
+            "command": "sid=$(jq -r '.session_id'); mkdir -p /tmp/claude-quality-clean && touch \"/tmp/claude-quality-clean/$sid.lizard\""
+          },
+          {
+            "type": "command",
+            "if": "Bash(just quality*)",
+            "command": "sid=$(jq -r '.session_id'); mkdir -p /tmp/claude-quality-clean && touch \"/tmp/claude-quality-clean/$sid.clippy\" \"/tmp/claude-quality-clean/$sid.lizard\""
+          },
+          {
+            "type": "command",
+            "if": "Bash(just check*)",
+            "command": "sid=$(jq -r '.session_id'); mkdir -p /tmp/claude-quality-clean && touch \"/tmp/claude-quality-clean/$sid.clippy\" \"/tmp/claude-quality-clean/$sid.lizard\""
+          },
+          {
+            "type": "command",
+            "if": "Bash(cargo clippy*)",
+            "command": "input=$(cat); sid=$(jq -r '.session_id' <<<\"$input\"); cmd=$(jq -r '.tool_input.command' <<<\"$input\"); if echo \"$cmd\" | grep -qE -- '-D[= ]warnings|--deny[= ]warnings'; then mkdir -p /tmp/claude-quality-clean && touch \"/tmp/claude-quality-clean/$sid.clippy\"; fi"
+          },
+          {
+            "type": "command",
+            "if": "Bash(python3 -m lizard*)",
+            "command": "input=$(cat); sid=$(jq -r '.session_id' <<<\"$input\"); cmd=$(jq -r '.tool_input.command' <<<\"$input\"); if echo \"$cmd\" | grep -q -- '-l rust' && echo \"$cmd\" | grep -q 'crates'; then mkdir -p /tmp/claude-quality-clean && touch \"/tmp/claude-quality-clean/$sid.lizard\"; fi"
+          },
+          {
+            "type": "command",
             "if": "Bash(git commit *)",
-            "command": "sid=$(jq -r '.session_id'); rm -f \"/tmp/claude-codacy-analyzed/$sid\""
+            "command": "sid=$(jq -r '.session_id'); rm -f \"/tmp/claude-quality-clean/$sid.clippy\" \"/tmp/claude-quality-clean/$sid.lizard\""
           }
         ]
       }
@@ -28,7 +49,7 @@
           {
             "type": "command",
             "if": "Bash(git commit *)",
-            "command": "sid=$(jq -r '.session_id'); if [ -f \"/tmp/claude-codacy-analyzed/$sid\" ]; then echo '{}'; else echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"Codacy scans all PRs for this repo. Run the codacy_cli_analyze MCP tool on your changed files and fix any flagged issues before committing.\"}}'; fi"
+            "command": "sid=$(jq -r '.session_id'); missing=''; [ -f \"/tmp/claude-quality-clean/$sid.clippy\" ] || missing=\"clippy\"; [ -f \"/tmp/claude-quality-clean/$sid.lizard\" ] || missing=\"$missing lizard\"; if [ -z \"$missing\" ]; then echo '{}'; else echo \"{\\\"hookSpecificOutput\\\":{\\\"hookEventName\\\":\\\"PreToolUse\\\",\\\"permissionDecision\\\":\\\"ask\\\",\\\"permissionDecisionReason\\\":\\\"Run 'just quality' (clippy + lizard) and fix the underlying issue behind anything it flags before committing - missing:$missing. Codacy cannot analyze Rust in this flatpak environment, so these are the real local gates; do not restructure code just to dodge a specific rule's counting behavior, see CLAUDE.md.\\\"}}\"; fi"
           }
         ]
       }
