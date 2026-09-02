@@ -98,6 +98,52 @@ pub(super) async fn drop_task_with_bounce_accounting(
     Ok(())
 }
 
+/// The one message every caller of [`raise_task_to_column`] shows when a
+/// raise is refused, kept in one place so the task page and the project
+/// page cannot drift apart on the wording.
+pub(super) const WIP_LIMIT_MESSAGE: &str = "That column is already at its work-in-progress limit.";
+
+/// Whether a raise landed, or was refused because the destination column
+/// was already full — see [`raise_task_to_column`].
+pub(super) enum RaiseOutcome {
+    Raised,
+    WipLimitExceeded,
+}
+
+/// Raises a task to the end of `column`, reading the column's current
+/// occupancy to find that end. Shared by [`lifecycle::raise_task_impl`] and
+/// [`crate::handlers::projects::raise_project_task_impl`] — the drag target
+/// for raising a card onto a project's board — which differ only in how
+/// they choose the column and how they render the two outcomes.
+///
+/// `WipLimitExceeded` comes back as an `Ok` variant rather than an error
+/// because it is not one: every caller renders it as a message on its own
+/// page (or, on an hx path, silently reverts), and none of them propagate
+/// it. Every *other* `AppError` is still a genuine failure and propagates.
+pub(super) async fn raise_task_to_column(
+    state: &AppState,
+    role: Option<anamnesis_core::policy::Role>,
+    task_id: TaskId,
+    column: anamnesis_core::ColumnId,
+) -> Result<RaiseOutcome, WebError> {
+    let position = state.board.count_on_column(column).await?;
+    match anamnesis_app::raise_task(
+        state.tasks.as_ref(),
+        state.board.as_ref(),
+        state.clock.as_ref(),
+        role,
+        task_id,
+        column,
+        position,
+    )
+    .await
+    {
+        Ok(_) => Ok(RaiseOutcome::Raised),
+        Err(AppError::WipLimitExceeded) => Ok(RaiseOutcome::WipLimitExceeded),
+        Err(err) => Err(WebError::from(err)),
+    }
+}
+
 /// The task detail page's own read-side calls (`list_comments`,
 /// `list_attachments`) are gated identically to `ViewTask`
 /// (`can_view_project`), and by the time `render_task_page` runs, the
