@@ -5,7 +5,7 @@
 
 use axum::Form;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
 
@@ -14,10 +14,11 @@ use anamnesis_app::{
     list_projects_in_area, transition_project_status, view_area,
 };
 use anamnesis_core::policy::Role;
-use anamnesis_core::{AreaId, Project, ProjectStatus, UserId};
+use anamnesis_core::{AreaId, Project, ProjectId, ProjectStatus, UserId};
 
 use crate::auth::CurrentUser;
 use crate::error::WebError;
+use crate::hx::is_hx_request;
 use crate::session::csrf_tokens_match;
 use crate::state::AppState;
 
@@ -288,10 +289,11 @@ async fn create_project_impl(
 pub async fn transition_project_status_handler(
     State(state): State<AppState>,
     user: CurrentUser,
+    headers: HeaderMap,
     Path(id): Path<uuid::Uuid>,
     Form(form): Form<TransitionProjectStatusForm>,
 ) -> Response {
-    match transition_project_status_impl(&state, &user, id, form).await {
+    match transition_project_status_impl(&state, &user, &headers, id, form).await {
         Ok(response) => response,
         Err(err) => err.into_response_with(&state.templates),
     }
@@ -300,13 +302,14 @@ pub async fn transition_project_status_handler(
 async fn transition_project_status_impl(
     state: &AppState,
     user: &CurrentUser,
+    headers: &HeaderMap,
     project_id: uuid::Uuid,
     form: TransitionProjectStatusForm,
 ) -> Result<Response, WebError> {
     if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
         return Err(WebError::CsrfMismatch);
     }
-    let project_id = anamnesis_core::ProjectId::new(project_id);
+    let project_id = ProjectId::new(project_id);
     let new_status = parse_status(&form.status)?;
 
     let aggregate = state
@@ -316,6 +319,7 @@ async fn transition_project_status_impl(
         .ok_or(AppError::NotFound)?;
     let area_id = aggregate.project.area_id;
     let role = access::project_role(state, &user.user_id, project_id, area_id).await?;
+    let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
     // A live read, not a value cached at startup -- this is what makes
     // editing the limit through `/settings` actually change what gets
     // enforced on the very next request.
@@ -331,12 +335,24 @@ async fn transition_project_status_impl(
     )
     .await
     {
+        Ok(_) if is_hx_request(headers) => {
+            render_area_lanes_fragment(state, area_id, can_manage, &user.csrf_token).await
+        }
         Ok(_) => Ok(Redirect::to(&format!("/areas/{area_id}")).into_response()),
+        // Silently reverts on the hx path -- there is no per-card spot to
+        // surface an error during a drag, exactly like
+        // `crate::handlers::projects::raise_project_task_impl`'s
+        // `WipLimitExceeded` branch on the same shape of problem. The
+        // re-rendered lanes reflect the true (unchanged) DB state.
+        Err(AppError::ActiveProjectLimitExceeded) | Err(AppError::Rule(_))
+            if is_hx_request(headers) =>
+        {
+            render_area_lanes_fragment(state, area_id, can_manage, &user.csrf_token).await
+        }
         Err(AppError::ActiveProjectLimitExceeded) | Err(AppError::Rule(_)) => {
             let area = view_area(state.areas.as_ref(), Some(Role::Member), area_id).await?;
             let projects =
                 list_projects_in_area(state.projects.as_ref(), Some(Role::Member), area_id).await?;
-            let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
             let members = area_members_for_display(state, role, area_id, can_manage).await?;
             render_area_page(
                 state,
@@ -408,17 +424,33 @@ async fn render_areas_page(
     Ok((status, Html(body)).into_response())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_area_page(
-    state: &AppState,
-    user: &CurrentUser,
-    area: &anamnesis_core::Area,
-    projects: &[Project],
-    members: &[(UserId, Role)],
-    can_manage: bool,
-    error: Option<&str>,
-    status: StatusCode,
-) -> Result<Response, WebError> {
+/// Splits `projects` into the area page's three Pending/Active/Complete
+/// lanes, each shaped for `_area_project_list.html`
+/// (`title`/`list_id`/`role`/`projects`), fragment-addressable like
+/// `crate::handlers::projects`'s `_project_task_list.html`
+/// (`docs/DOMAIN.md` §8). Shared by `render_area_page` (the full page) and
+/// `render_area_lanes_fragment` (the status-transition htmx response) so
+/// both render identical markup from the same source of truth.
+fn build_area_sections(projects: &[Project]) -> Vec<minijinja::Value> {
+    fn lane(title: &str, list_id: &str, role: &str, items: &[&Project]) -> minijinja::Value {
+        let views: Vec<_> = items
+            .iter()
+            .map(|p| {
+                context! {
+                    id => p.id.to_string(),
+                    title => p.title.as_str(),
+                    description => p.description.as_str(),
+                }
+            })
+            .collect();
+        context! {
+            title => title,
+            list_id => list_id,
+            role => role,
+            projects => views,
+        }
+    }
+
     let pending: Vec<_> = projects
         .iter()
         .filter(|p| p.status == ProjectStatus::Pending)
@@ -431,6 +463,61 @@ fn render_area_page(
         .iter()
         .filter(|p| p.status == ProjectStatus::Complete)
         .collect();
+    vec![
+        lane("Pending", "pending-list", "pending", &pending),
+        lane("Active", "active-list", "active", &active),
+        lane("Complete", "complete-list", "complete", &complete),
+    ]
+}
+
+/// The `HX-Request` response for changing a project's status by dragging it
+/// between lanes on the area page: all three `_area_project_list.html`
+/// lanes, each marked `hx-swap-oob="true"` — the
+/// `crate::handlers::projects::render_project_lists_fragment` pattern,
+/// since a status change always potentially touches two lanes (the project
+/// leaves one, joins the other).
+async fn render_area_lanes_fragment(
+    state: &AppState,
+    area_id: AreaId,
+    can_manage: bool,
+    csrf_token: &str,
+) -> Result<Response, WebError> {
+    let projects =
+        list_projects_in_area(state.projects.as_ref(), Some(Role::Member), area_id).await?;
+    let sections = build_area_sections(&projects);
+    let tmpl = state
+        .templates
+        .get_template("_area_project_list.html")
+        .map_err(WebError::template)?;
+    let mut body = String::new();
+    for section in sections {
+        body.push_str(
+            &tmpl
+                .render(context! {
+                    section => section,
+                    area_id => area_id.to_string(),
+                    can_manage => can_manage,
+                    csrf_token => csrf_token,
+                    oob => true,
+                })
+                .map_err(WebError::template)?,
+        );
+    }
+    Ok(Html(body).into_response())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_area_page(
+    state: &AppState,
+    user: &CurrentUser,
+    area: &anamnesis_core::Area,
+    projects: &[Project],
+    members: &[(UserId, Role)],
+    can_manage: bool,
+    error: Option<&str>,
+    status: StatusCode,
+) -> Result<Response, WebError> {
+    let board_sections = build_area_sections(projects);
     let members: Vec<_> = members
         .iter()
         .map(|(user, role)| context! { user_id => user.to_string(), role => format_role(*role) })
@@ -443,9 +530,8 @@ fn render_area_page(
     let body = tmpl
         .render(context! {
             area => area,
-            pending => pending,
-            active => active,
-            complete => complete,
+            area_id => area.id.to_string(),
+            board_sections => board_sections,
             members => members,
             can_manage => can_manage,
             csrf_token => user.csrf_token,

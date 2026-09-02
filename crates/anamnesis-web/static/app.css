@@ -616,6 +616,18 @@ button:hover {
   opacity: 0.4;
 }
 
+/* --- area page: dragging a project between the Pending/Active/Complete
+   lanes (`templates/_area_project_list.html`) -- the board's `.card-list`
+   markup, made draggable the same way. --- */
+
+.card-list.drag-list {
+  touch-action: pan-y;
+}
+
+.card-list.drag-list .card {
+  cursor: grab;
+}
+
 /* --- custom field values on the task detail page (`docs/DOMAIN.md` §3) --- */
 
 .field-row {
