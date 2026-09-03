@@ -18,8 +18,8 @@ use anamnesis_app::*;
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
     AreaId, Column, ColumnId, DomainError, FieldData, FieldKind, KindId, NumberValue, OfferItem,
-    Outcome, Placement, ProjectId, ProjectStatus, SuggestionSettings, Task, TaskSummary, Title,
-    UserId,
+    Outcome, Placement, Project, ProjectId, ProjectStatus, Relationship, SuggestionSettings, Task,
+    TaskId, TaskSummary, Title, UserId,
 };
 
 fn admin() -> Option<Role> {
@@ -84,6 +84,61 @@ async fn list_areas_is_gated_and_ordered_by_position() {
 
 // ============================ Projects ============================
 
+/// Shorthand for [`create_project`] with the description every test here
+/// leaves blank — collapses the 8-positional-argument call the use case
+/// takes into the handful of things each test actually varies (role, area,
+/// title).
+async fn try_create_project(
+    fakes: &Fakes,
+    ids: &SequentialIdGen,
+    clock: &FixedClock,
+    role: Option<Role>,
+    area_id: AreaId,
+    title: &str,
+) -> Result<Project, AppError> {
+    create_project(fakes, ids, clock, fakes, role, area_id, title, "").await
+}
+
+/// Transitions a project straight to `Active`, the shape every suggestion /
+/// tangle test below needs before it can put tasks on a board.
+async fn try_activate(
+    fakes: &Fakes,
+    clock: &FixedClock,
+    role: Option<Role>,
+    project_id: ProjectId,
+    active_project_limit: u32,
+) -> Result<Project, AppError> {
+    transition_project_status(
+        fakes,
+        clock,
+        role,
+        project_id,
+        ProjectStatus::Active,
+        active_project_limit,
+    )
+    .await
+}
+
+/// Creates a project as a Project Admin and immediately activates it under a
+/// generous limit -- the "just give me a real Active project to put tasks
+/// and columns on" setup shared by the suggestion and tangle tests, none of
+/// which are themselves testing project creation or the active-project
+/// limit.
+async fn create_active_project(
+    fakes: &Fakes,
+    ids: &SequentialIdGen,
+    clock: &FixedClock,
+    title: &str,
+) -> Project {
+    let area_id = AreaId::new(ids.next());
+    let project = try_create_project(fakes, ids, clock, project_admin(), area_id, title)
+        .await
+        .unwrap();
+    try_activate(fakes, clock, project_admin(), project.id, 10)
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
 async fn create_project_requires_project_admin_or_system_admin_in_the_area() {
     let fakes = Fakes::new();
@@ -91,59 +146,19 @@ async fn create_project_requires_project_admin_or_system_admin_in_the_area() {
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
 
-    let result = create_project(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        none(),
-        area_id,
-        "Renovate",
-        "",
-    )
-    .await;
+    let result = try_create_project(&fakes, &ids, &clock, none(), area_id, "Renovate").await;
     assert!(matches!(result, Err(AppError::Forbidden)));
 
     // A plain Member of the Area is not enough -- creating a Project is
     // structural, gated the same as `EditProject`/`ManageFieldDefinitions`,
     // not the same as ordinary task work.
-    let result = create_project(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        member(),
-        area_id,
-        "Renovate",
-        "",
-    )
-    .await;
+    let result = try_create_project(&fakes, &ids, &clock, member(), area_id, "Renovate").await;
     assert!(matches!(result, Err(AppError::Forbidden)));
 
-    let ok = create_project(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        project_admin(),
-        area_id,
-        "Renovate",
-        "",
-    )
-    .await;
+    let ok = try_create_project(&fakes, &ids, &clock, project_admin(), area_id, "Renovate").await;
     assert!(ok.is_ok());
 
-    let ok = create_project(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        admin(),
-        area_id,
-        "Renovate 2",
-        "",
-    )
-    .await;
+    let ok = try_create_project(&fakes, &ids, &clock, admin(), area_id, "Renovate 2").await;
     assert!(ok.is_ok());
 }
 
@@ -154,51 +169,18 @@ async fn transition_project_status_enforces_the_active_project_limit() {
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
 
-    let p1 = create_project(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        project_admin(),
-        area_id,
-        "One",
-        "",
-    )
-    .await
-    .unwrap();
-    let p2 = create_project(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        project_admin(),
-        area_id,
-        "Two",
-        "",
-    )
-    .await
-    .unwrap();
+    let p1 = try_create_project(&fakes, &ids, &clock, project_admin(), area_id, "One")
+        .await
+        .unwrap();
+    let p2 = try_create_project(&fakes, &ids, &clock, project_admin(), area_id, "Two")
+        .await
+        .unwrap();
 
-    transition_project_status(
-        &fakes,
-        &clock,
-        project_admin(),
-        p1.id,
-        ProjectStatus::Active,
-        1,
-    )
-    .await
-    .unwrap();
+    try_activate(&fakes, &clock, project_admin(), p1.id, 1)
+        .await
+        .unwrap();
 
-    let result = transition_project_status(
-        &fakes,
-        &clock,
-        project_admin(),
-        p2.id,
-        ProjectStatus::Active,
-        1,
-    )
-    .await;
+    let result = try_activate(&fakes, &clock, project_admin(), p2.id, 1).await;
     assert_eq!(
         result,
         Err(AppError::Rule(DomainError::ActiveProjectLimitExceeded))
@@ -318,6 +300,20 @@ fn make_column(
         is_done,
     )
     .unwrap()
+}
+
+/// Shorthand for [`create_task`] as an ordinary Member, the role nearly
+/// every test that just wants "a task on the board" needs.
+async fn add_task(
+    fakes: &Fakes,
+    ids: &SequentialIdGen,
+    clock: &FixedClock,
+    project_id: ProjectId,
+    title: &str,
+) -> Task {
+    create_task(fakes, ids, clock, fakes, member(), project_id, title, "")
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -738,18 +734,7 @@ async fn derive_seed_is_stable_for_an_unchanged_board_and_changes_when_it_change
     project.status = ProjectStatus::Active;
     fakes.seed_project(project);
 
-    let t1 = create_task(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        member(),
-        project_id,
-        "One",
-        "",
-    )
-    .await
-    .unwrap();
+    let t1 = add_task(&fakes, &ids, &clock, project_id, "One").await;
 
     let candidates_before = fakes.suggestion_candidates_for_test().await;
     let seed_before_1 = derive_seed(&alice(), (2026, 100), &candidates_before);
@@ -761,18 +746,7 @@ async fn derive_seed_is_stable_for_an_unchanged_board_and_changes_when_it_change
 
     // Now change the board: add a second task. The candidate set differs,
     // so the fingerprint -- and thus the seed -- must differ too.
-    let _t2 = create_task(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        member(),
-        project_id,
-        "Two",
-        "",
-    )
-    .await
-    .unwrap();
+    let _t2 = add_task(&fakes, &ids, &clock, project_id, "Two").await;
     let candidates_after = fakes.suggestion_candidates_for_test().await;
     let seed_after = derive_seed(&alice(), (2026, 100), &candidates_after);
     assert_ne!(
@@ -796,42 +770,9 @@ async fn request_suggestion_stamps_last_offered_at_on_every_offered_task() {
     let fakes = Fakes::new();
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
-    let area_id = AreaId::new(ids.next());
-    let project = create_project(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        project_admin(),
-        area_id,
-        "P",
-        "",
-    )
-    .await
-    .unwrap();
-    transition_project_status(
-        &fakes,
-        &clock,
-        project_admin(),
-        project.id,
-        ProjectStatus::Active,
-        10,
-    )
-    .await
-    .unwrap();
+    let project = create_active_project(&fakes, &ids, &clock, "P").await;
 
-    let task = create_task(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        member(),
-        project.id,
-        "Do the thing",
-        "",
-    )
-    .await
-    .unwrap();
+    let task = add_task(&fakes, &ids, &clock, project.id, "Do the thing").await;
     assert_eq!(task.last_offered_at, None);
 
     let column = make_column(&ids, "To-Do", 0, Some(3), false);
@@ -862,60 +803,16 @@ async fn request_suggestion_is_full_silence_at_the_wip_limit() {
     let fakes = Fakes::new();
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
-    let area_id = AreaId::new(ids.next());
-    let project = create_project(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        project_admin(),
-        area_id,
-        "P",
-        "",
-    )
-    .await
-    .unwrap();
-    transition_project_status(
-        &fakes,
-        &clock,
-        project_admin(),
-        project.id,
-        ProjectStatus::Active,
-        10,
-    )
-    .await
-    .unwrap();
+    let project = create_active_project(&fakes, &ids, &clock, "P").await;
 
     let column = make_column(&ids, "To-Do", 0, Some(1), false);
     fakes.seed_column(column.clone());
-    let occupant = create_task(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        member(),
-        project.id,
-        "Occupant",
-        "",
-    )
-    .await
-    .unwrap();
+    let occupant = add_task(&fakes, &ids, &clock, project.id, "Occupant").await;
     raise_task(&fakes, &fakes, &clock, member(), occupant.id, column.id, 0)
         .await
         .unwrap();
 
-    let _below = create_task(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        member(),
-        project.id,
-        "Below",
-        "",
-    )
-    .await
-    .unwrap();
+    let _below = add_task(&fakes, &ids, &clock, project.id, "Below").await;
 
     let outcome = request_suggestion(
         &fakes,
@@ -949,6 +846,34 @@ impl SuggestionCandidatesForTest for Fakes {
 
 // ============================== Tangles ==============================
 
+/// Shorthand for [`create_relationship`] with a builtin `blocks` edge
+/// between two tasks in the same project, as an ordinary Member -- the one
+/// relationship shape every tangle test needs, repeated (in both
+/// directions) to tie the knot.
+async fn create_block(
+    fakes: &Fakes,
+    ids: &SequentialIdGen,
+    clock: &FixedClock,
+    project_id: ProjectId,
+    from: TaskId,
+    to: TaskId,
+) -> Relationship {
+    create_relationship(
+        fakes,
+        fakes,
+        ids,
+        clock,
+        member(),
+        from,
+        project_id,
+        to,
+        project_id,
+        KindId::BUILTIN_BLOCKS,
+    )
+    .await
+    .unwrap()
+}
+
 #[tokio::test]
 async fn run_tangle_detection_surfaces_a_knot_and_resolves_it() {
     let fakes = Fakes::new();
@@ -956,41 +881,11 @@ async fn run_tangle_detection_surfaces_a_knot_and_resolves_it() {
     let clock = FixedClock::at(0);
     let project_id = some_project_id(&ids);
 
-    let a = create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "A", "")
-        .await
-        .unwrap();
-    let b = create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "B", "")
-        .await
-        .unwrap();
+    let a = add_task(&fakes, &ids, &clock, project_id, "A").await;
+    let b = add_task(&fakes, &ids, &clock, project_id, "B").await;
 
-    let a_blocks_b = create_relationship(
-        &fakes,
-        &fakes,
-        &ids,
-        &clock,
-        member(),
-        a.id,
-        project_id,
-        b.id,
-        project_id,
-        KindId::BUILTIN_BLOCKS,
-    )
-    .await
-    .unwrap();
-    create_relationship(
-        &fakes,
-        &fakes,
-        &ids,
-        &clock,
-        member(),
-        b.id,
-        project_id,
-        a.id,
-        project_id,
-        KindId::BUILTIN_BLOCKS,
-    )
-    .await
-    .unwrap();
+    let a_blocks_b = create_block(&fakes, &ids, &clock, project_id, a.id, b.id).await;
+    create_block(&fakes, &ids, &clock, project_id, b.id, a.id).await;
 
     let reconciliation = run_tangle_detection(&fakes, &fakes, &ids, &clock)
         .await
@@ -1022,55 +917,11 @@ async fn knotted_pair(
     ids: &SequentialIdGen,
     clock: &FixedClock,
 ) -> (ProjectId, Task, Task, anamnesis_core::Tangle) {
-    let area_id = AreaId::new(ids.next());
-    let project = create_project(fakes, ids, clock, fakes, project_admin(), area_id, "P", "")
-        .await
-        .unwrap();
-    transition_project_status(
-        fakes,
-        clock,
-        project_admin(),
-        project.id,
-        ProjectStatus::Active,
-        10,
-    )
-    .await
-    .unwrap();
-    let project_id = project.id;
-    let a = create_task(fakes, ids, clock, fakes, member(), project_id, "A", "")
-        .await
-        .unwrap();
-    let b = create_task(fakes, ids, clock, fakes, member(), project_id, "B", "")
-        .await
-        .unwrap();
-    create_relationship(
-        fakes,
-        fakes,
-        ids,
-        clock,
-        member(),
-        a.id,
-        project_id,
-        b.id,
-        project_id,
-        KindId::BUILTIN_BLOCKS,
-    )
-    .await
-    .unwrap();
-    create_relationship(
-        fakes,
-        fakes,
-        ids,
-        clock,
-        member(),
-        b.id,
-        project_id,
-        a.id,
-        project_id,
-        KindId::BUILTIN_BLOCKS,
-    )
-    .await
-    .unwrap();
+    let project_id = create_active_project(fakes, ids, clock, "P").await.id;
+    let a = add_task(fakes, ids, clock, project_id, "A").await;
+    let b = add_task(fakes, ids, clock, project_id, "B").await;
+    create_block(fakes, ids, clock, project_id, a.id, b.id).await;
+    create_block(fakes, ids, clock, project_id, b.id, a.id).await;
     let reconciliation = run_tangle_detection(fakes, fakes, ids, clock)
         .await
         .unwrap();
@@ -1494,20 +1345,7 @@ async fn an_archived_tangle_is_not_resurrected_by_a_fresh_detection_pass_over_th
 
     // The user re-ties the exact same knot: re-create the b->a edge over
     // the same two tasks.
-    create_relationship(
-        &fakes,
-        &fakes,
-        &ids,
-        &clock,
-        member(),
-        b.id,
-        project_id,
-        a.id,
-        project_id,
-        KindId::BUILTIN_BLOCKS,
-    )
-    .await
-    .unwrap();
+    create_block(&fakes, &ids, &clock, project_id, b.id, a.id).await;
 
     let reconciliation = run_tangle_detection(&fakes, &fakes, &ids, &clock)
         .await
@@ -2016,18 +1854,9 @@ async fn edit_project_archive_and_unarchive_require_project_admin() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project = create_project(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        project_admin(),
-        area_id,
-        "P",
-        "",
-    )
-    .await
-    .unwrap();
+    let project = try_create_project(&fakes, &ids, &clock, project_admin(), area_id, "P")
+        .await
+        .unwrap();
 
     assert!(matches!(
         edit_project_fields(

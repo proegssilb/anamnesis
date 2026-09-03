@@ -97,12 +97,29 @@ fn column(position: u32, wip_limit: Option<u32>, is_done: bool) -> Column {
     }
 }
 
+/// Shared arrange step repeated by nearly every contract below: an area,
+/// and a project inside it, both already persisted.
+async fn seed_area_and_project(
+    store: &SqlStore,
+    area_position: u32,
+    status: ProjectStatus,
+) -> (Area, Project) {
+    let owning_area = area(area_position);
+    AreaRepository::insert(store, &owning_area).await.unwrap();
+    let p = project(owning_area.id, status);
+    ProjectRepository::insert(store, &p).await.unwrap();
+    (owning_area, p)
+}
+
 /// The shared contract. Called once per backend so the two implementations
 /// cannot drift apart.
 async fn contract(store: &SqlStore) {
     area_contract(store).await;
-    project_contract(store).await;
-    let (task_contract_project, task_a, task_b) = task_and_field_value_contract(store).await;
+    let created_project = project_contract(store).await;
+    project_relationship_kind_contract(store, created_project.id).await;
+    project_active_limit_contract(store, created_project).await;
+    let (task_contract_project, task_a, task_b) = task_contract(store).await;
+    field_value_contract(store, task_contract_project, task_a.id).await;
     optimistic_concurrency_contract(store, &task_a).await;
     relationship_contract(store, &task_a, &task_b).await;
     tangle_contract(store).await;
@@ -158,12 +175,8 @@ async fn area_contract(store: &SqlStore) {
 
 // --- Project (+ field definitions + relationship kinds) ---
 
-async fn project_contract(store: &SqlStore) {
-    let owning_area = area(0);
-    AreaRepository::insert(store, &owning_area).await.unwrap();
-
-    let p = project(owning_area.id, ProjectStatus::Pending);
-    ProjectRepository::insert(store, &p).await.unwrap();
+async fn project_contract(store: &SqlStore) -> Project {
+    let (owning_area, p) = seed_area_and_project(store, 0, ProjectStatus::Pending).await;
 
     let loaded = ProjectRepository::load(store, p.id).await.unwrap().unwrap();
     assert_eq!(
@@ -187,35 +200,11 @@ async fn project_contract(store: &SqlStore) {
         .await
         .unwrap();
 
-    let kind = RelationshipKind {
-        id: Uuid::new_v4().into(),
-        project_id: Some(p.id),
-        forward_label: title("inspired by"),
-        reverse_label: title("inspired"),
-    };
-    ProjectRepository::insert_relationship_kind(store, &kind)
-        .await
-        .unwrap();
-
     let loaded = ProjectRepository::load(store, p.id).await.unwrap().unwrap();
     assert_eq!(
         loaded.field_definitions,
         vec![first.clone(), second.clone()],
         "field definitions load ordered by position, not insertion order"
-    );
-    assert_eq!(loaded.relationship_kinds, vec![kind.clone()]);
-
-    let loaded_kind = ProjectRepository::load_relationship_kind(store, kind.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(loaded_kind, kind);
-    assert_eq!(
-        ProjectRepository::load_relationship_kind(store, KindId::BUILTIN_BLOCKS)
-            .await
-            .unwrap(),
-        None,
-        "a builtin kind id is never a stored row"
     );
 
     let renamed = anamnesis_core::rename_field_definition(&first, "Weight (kg)").unwrap();
@@ -230,7 +219,12 @@ async fn project_contract(store: &SqlStore) {
         .unwrap();
     assert_eq!(by_area, vec![p.clone()]);
 
-    // count_active / active-project-limit support.
+    p
+}
+
+// --- Project: count_active / active-project-limit support ---
+
+async fn project_active_limit_contract(store: &SqlStore, p: Project) {
     assert_eq!(
         ProjectRepository::count_active(store, None).await.unwrap(),
         0
@@ -254,14 +248,43 @@ async fn project_contract(store: &SqlStore) {
     assert_eq!(loaded.project.status, ProjectStatus::Active);
 }
 
+// --- Project: relationship kinds ---
+
+async fn project_relationship_kind_contract(store: &SqlStore, project_id: ProjectId) {
+    let kind = RelationshipKind {
+        id: Uuid::new_v4().into(),
+        project_id: Some(project_id),
+        forward_label: title("inspired by"),
+        reverse_label: title("inspired"),
+    };
+    ProjectRepository::insert_relationship_kind(store, &kind)
+        .await
+        .unwrap();
+
+    let loaded = ProjectRepository::load(store, project_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.relationship_kinds, vec![kind.clone()]);
+
+    let loaded_kind = ProjectRepository::load_relationship_kind(store, kind.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded_kind, kind);
+    assert_eq!(
+        ProjectRepository::load_relationship_kind(store, KindId::BUILTIN_BLOCKS)
+            .await
+            .unwrap(),
+        None,
+        "a builtin kind id is never a stored row"
+    );
+}
+
 // --- Task (+ field values, typed EAV) + list_children ordering ---
 
-async fn task_and_field_value_contract(store: &SqlStore) -> (ProjectId, Task, Task) {
-    let owning_area = area(2);
-    AreaRepository::insert(store, &owning_area).await.unwrap();
-    let mut p = project(owning_area.id, ProjectStatus::Active);
-    p.status = ProjectStatus::Active;
-    ProjectRepository::insert(store, &p).await.unwrap();
+async fn task_contract(store: &SqlStore) -> (ProjectId, Task, Task) {
+    let (_, p) = seed_area_and_project(store, 2, ProjectStatus::Active).await;
 
     let missing = TaskRepository::load(store, Uuid::new_v4().into())
         .await
@@ -281,105 +304,6 @@ async fn task_and_field_value_contract(store: &SqlStore) -> (ProjectId, Task, Ta
             field_values: Vec::new(),
         }
     );
-
-    // One field definition per FieldKind, to round-trip every variant of
-    // the typed EAV encoding.
-    let number_def = field_def(p.id, FieldKind::Number, 0, "Weight");
-    let currency_def = field_def(p.id, FieldKind::Currency, 1, "Cost");
-    let date_def = field_def(p.id, FieldKind::Date, 2, "Due");
-    let time_def = field_def(p.id, FieldKind::Time, 3, "Reminder");
-    let datetime_def = field_def(p.id, FieldKind::DateTime, 4, "Scheduled");
-    let line_def = field_def(p.id, FieldKind::Line, 5, "Summary");
-    let block_def = field_def(p.id, FieldKind::Block, 6, "Notes");
-    for def in [
-        &number_def,
-        &currency_def,
-        &date_def,
-        &time_def,
-        &datetime_def,
-        &line_def,
-        &block_def,
-    ] {
-        ProjectRepository::insert_field_definition(store, def)
-            .await
-            .unwrap();
-    }
-
-    let values = vec![
-        FieldValue {
-            field_id: number_def.id,
-            task_id: a.id,
-            data: FieldData::Number(NumberValue {
-                units: 12345,
-                scale: 2,
-            }),
-        },
-        FieldValue {
-            field_id: currency_def.id,
-            task_id: a.id,
-            data: FieldData::Currency(CurrencyAmount {
-                minor_units: 1999,
-                currency: CurrencyCode::new("USD").unwrap(),
-            }),
-        },
-        FieldValue {
-            field_id: date_def.id,
-            task_id: a.id,
-            data: FieldData::Date(
-                time::Date::from_calendar_date(2026, time::Month::March, 15).unwrap(),
-            ),
-        },
-        FieldValue {
-            field_id: time_def.id,
-            task_id: a.id,
-            data: FieldData::Time(time::Time::from_hms(14, 30, 0).unwrap()),
-        },
-        FieldValue {
-            field_id: datetime_def.id,
-            task_id: a.id,
-            data: FieldData::DateTime(ts(1_700_000_000)),
-        },
-        FieldValue {
-            field_id: line_def.id,
-            task_id: a.id,
-            data: FieldData::Line("a one-liner".to_string()),
-        },
-        FieldValue {
-            field_id: block_def.id,
-            task_id: a.id,
-            data: FieldData::Block("a whole\nparagraph".to_string()),
-        },
-    ];
-    for value in &values {
-        TaskRepository::set_field_value(store, value).await.unwrap();
-    }
-
-    let loaded = TaskRepository::load(store, a.id).await.unwrap().unwrap();
-    let mut loaded_values = loaded.field_values.clone();
-    loaded_values.sort_by_key(|v| v.field_id.as_uuid());
-    let mut expected_values = values.clone();
-    expected_values.sort_by_key(|v| v.field_id.as_uuid());
-    assert_eq!(
-        loaded_values, expected_values,
-        "every FieldKind variant must round-trip exactly through the typed EAV columns"
-    );
-
-    // Overwriting an existing value (not inserting a duplicate row).
-    let updated_number = FieldValue {
-        field_id: number_def.id,
-        task_id: a.id,
-        data: FieldData::Number(NumberValue { units: 1, scale: 0 }),
-    };
-    TaskRepository::set_field_value(store, &updated_number)
-        .await
-        .unwrap();
-    let loaded = TaskRepository::load(store, a.id).await.unwrap().unwrap();
-    assert_eq!(
-        loaded.field_values.len(),
-        7,
-        "must overwrite, not duplicate"
-    );
-    assert!(loaded.field_values.contains(&updated_number));
 
     // Checklist containment + ordering: two children, inserted out of
     // order, must list back ordered by checklist_position.
@@ -443,6 +367,119 @@ async fn task_and_field_value_contract(store: &SqlStore) -> (ProjectId, Task, Ta
     );
 
     (p.id, a, b)
+}
+
+// --- Task field values: typed EAV round trip + overwrite semantics ---
+
+/// One field definition per `FieldKind`, inserted on `project_id`, to
+/// round-trip every variant of the typed EAV encoding.
+async fn seed_one_field_definition_per_kind(
+    store: &SqlStore,
+    project_id: ProjectId,
+) -> [FieldDefinition; 7] {
+    let defs = [
+        field_def(project_id, FieldKind::Number, 0, "Weight"),
+        field_def(project_id, FieldKind::Currency, 1, "Cost"),
+        field_def(project_id, FieldKind::Date, 2, "Due"),
+        field_def(project_id, FieldKind::Time, 3, "Reminder"),
+        field_def(project_id, FieldKind::DateTime, 4, "Scheduled"),
+        field_def(project_id, FieldKind::Line, 5, "Summary"),
+        field_def(project_id, FieldKind::Block, 6, "Notes"),
+    ];
+    for def in &defs {
+        ProjectRepository::insert_field_definition(store, def)
+            .await
+            .unwrap();
+    }
+    defs
+}
+
+async fn field_value_contract(store: &SqlStore, project_id: ProjectId, task_id: TaskId) {
+    let [
+        number_def,
+        currency_def,
+        date_def,
+        time_def,
+        datetime_def,
+        line_def,
+        block_def,
+    ] = seed_one_field_definition_per_kind(store, project_id).await;
+
+    let values = vec![
+        FieldValue {
+            field_id: number_def.id,
+            task_id,
+            data: FieldData::Number(NumberValue {
+                units: 12345,
+                scale: 2,
+            }),
+        },
+        FieldValue {
+            field_id: currency_def.id,
+            task_id,
+            data: FieldData::Currency(CurrencyAmount {
+                minor_units: 1999,
+                currency: CurrencyCode::new("USD").unwrap(),
+            }),
+        },
+        FieldValue {
+            field_id: date_def.id,
+            task_id,
+            data: FieldData::Date(
+                time::Date::from_calendar_date(2026, time::Month::March, 15).unwrap(),
+            ),
+        },
+        FieldValue {
+            field_id: time_def.id,
+            task_id,
+            data: FieldData::Time(time::Time::from_hms(14, 30, 0).unwrap()),
+        },
+        FieldValue {
+            field_id: datetime_def.id,
+            task_id,
+            data: FieldData::DateTime(ts(1_700_000_000)),
+        },
+        FieldValue {
+            field_id: line_def.id,
+            task_id,
+            data: FieldData::Line("a one-liner".to_string()),
+        },
+        FieldValue {
+            field_id: block_def.id,
+            task_id,
+            data: FieldData::Block("a whole\nparagraph".to_string()),
+        },
+    ];
+    for value in &values {
+        TaskRepository::set_field_value(store, value).await.unwrap();
+    }
+
+    let loaded = TaskRepository::load(store, task_id).await.unwrap().unwrap();
+    let mut loaded_values = loaded.field_values.clone();
+    loaded_values.sort_by_key(|v| v.field_id.as_uuid());
+    let mut expected_values = values.clone();
+    expected_values.sort_by_key(|v| v.field_id.as_uuid());
+    assert_eq!(
+        loaded_values, expected_values,
+        "every FieldKind variant must round-trip exactly through the typed EAV columns"
+    );
+
+    // Overwriting an existing value (not inserting a duplicate row).
+    let updated_number = FieldValue {
+        field_id: number_def.id,
+        task_id,
+        data: FieldData::Number(NumberValue { units: 1, scale: 0 }),
+    };
+    TaskRepository::set_field_value(store, &updated_number)
+        .await
+        .unwrap();
+    let loaded = TaskRepository::load(store, task_id).await.unwrap().unwrap();
+    assert_eq!(
+        loaded.field_values.len(),
+        7,
+        "must overwrite, not duplicate"
+    );
+    assert!(loaded.field_values.contains(&updated_number));
 }
 
 // --- TaskRepository::update: optimistic concurrency ---

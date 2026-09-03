@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 
 use anamnesis_app::BoardQuery;
 use anamnesis_web::bootstrap::DEFAULT_TODO_WIP_LIMIT;
-use support::{TestApp, body_text, location_of};
+use support::{TestApp, body_text};
 
 #[tokio::test]
 async fn a_fresh_empty_board_is_stuck_because_the_backlog_is_empty() {
@@ -26,60 +26,15 @@ async fn a_full_board_renders_no_suggestion_prompt_at_all() {
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None;
 
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Home"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Kitchen remodel"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
     // Move the project to Active -- suggestion eligibility requires it.
-    app.post_form(
-        &format!("{project_path}/status"),
-        &[
-            ("csrf_token", support::DEV_CSRF_TOKEN),
-            ("status", "active"),
-        ],
-        cookie,
-    )
-    .await;
+    let (_, project_path) =
+        support::new_active_project(&app, "Home", "Kitchen remodel", cookie).await;
 
     let todo_column = app.store.columns_with_items().await.unwrap()[0].column.id;
 
     // Fill the To-Do column to its WIP limit by raising that many tasks.
     for n in 0..DEFAULT_TODO_WIP_LIMIT {
-        let task_path = location_of(
-            &app.post_form(
-                &format!("{project_path}/tasks"),
-                &[
-                    ("csrf_token", support::DEV_CSRF_TOKEN),
-                    ("title", &format!("task {n}")),
-                    ("description", ""),
-                ],
-                cookie,
-            )
-            .await,
-        )
-        .to_string();
+        let task_path = support::new_task(&app, &project_path, &format!("task {n}"), cookie).await;
         let raise = app
             .post_form(
                 &format!("{task_path}/raise"),
@@ -107,51 +62,9 @@ async fn accepting_an_offered_task_raises_it_onto_the_board() {
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None;
 
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Home"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Kitchen remodel"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    app.post_form(
-        &format!("{project_path}/status"),
-        &[
-            ("csrf_token", support::DEV_CSRF_TOKEN),
-            ("status", "active"),
-        ],
-        cookie,
-    )
-    .await;
-    app.post_form(
-        &format!("{project_path}/tasks"),
-        &[
-            ("csrf_token", support::DEV_CSRF_TOKEN),
-            ("title", "Regrout the shower"),
-            ("description", ""),
-        ],
-        cookie,
-    )
-    .await;
+    let (_, project_path) =
+        support::new_active_project(&app, "Home", "Kitchen remodel", cookie).await;
+    support::new_task(&app, &project_path, "Regrout the shower", cookie).await;
 
     let board_body = body_text(app.get("/board", cookie).await).await;
     assert!(board_body.contains("Regrout the shower"));
