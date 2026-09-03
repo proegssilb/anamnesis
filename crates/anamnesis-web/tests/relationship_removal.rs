@@ -13,78 +13,31 @@ use support::{TestApp, body_text, location_of};
 /// Creates two tasks under a fresh, active project, links them with a
 /// `relates_to` edge from `a` to `b`, and returns `(task_a_path, task_b_path,
 /// relationship_id)`.
-async fn linked_pair(app: &TestApp) -> (String, String, uuid::Uuid) {
-    let cookie: Option<&str> = None; // dev-auth-bypass needs no cookie at all.
+///
+/// `csrf`/`cookie` are the single identity the whole fixture is built as —
+/// `None` under dev-auth-bypass, or a signed session for the authenticated
+/// variant. That pair is the *only* thing that ever varied between this and
+/// the authenticated version, which used to be a verbatim second copy.
+async fn linked_pair_as(
+    app: &TestApp,
+    csrf: &str,
+    cookie: Option<&str>,
+) -> (String, String, uuid::Uuid) {
+    let (_, project_path) =
+        support::new_area_with_project(app, "Home", "Kitchen remodel", csrf, cookie).await;
+    support::set_project_status(app, &project_path, "active", csrf, cookie).await;
 
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Home"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Kitchen remodel"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    app.post_form(
-        &format!("{project_path}/status"),
-        &[
-            ("csrf_token", support::DEV_CSRF_TOKEN),
-            ("status", "active"),
-        ],
-        cookie,
-    )
-    .await;
-
-    let task_a_path = location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Design the layout"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let task_b_path = location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Order the tile"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
+    let task_a_path =
+        support::new_task_as(app, &project_path, "Design the layout", csrf, cookie).await;
+    let task_b_path =
+        support::new_task_as(app, &project_path, "Order the tile", csrf, cookie).await;
     let task_b_id = task_b_path.trim_start_matches("/tasks/").to_string();
 
     let create = app
         .post_form(
             &format!("{task_a_path}/relationships"),
             &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
+                ("csrf_token", csrf),
                 ("to_task_id", &task_b_id),
                 ("kind", "relates_to"),
             ],
@@ -103,6 +56,11 @@ async fn linked_pair(app: &TestApp) -> (String, String, uuid::Uuid) {
     let relationship_id = all[0].id.to_string().parse().unwrap();
 
     (task_a_path, task_b_path, relationship_id)
+}
+
+/// [`linked_pair_as`] under dev-auth-bypass, which needs no cookie at all.
+async fn linked_pair(app: &TestApp) -> (String, String, uuid::Uuid) {
+    linked_pair_as(app, support::DEV_CSRF_TOKEN, None).await
 }
 
 #[tokio::test]
@@ -238,92 +196,7 @@ async fn linked_pair_authed(
     cookie: &str,
     csrf_token: &str,
 ) -> (String, String, uuid::Uuid) {
-    let cookie = Some(cookie);
-
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", csrf_token),
-                ("title", "Home"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", csrf_token),
-                ("title", "Kitchen remodel"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    app.post_form(
-        &format!("{project_path}/status"),
-        &[("csrf_token", csrf_token), ("status", "active")],
-        cookie,
-    )
-    .await;
-
-    let task_a_path = location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", csrf_token),
-                ("title", "Design the layout"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let task_b_path = location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", csrf_token),
-                ("title", "Order the tile"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let task_b_id = task_b_path.trim_start_matches("/tasks/").to_string();
-
-    let create = app
-        .post_form(
-            &format!("{task_a_path}/relationships"),
-            &[
-                ("csrf_token", csrf_token),
-                ("to_task_id", &task_b_id),
-                ("kind", "relates_to"),
-            ],
-            cookie,
-        )
-        .await;
-    assert_eq!(create.status(), StatusCode::SEE_OTHER);
-
-    let task_a_id = task_a_path.trim_start_matches("/tasks/").parse().unwrap();
-    let all = app
-        .store
-        .list_for_task(anamnesis_core::TaskId::new(task_a_id))
-        .await
-        .unwrap();
-    assert_eq!(all.len(), 1, "exactly one relationship must exist");
-    let relationship_id = all[0].id.to_string().parse().unwrap();
-
-    (task_a_path, task_b_path, relationship_id)
+    linked_pair_as(app, csrf_token, Some(cookie)).await
 }
 
 /// The full untangle loop, end to end: two tasks block each other, a tangle

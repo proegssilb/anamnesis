@@ -84,33 +84,7 @@ impl TestApp {
             .await
             .expect("create temp blob store");
 
-        let state = AppState {
-            areas: store.clone(),
-            projects: store.clone(),
-            tasks: store.clone(),
-            relationships: store.clone(),
-            tangles: store.clone(),
-            comments: store.clone(),
-            attachments: store.clone(),
-            blobs: Arc::new(blobs),
-            board: store.clone(),
-            search: store.clone(),
-            search_index: store.clone(),
-            membership: store.clone(),
-            membership_write: store.clone(),
-            timezone: Arc::new(TzTimezoneResolver::new()),
-            clock: Arc::new(SystemClock),
-            id_gen: Arc::new(id_gen),
-            identity: None,
-            templates: Arc::new(templates::build_environment()),
-            cookie_key: key.clone(),
-            dev_auth_bypass,
-            dev_csrf_token: DEV_CSRF_TOKEN.to_string(),
-            secure_cookies: false,
-            settings: store.clone(),
-            timezone_name: "UTC".to_string(),
-        };
-
+        let state = test_state(store.clone(), blobs, key.clone(), dev_auth_bypass);
         let router = routes::build_router(state);
         Self {
             router,
@@ -250,6 +224,47 @@ impl TestApp {
     }
 }
 
+/// The test harness's counterpart of `main.rs`'s `build_state`: the table
+/// wiring one `SqlStore` into every port `AppState` exposes.
+///
+/// `SystemClock`, `UuidIdGen` and `TzTimezoneResolver` are stateless unit
+/// structs, so they are built here rather than passed in — as in the binary,
+/// they are not inputs, just the adapters this harness picks. `identity` is
+/// always `None`: no test talks to a real identity provider.
+fn test_state(
+    store: Arc<SqlStore>,
+    blobs: FsBlobStore,
+    cookie_key: Key,
+    dev_auth_bypass: bool,
+) -> AppState {
+    AppState {
+        areas: store.clone(),
+        projects: store.clone(),
+        tasks: store.clone(),
+        relationships: store.clone(),
+        tangles: store.clone(),
+        comments: store.clone(),
+        attachments: store.clone(),
+        blobs: Arc::new(blobs),
+        board: store.clone(),
+        search: store.clone(),
+        search_index: store.clone(),
+        membership: store.clone(),
+        membership_write: store.clone(),
+        timezone: Arc::new(TzTimezoneResolver::new()),
+        clock: Arc::new(SystemClock),
+        id_gen: Arc::new(UuidIdGen),
+        identity: None,
+        templates: Arc::new(templates::build_environment()),
+        cookie_key,
+        dev_auth_bypass,
+        dev_csrf_token: DEV_CSRF_TOKEN.to_string(),
+        secure_cookies: false,
+        settings: store,
+        timezone_name: "UTC".to_string(),
+    }
+}
+
 /// Signs `cookie` with `key` exactly as the app's own `SignedCookieJar`
 /// would, and returns it as a `Cookie:` request-header-ready `name=value`
 /// string.
@@ -343,6 +358,50 @@ pub async fn new_task(
         cookie,
     )
     .await
+}
+
+/// Creates a task under `project_path` as a specific identity.
+pub async fn new_task_as(
+    app: &TestApp,
+    project_path: &str,
+    title: &str,
+    csrf: &str,
+    cookie: Option<&str>,
+) -> String {
+    create_titled(app, &format!("{project_path}/tasks"), title, csrf, cookie).await
+}
+
+/// Posts a project status transition (`"pending"` / `"active"` /
+/// `"complete"`) and hands back the response, so callers that care can assert
+/// on it while callers doing setup can ignore it.
+pub async fn set_project_status(
+    app: &TestApp,
+    project_path: &str,
+    status: &str,
+    csrf: &str,
+    cookie: Option<&str>,
+) -> Response<Body> {
+    app.post_form(
+        &format!("{project_path}/status"),
+        &[("csrf_token", csrf), ("status", status)],
+        cookie,
+    )
+    .await
+}
+
+/// Creates an area with one *active* project under dev-auth-bypass, returning
+/// `(area_path, project_path)` — the opening of every test that needs a
+/// project whose tasks can actually be raised onto the board.
+pub async fn new_active_project(
+    app: &TestApp,
+    area_title: &str,
+    project_title: &str,
+    cookie: Option<&str>,
+) -> (String, String) {
+    let (area_path, project_path) =
+        new_area_with_project(app, area_title, project_title, DEV_CSRF_TOKEN, cookie).await;
+    set_project_status(app, &project_path, "active", DEV_CSRF_TOKEN, cookie).await;
+    (area_path, project_path)
 }
 
 /// Lowers the active-project limit through the settings UI, leaving the other
