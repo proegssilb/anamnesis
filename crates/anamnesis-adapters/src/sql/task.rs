@@ -395,6 +395,37 @@ mod sqlite_impl {
         Ok(())
     }
 
+    /// Binds every column `update` writes onto the `UPDATE tasks ...`
+    /// statement. Split out of `update` so that function reads as
+    /// "check the optimistic-concurrency precondition, then write the
+    /// row" instead of interleaving the two dozen column binds with the
+    /// transaction/conflict-check control flow around them.
+    fn bind_task_update<'a>(
+        task: &'a Task,
+        id_text: &'a str,
+    ) -> sqlx::query::Query<'a, sqlx::Sqlite, sqlx::sqlite::SqliteArguments> {
+        let (placement_kind, column_id, board_position) = encode_placement(&task.placement);
+        sqlx::query(
+            "UPDATE tasks SET title = ?, description = ?, placement_kind = ?, column_id = ?, \
+             board_position = ?, parent_task_id = ?, checklist_position = ?, \
+             last_touched_at = ?, archived_at = ?, bounce_count = ?, last_bounced_at = ?, \
+             last_offered_at = ? WHERE id = ?",
+        )
+        .bind(task.title.as_str())
+        .bind(&task.description)
+        .bind(placement_kind)
+        .bind(column_id.map(|u| u.to_string()))
+        .bind(board_position)
+        .bind(task.parent_task_id.map(|p| p.as_uuid().to_string()))
+        .bind(i64::from(task.checklist_position))
+        .bind(task.last_touched_at.unix_seconds())
+        .bind(task.archived_at.map(|t| t.unix_seconds()))
+        .bind(i64::from(task.bounce_count))
+        .bind(task.last_bounced_at.map(|t| t.unix_seconds()))
+        .bind(task.last_offered_at.map(|t| t.unix_seconds()))
+        .bind(id_text)
+    }
+
     pub(super) async fn update(
         pool: &SqlitePool,
         task: &Task,
@@ -420,29 +451,10 @@ mod sqlite_impl {
             _ => {}
         }
 
-        let (placement_kind, column_id, board_position) = encode_placement(&task.placement);
-        sqlx::query(
-            "UPDATE tasks SET title = ?, description = ?, placement_kind = ?, column_id = ?, \
-             board_position = ?, parent_task_id = ?, checklist_position = ?, \
-             last_touched_at = ?, archived_at = ?, bounce_count = ?, last_bounced_at = ?, \
-             last_offered_at = ? WHERE id = ?",
-        )
-        .bind(task.title.as_str())
-        .bind(&task.description)
-        .bind(placement_kind)
-        .bind(column_id.map(|u| u.to_string()))
-        .bind(board_position)
-        .bind(task.parent_task_id.map(|p| p.as_uuid().to_string()))
-        .bind(i64::from(task.checklist_position))
-        .bind(task.last_touched_at.unix_seconds())
-        .bind(task.archived_at.map(|t| t.unix_seconds()))
-        .bind(i64::from(task.bounce_count))
-        .bind(task.last_bounced_at.map(|t| t.unix_seconds()))
-        .bind(task.last_offered_at.map(|t| t.unix_seconds()))
-        .bind(&id_text)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| RepoError::from_source("failed to update task", e))?;
+        bind_task_update(task, &id_text)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| RepoError::from_source("failed to update task", e))?;
 
         tx.commit()
             .await
@@ -621,6 +633,43 @@ mod postgres_impl {
         Ok(())
     }
 
+    /// See `sqlite_impl::bind_task_update` — same split. Fallible here
+    /// because Postgres's `int4` columns need the usual range-checked
+    /// narrowing from the domain's wider integer types.
+    fn bind_task_update(
+        task: &Task,
+    ) -> Result<sqlx::query::Query<'_, sqlx::Postgres, sqlx::postgres::PgArguments>, RepoError>
+    {
+        let (placement_kind, column_id, board_position) = encode_placement(&task.placement);
+        let board_position = board_position
+            .map(i32::try_from)
+            .transpose()
+            .map_err(|e| RepoError::from_source("board position out of range", e))?;
+        let checklist_position = i32::try_from(task.checklist_position)
+            .map_err(|e| RepoError::from_source("checklist position out of range", e))?;
+        let bounce_count = i32::try_from(task.bounce_count)
+            .map_err(|e| RepoError::from_source("bounce count out of range", e))?;
+        Ok(sqlx::query(
+            "UPDATE tasks SET title = $1, description = $2, placement_kind = $3, column_id = $4, \
+             board_position = $5, parent_task_id = $6, checklist_position = $7, \
+             last_touched_at = $8, archived_at = $9, bounce_count = $10, last_bounced_at = $11, \
+             last_offered_at = $12 WHERE id = $13",
+        )
+        .bind(task.title.as_str())
+        .bind(&task.description)
+        .bind(placement_kind)
+        .bind(column_id)
+        .bind(board_position)
+        .bind(task.parent_task_id.map(|p| p.as_uuid()))
+        .bind(checklist_position)
+        .bind(task.last_touched_at.unix_seconds())
+        .bind(task.archived_at.map(|t| t.unix_seconds()))
+        .bind(bounce_count)
+        .bind(task.last_bounced_at.map(|t| t.unix_seconds()))
+        .bind(task.last_offered_at.map(|t| t.unix_seconds()))
+        .bind(task.id.as_uuid()))
+    }
+
     pub(super) async fn update(
         pool: &PgPool,
         task: &Task,
@@ -645,37 +694,10 @@ mod postgres_impl {
             _ => {}
         }
 
-        let (placement_kind, column_id, board_position) = encode_placement(&task.placement);
-        let board_position = board_position
-            .map(i32::try_from)
-            .transpose()
-            .map_err(|e| RepoError::from_source("board position out of range", e))?;
-        let checklist_position = i32::try_from(task.checklist_position)
-            .map_err(|e| RepoError::from_source("checklist position out of range", e))?;
-        let bounce_count = i32::try_from(task.bounce_count)
-            .map_err(|e| RepoError::from_source("bounce count out of range", e))?;
-        sqlx::query(
-            "UPDATE tasks SET title = $1, description = $2, placement_kind = $3, column_id = $4, \
-             board_position = $5, parent_task_id = $6, checklist_position = $7, \
-             last_touched_at = $8, archived_at = $9, bounce_count = $10, last_bounced_at = $11, \
-             last_offered_at = $12 WHERE id = $13",
-        )
-        .bind(task.title.as_str())
-        .bind(&task.description)
-        .bind(placement_kind)
-        .bind(column_id)
-        .bind(board_position)
-        .bind(task.parent_task_id.map(|p| p.as_uuid()))
-        .bind(checklist_position)
-        .bind(task.last_touched_at.unix_seconds())
-        .bind(task.archived_at.map(|t| t.unix_seconds()))
-        .bind(bounce_count)
-        .bind(task.last_bounced_at.map(|t| t.unix_seconds()))
-        .bind(task.last_offered_at.map(|t| t.unix_seconds()))
-        .bind(task.id.as_uuid())
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| RepoError::from_source("failed to update task", e))?;
+        bind_task_update(task)?
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| RepoError::from_source("failed to update task", e))?;
 
         tx.commit()
             .await

@@ -73,6 +73,62 @@ fn assemble_relationship_kind(
 mod sqlite_impl {
     use super::*;
 
+    /// The [`FieldDefinition`]s of one project — split out of `load` so
+    /// that function reads as "load the project row, then its two related
+    /// collections" instead of interleaving three queries' worth of
+    /// binding, fetching and row-mapping in one body.
+    async fn load_field_definitions(
+        pool: &SqlitePool,
+        project_id_text: &str,
+    ) -> Result<Vec<FieldDefinition>, RepoError> {
+        let rows = sqlx::query(
+            "SELECT id, project_id, name, kind, position, show_on_card \
+             FROM field_definitions WHERE project_id = ? ORDER BY position",
+        )
+        .bind(project_id_text)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| RepoError::from_source("failed to load field definitions", e))?;
+        rows.into_iter()
+            .map(|row| {
+                assemble_field_definition(
+                    parse_uuid(&row.get::<String, _>("id"))?,
+                    parse_uuid(&row.get::<String, _>("project_id"))?,
+                    row.get("name"),
+                    row.get("kind"),
+                    row.get::<i64, _>("position"),
+                    row.get::<i64, _>("show_on_card") != 0,
+                )
+            })
+            .collect()
+    }
+
+    /// The project-local [`RelationshipKind`]s of one project — the
+    /// counterpart of `load_field_definitions` above.
+    async fn load_relationship_kinds(
+        pool: &SqlitePool,
+        project_id_text: &str,
+    ) -> Result<Vec<RelationshipKind>, RepoError> {
+        let rows = sqlx::query(
+            "SELECT id, project_id, forward_label, reverse_label \
+             FROM relationship_kinds WHERE project_id = ?",
+        )
+        .bind(project_id_text)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| RepoError::from_source("failed to load relationship kinds", e))?;
+        rows.into_iter()
+            .map(|row| {
+                assemble_relationship_kind(
+                    parse_uuid(&row.get::<String, _>("id"))?,
+                    parse_uuid(&row.get::<String, _>("project_id"))?,
+                    row.get("forward_label"),
+                    row.get("reverse_label"),
+                )
+            })
+            .collect()
+    }
+
     pub(super) async fn load(
         pool: &SqlitePool,
         id: ProjectId,
@@ -100,47 +156,8 @@ mod sqlite_impl {
             row.get::<Option<i64>, _>("archived_at"),
         )?;
 
-        let field_rows = sqlx::query(
-            "SELECT id, project_id, name, kind, position, show_on_card \
-             FROM field_definitions WHERE project_id = ? ORDER BY position",
-        )
-        .bind(&id_text)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| RepoError::from_source("failed to load field definitions", e))?;
-        let field_definitions = field_rows
-            .into_iter()
-            .map(|row| {
-                assemble_field_definition(
-                    parse_uuid(&row.get::<String, _>("id"))?,
-                    parse_uuid(&row.get::<String, _>("project_id"))?,
-                    row.get("name"),
-                    row.get("kind"),
-                    row.get::<i64, _>("position"),
-                    row.get::<i64, _>("show_on_card") != 0,
-                )
-            })
-            .collect::<Result<Vec<_>, RepoError>>()?;
-
-        let kind_rows = sqlx::query(
-            "SELECT id, project_id, forward_label, reverse_label \
-             FROM relationship_kinds WHERE project_id = ?",
-        )
-        .bind(&id_text)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| RepoError::from_source("failed to load relationship kinds", e))?;
-        let relationship_kinds = kind_rows
-            .into_iter()
-            .map(|row| {
-                assemble_relationship_kind(
-                    parse_uuid(&row.get::<String, _>("id"))?,
-                    parse_uuid(&row.get::<String, _>("project_id"))?,
-                    row.get("forward_label"),
-                    row.get("reverse_label"),
-                )
-            })
-            .collect::<Result<Vec<_>, RepoError>>()?;
+        let field_definitions = load_field_definitions(pool, &id_text).await?;
+        let relationship_kinds = load_relationship_kinds(pool, &id_text).await?;
 
         Ok(Some(ProjectAggregate {
             project,
@@ -339,6 +356,60 @@ mod sqlite_impl {
 mod postgres_impl {
     use super::*;
 
+    /// See `sqlite_impl::load_field_definitions` — same split, Postgres
+    /// row types.
+    async fn load_field_definitions(
+        pool: &PgPool,
+        project_id: uuid::Uuid,
+    ) -> Result<Vec<FieldDefinition>, RepoError> {
+        let rows = sqlx::query(
+            "SELECT id, project_id, name, kind, position, show_on_card \
+             FROM field_definitions WHERE project_id = $1 ORDER BY position",
+        )
+        .bind(project_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| RepoError::from_source("failed to load field definitions", e))?;
+        rows.into_iter()
+            .map(|row| {
+                assemble_field_definition(
+                    row.get::<uuid::Uuid, _>("id"),
+                    row.get::<uuid::Uuid, _>("project_id"),
+                    row.get("name"),
+                    row.get("kind"),
+                    i64::from(row.get::<i32, _>("position")),
+                    row.get("show_on_card"),
+                )
+            })
+            .collect()
+    }
+
+    /// See `sqlite_impl::load_relationship_kinds` — same split, Postgres
+    /// row types.
+    async fn load_relationship_kinds(
+        pool: &PgPool,
+        project_id: uuid::Uuid,
+    ) -> Result<Vec<RelationshipKind>, RepoError> {
+        let rows = sqlx::query(
+            "SELECT id, project_id, forward_label, reverse_label \
+             FROM relationship_kinds WHERE project_id = $1",
+        )
+        .bind(project_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| RepoError::from_source("failed to load relationship kinds", e))?;
+        rows.into_iter()
+            .map(|row| {
+                assemble_relationship_kind(
+                    row.get::<uuid::Uuid, _>("id"),
+                    row.get::<uuid::Uuid, _>("project_id"),
+                    row.get("forward_label"),
+                    row.get("reverse_label"),
+                )
+            })
+            .collect()
+    }
+
     pub(super) async fn load(
         pool: &PgPool,
         id: ProjectId,
@@ -365,47 +436,8 @@ mod postgres_impl {
             row.get::<Option<i64>, _>("archived_at"),
         )?;
 
-        let field_rows = sqlx::query(
-            "SELECT id, project_id, name, kind, position, show_on_card \
-             FROM field_definitions WHERE project_id = $1 ORDER BY position",
-        )
-        .bind(id.as_uuid())
-        .fetch_all(pool)
-        .await
-        .map_err(|e| RepoError::from_source("failed to load field definitions", e))?;
-        let field_definitions = field_rows
-            .into_iter()
-            .map(|row| {
-                assemble_field_definition(
-                    row.get::<uuid::Uuid, _>("id"),
-                    row.get::<uuid::Uuid, _>("project_id"),
-                    row.get("name"),
-                    row.get("kind"),
-                    i64::from(row.get::<i32, _>("position")),
-                    row.get("show_on_card"),
-                )
-            })
-            .collect::<Result<Vec<_>, RepoError>>()?;
-
-        let kind_rows = sqlx::query(
-            "SELECT id, project_id, forward_label, reverse_label \
-             FROM relationship_kinds WHERE project_id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_all(pool)
-        .await
-        .map_err(|e| RepoError::from_source("failed to load relationship kinds", e))?;
-        let relationship_kinds = kind_rows
-            .into_iter()
-            .map(|row| {
-                assemble_relationship_kind(
-                    row.get::<uuid::Uuid, _>("id"),
-                    row.get::<uuid::Uuid, _>("project_id"),
-                    row.get("forward_label"),
-                    row.get("reverse_label"),
-                )
-            })
-            .collect::<Result<Vec<_>, RepoError>>()?;
+        let field_definitions = load_field_definitions(pool, id.as_uuid()).await?;
+        let relationship_kinds = load_relationship_kinds(pool, id.as_uuid()).await?;
 
         Ok(Some(ProjectAggregate {
             project,

@@ -1,6 +1,12 @@
 //! Builds the `axum::Router`: one resource-oriented route per job, so a
 //! future PWA client can call the same URLs and content-negotiate JSON
 //! instead of HTML.
+//!
+//! Routes are grouped below by the resource they act on (areas, projects,
+//! tasks, the board, site-wide/admin concerns, static assets) and merged
+//! into one router in [`build_router`]. Each group function is a plain
+//! `Router<AppState>` — only `build_router` supplies the state, since
+//! `Router::merge` requires every side to already share the same state type.
 
 use axum::Router;
 use axum::routing::{get, post};
@@ -28,11 +34,19 @@ use crate::static_files;
 
 pub fn build_router(state: AppState) -> Router {
     Router::new()
-        .route("/healthz", get(healthz_handler))
-        .route("/", get(root_handler))
-        .route("/login", get(login_handler))
-        .route("/auth/callback", get(callback_handler))
-        .route("/logout", post(logout_handler))
+        .merge(area_routes())
+        .merge(project_routes())
+        .merge(task_routes())
+        .merge(board_routes())
+        .merge(admin_routes())
+        .merge(static_routes())
+        .with_state(state)
+}
+
+/// The area grid and, per area, its own detail page plus the members and
+/// child-project actions hung off it (`docs/DOMAIN.md` §3).
+fn area_routes() -> Router<AppState> {
+    Router::new()
         .route("/areas", get(list_areas_handler).post(create_area_handler))
         .route(
             "/areas/{id}",
@@ -44,6 +58,13 @@ pub fn build_router(state: AppState) -> Router {
             "/areas/{id}/members/revoke",
             post(revoke_area_member_handler),
         )
+}
+
+/// The project listing plus a single project's own lifecycle: membership,
+/// status transitions, archival, custom fields, and the tasks created under
+/// it.
+fn project_routes() -> Router<AppState> {
+    Router::new()
         .route("/projects", get(list_projects_handler))
         .route("/projects/{id}", get(view_project_handler))
         .route("/projects/{id}/members", post(grant_project_member_handler))
@@ -67,6 +88,13 @@ pub fn build_router(state: AppState) -> Router {
             "/projects/{id}/tasks/{task_id}/drop",
             post(drop_project_task_handler),
         )
+}
+
+/// A single task's own page and everything scoped to it: editing, lifecycle,
+/// hierarchy, checklists, comments, attachments (and their download route),
+/// relationships, and custom field values.
+fn task_routes() -> Router<AppState> {
+    Router::new()
         .route("/tasks/{id}", get(view_task_handler))
         .route("/tasks/{id}/title", post(edit_task_title_handler))
         .route(
@@ -109,6 +137,12 @@ pub fn build_router(state: AppState) -> Router {
             "/tasks/{id}/fields/{field_id}",
             post(set_field_value_handler),
         )
+}
+
+/// The global task board (`docs/DOMAIN.md` §8): its view, drag-and-drop
+/// reposition, tangle-suggestion resolution, and bulk archive.
+fn board_routes() -> Router<AppState> {
+    Router::new()
         .route("/board", get(view_board_handler))
         .route("/board/reposition", post(reposition_handler))
         .route("/board/suggestion/accept", post(accept_suggestion_handler))
@@ -118,6 +152,18 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/board/archive-all", post(archive_all_handler))
         .route("/tangles/{id}/drop", post(drop_tangle_handler))
+}
+
+/// Cross-cutting, not-a-single-resource concerns: health, the home page,
+/// the OIDC login round trip, global search, app settings, and System Admin
+/// grants.
+fn admin_routes() -> Router<AppState> {
+    Router::new()
+        .route("/healthz", get(healthz_handler))
+        .route("/", get(root_handler))
+        .route("/login", get(login_handler))
+        .route("/auth/callback", get(callback_handler))
+        .route("/logout", post(logout_handler))
         .route("/search", get(search_handler))
         .route(
             "/settings",
@@ -128,11 +174,15 @@ pub fn build_router(state: AppState) -> Router {
             get(view_users_handler).post(grant_system_admin_handler),
         )
         .route("/users/revoke", post(revoke_system_admin_handler))
+}
+
+/// Static assets served directly out of the binary (`crate::static_files`).
+fn static_routes() -> Router<AppState> {
+    Router::new()
         .route("/static/app.css", get(static_files::app_css))
         .route("/static/app.js", get(static_files::app_js))
         .route("/static/htmx.min.js", get(static_files::htmx_js))
         .route("/static/sortable.min.js", get(static_files::sortable_js))
         .route("/static/icon.svg", get(static_files::icon))
         .route("/manifest.webmanifest", get(static_files::manifest))
-        .with_state(state)
 }
