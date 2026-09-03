@@ -18,8 +18,8 @@ use anamnesis_app::*;
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
     AreaId, Column, ColumnId, DomainError, FieldData, FieldKind, KindId, NumberValue, OfferItem,
-    Outcome, Placement, Project, ProjectId, ProjectStatus, Relationship, SuggestionSettings, Task,
-    TaskId, TaskSummary, Title, UserId,
+    Outcome, Placement, Project, ProjectId, ProjectStatus, Relationship, RelationshipKind,
+    SuggestionSettings, Task, TaskId, TaskSummary, Title, UserId,
 };
 
 fn admin() -> Option<Role> {
@@ -1956,18 +1956,9 @@ async fn set_task_field_value_rejects_a_kind_mismatch() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project = create_project(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        project_admin(),
-        area_id,
-        "P",
-        "",
-    )
-    .await
-    .unwrap();
+    let project = try_create_project(&fakes, &ids, &clock, project_admin(), area_id, "P")
+        .await
+        .unwrap();
     let definition = add_field_definition(
         &fakes,
         &ids,
@@ -1980,9 +1971,7 @@ async fn set_task_field_value_rejects_a_kind_mismatch() {
     )
     .await
     .unwrap();
-    let task = create_task(&fakes, &ids, &clock, &fakes, member(), project.id, "T", "")
-        .await
-        .unwrap();
+    let task = add_task(&fakes, &ids, &clock, project.id, "T").await;
 
     let mismatched = set_task_field_value(
         &fakes,
@@ -2035,27 +2024,14 @@ async fn resolve_kind_recognises_all_three_builtins_and_falls_back_to_the_reposi
     let fakes = Fakes::new();
     let ids = SequentialIdGen::new();
 
-    assert_eq!(
-        resolve_kind(&fakes, KindId::BUILTIN_BLOCKS)
-            .await
-            .unwrap()
-            .id,
-        KindId::BUILTIN_BLOCKS
-    );
-    assert_eq!(
-        resolve_kind(&fakes, KindId::BUILTIN_RELATES_TO)
-            .await
-            .unwrap()
-            .id,
-        KindId::BUILTIN_RELATES_TO
-    );
-    assert_eq!(
-        resolve_kind(&fakes, KindId::BUILTIN_DUPLICATES)
-            .await
-            .unwrap()
-            .id,
-        KindId::BUILTIN_DUPLICATES
-    );
+    // All three built-ins resolve without ever touching the repository.
+    for builtin in [
+        KindId::BUILTIN_BLOCKS,
+        KindId::BUILTIN_RELATES_TO,
+        KindId::BUILTIN_DUPLICATES,
+    ] {
+        assert_eq!(resolve_kind(&fakes, builtin).await.unwrap().id, builtin);
+    }
 
     let unknown = KindId::new(uuid::Uuid::from_u128(999));
     assert!(matches!(
@@ -2065,29 +2041,33 @@ async fn resolve_kind_recognises_all_three_builtins_and_falls_back_to_the_reposi
 
     let area_id = AreaId::new(ids.next());
     let clock = FixedClock::at(0);
-    let project = create_project(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
+    let project = try_create_project(&fakes, &ids, &clock, project_admin(), area_id, "P")
+        .await
+        .unwrap();
+    let custom = add_custom_kind(&fakes, &ids, project.id).await;
+    assert_eq!(resolve_kind(&fakes, custom.id).await.unwrap().id, custom.id);
+}
+
+/// Adds a project-local `inspired by` / `inspired` relationship kind as a
+/// Project Admin -- the one custom-kind shape both
+/// `resolve_kind_recognises_all_three_builtins_and_falls_back_to_the_repository`
+/// and `create_relationship_use_case_rejects_a_custom_kind_across_projects`
+/// need, to exercise the non-builtin path.
+async fn add_custom_kind(
+    fakes: &Fakes,
+    ids: &SequentialIdGen,
+    project_id: ProjectId,
+) -> RelationshipKind {
+    add_relationship_kind(
+        fakes,
+        ids,
         project_admin(),
-        area_id,
-        "P",
-        "",
-    )
-    .await
-    .unwrap();
-    let custom = add_relationship_kind(
-        &fakes,
-        &ids,
-        project_admin(),
-        project.id,
+        project_id,
         "inspired by",
         "inspired",
     )
     .await
-    .unwrap();
-    assert_eq!(resolve_kind(&fakes, custom.id).await.unwrap().id, custom.id);
+    .unwrap()
 }
 
 #[tokio::test]
@@ -2096,99 +2076,55 @@ async fn create_relationship_use_case_rejects_a_custom_kind_across_projects() {
     let ids = SequentialIdGen::new();
     let clock = FixedClock::at(0);
     let area_id = AreaId::new(ids.next());
-    let project_a = create_project(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        project_admin(),
-        area_id,
-        "A",
-        "",
-    )
-    .await
-    .unwrap();
-    let project_b = create_project(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        project_admin(),
-        area_id,
-        "B",
-        "",
-    )
-    .await
-    .unwrap();
-    let custom = add_relationship_kind(
-        &fakes,
-        &ids,
-        project_admin(),
-        project_a.id,
-        "inspired by",
-        "inspired",
-    )
-    .await
-    .unwrap();
+    let project_a = try_create_project(&fakes, &ids, &clock, project_admin(), area_id, "A")
+        .await
+        .unwrap();
+    let project_b = try_create_project(&fakes, &ids, &clock, project_admin(), area_id, "B")
+        .await
+        .unwrap();
+    let custom = add_custom_kind(&fakes, &ids, project_a.id).await;
 
-    let a = create_task(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        member(),
-        project_a.id,
-        "A-task",
-        "",
-    )
-    .await
-    .unwrap();
-    let b = create_task(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        member(),
-        project_b.id,
-        "B-task",
-        "",
-    )
-    .await
-    .unwrap();
+    let a = add_task(&fakes, &ids, &clock, project_a.id, "A-task").await;
+    let b = add_task(&fakes, &ids, &clock, project_b.id, "B-task").await;
 
-    let result = create_relationship(
-        &fakes,
-        &fakes,
-        &ids,
-        &clock,
-        member(),
-        a.id,
-        project_a.id,
-        b.id,
-        project_b.id,
-        custom.id,
-    )
-    .await;
+    let result = try_relate(&fakes, &ids, &clock, &a, &b, custom.id).await;
     assert_eq!(
         result,
         Err(AppError::Rule(DomainError::RelationshipKindNotAllowed))
     );
 
     // The built-in blocks kind is fine across the same pair of projects.
-    let ok = create_relationship(
-        &fakes,
-        &fakes,
-        &ids,
-        &clock,
+    let ok = try_relate(&fakes, &ids, &clock, &a, &b, KindId::BUILTIN_BLOCKS).await;
+    assert!(ok.is_ok());
+}
+
+/// Shorthand for [`create_relationship`] as an ordinary Member, between two
+/// tasks that may belong to different projects (each task already knows its
+/// own `project_id`, so callers need not restate it) -- the shape
+/// `create_relationship_use_case_rejects_a_custom_kind_across_projects`
+/// exercises twice (once per `kind_id`) to compare a rejected custom kind
+/// against an allowed built-in one on the same task pair.
+async fn try_relate(
+    fakes: &Fakes,
+    ids: &SequentialIdGen,
+    clock: &FixedClock,
+    a: &Task,
+    b: &Task,
+    kind_id: KindId,
+) -> Result<Relationship, AppError> {
+    create_relationship(
+        fakes,
+        fakes,
+        ids,
+        clock,
         member(),
         a.id,
-        project_a.id,
+        a.project_id,
         b.id,
-        project_b.id,
-        KindId::BUILTIN_BLOCKS,
+        b.project_id,
+        kind_id,
     )
-    .await;
-    assert!(ok.is_ok());
+    .await
 }
 
 #[tokio::test]
@@ -2624,30 +2560,12 @@ async fn a_user_with_only_a_project_role_cannot_see_a_sibling_project_or_the_are
     let area = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
         .await
         .unwrap();
-    let p1 = create_project(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        project_admin(),
-        area.id,
-        "One",
-        "",
-    )
-    .await
-    .unwrap();
-    let p2 = create_project(
-        &fakes,
-        &ids,
-        &clock,
-        &fakes,
-        project_admin(),
-        area.id,
-        "Two",
-        "",
-    )
-    .await
-    .unwrap();
+    let p1 = try_create_project(&fakes, &ids, &clock, project_admin(), area.id, "One")
+        .await
+        .unwrap();
+    let p2 = try_create_project(&fakes, &ids, &clock, project_admin(), area.id, "Two")
+        .await
+        .unwrap();
     fakes.set_project_role(&bob, p1.id, Role::Member);
 
     // Bob can see the project he actually holds a role on...
@@ -3020,10 +2938,10 @@ async fn update_settings_changes_the_active_project_limit_that_transition_status
     let area = create_area(&fakes, &ids, &clock, &fakes, admin(), "Home", "", 0)
         .await
         .unwrap();
-    let one = create_project(&fakes, &ids, &clock, &fakes, admin(), area.id, "One", "")
+    let one = try_create_project(&fakes, &ids, &clock, admin(), area.id, "One")
         .await
         .unwrap();
-    let two = create_project(&fakes, &ids, &clock, &fakes, admin(), area.id, "Two", "")
+    let two = try_create_project(&fakes, &ids, &clock, admin(), area.id, "Two")
         .await
         .unwrap();
 
@@ -3042,25 +2960,10 @@ async fn update_settings_changes_the_active_project_limit_that_transition_status
         .unwrap()
         .active_project_limit;
 
-    transition_project_status(
-        &fakes,
-        &clock,
-        admin(),
-        one.id,
-        ProjectStatus::Active,
-        limit,
-    )
-    .await
-    .unwrap();
-    let result = transition_project_status(
-        &fakes,
-        &clock,
-        admin(),
-        two.id,
-        ProjectStatus::Active,
-        limit,
-    )
-    .await;
+    try_activate(&fakes, &clock, admin(), one.id, limit)
+        .await
+        .unwrap();
+    let result = try_activate(&fakes, &clock, admin(), two.id, limit).await;
     assert!(matches!(
         result,
         Err(AppError::ActiveProjectLimitExceeded) | Err(AppError::Rule(_))

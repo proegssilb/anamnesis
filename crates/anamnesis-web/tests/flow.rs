@@ -53,6 +53,7 @@ async fn area_then_project_then_task_all_render() {
 async fn raising_a_task_onto_the_board_and_dropping_it_back() {
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None;
+    let title = "Regrout the shower";
 
     let (_, project_path) = support::new_area_with_project(
         &app,
@@ -62,31 +63,53 @@ async fn raising_a_task_onto_the_board_and_dropping_it_back() {
         cookie,
     )
     .await;
-    let task_path = support::new_task(&app, &project_path, "Regrout the shower", cookie).await;
+    let task_path = support::new_task(&app, &project_path, title, cookie).await;
 
     let todo_column = app.store.columns_with_items().await.unwrap()[0].column.id;
 
+    raise_task_and_assert_on_board(&app, &task_path, title, todo_column, cookie).await;
+    drop_task_and_assert_below_horizon(&app, &task_path, title, cookie).await;
+}
+
+/// Raises `task_path` into `column_id` and asserts it now shows as on the
+/// board, both on the task's own page and in the board's task list.
+async fn raise_task_and_assert_on_board(
+    app: &TestApp,
+    task_path: &str,
+    title: &str,
+    column_id: anamnesis_core::ColumnId,
+    cookie: Option<&str>,
+) {
     let raise = app
         .post_form(
             &format!("{task_path}/raise"),
             &[
                 ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("column_id", &todo_column.to_string()),
+                ("column_id", &column_id.to_string()),
             ],
             cookie,
         )
         .await;
     assert_eq!(raise.status(), StatusCode::SEE_OTHER);
 
-    let after_raise = body_text(app.get(&task_path, cookie).await).await;
+    let after_raise = body_text(app.get(task_path, cookie).await).await;
     assert!(
         after_raise.contains("on the board"),
         "task must now show as on the board"
     );
 
     let board_after_raise = body_text(app.get("/board", cookie).await).await;
-    assert!(board_after_raise.contains("Regrout the shower"));
+    assert!(board_after_raise.contains(title));
+}
 
+/// Drops `task_path` back below the horizon and asserts it counts as a
+/// bounce, both on the task's own page and by disappearing from the board.
+async fn drop_task_and_assert_below_horizon(
+    app: &TestApp,
+    task_path: &str,
+    title: &str,
+    cookie: Option<&str>,
+) {
     let drop = app
         .post_form(
             &format!("{task_path}/drop"),
@@ -96,7 +119,7 @@ async fn raising_a_task_onto_the_board_and_dropping_it_back() {
         .await;
     assert_eq!(drop.status(), StatusCode::SEE_OTHER);
 
-    let after_drop = body_text(app.get(&task_path, cookie).await).await;
+    let after_drop = body_text(app.get(task_path, cookie).await).await;
     assert!(
         after_drop.contains("below the horizon"),
         "task must be back below the horizon after dropping"
@@ -107,7 +130,7 @@ async fn raising_a_task_onto_the_board_and_dropping_it_back() {
     );
 
     let board_after_drop = body_text(app.get("/board", cookie).await).await;
-    assert!(!board_after_drop.contains("Regrout the shower"));
+    assert!(!board_after_drop.contains(title));
 }
 
 #[tokio::test]

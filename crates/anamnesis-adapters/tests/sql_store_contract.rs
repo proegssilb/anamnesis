@@ -305,16 +305,23 @@ async fn task_contract(store: &SqlStore) -> (ProjectId, Task, Task) {
         }
     );
 
+    task_listing_and_archive_contract(store, p.id, &a, &b).await;
+
+    (p.id, a, b)
+}
+
+/// Checklist ordering and `list_by_project`/`list_children`'s exclusion of
+/// archived tasks -- a distinct concern from `task_contract`'s basic
+/// insert/load round trip above.
+async fn task_listing_and_archive_contract(
+    store: &SqlStore,
+    project_id: ProjectId,
+    a: &Task,
+    b: &Task,
+) {
     // Checklist containment + ordering: two children, inserted out of
     // order, must list back ordered by checklist_position.
-    let mut child_a = task(p.id);
-    child_a.parent_task_id = Some(a.id);
-    child_a.checklist_position = 1;
-    let mut child_b = task(p.id);
-    child_b.parent_task_id = Some(a.id);
-    child_b.checklist_position = 0;
-    TaskRepository::insert(store, &child_a).await.unwrap();
-    TaskRepository::insert(store, &child_b).await.unwrap();
+    let (child_a, child_b) = seed_checklist_children(store, project_id, a.id).await;
 
     let children = TaskRepository::list_children(store, a.id).await.unwrap();
     assert_eq!(
@@ -323,9 +330,39 @@ async fn task_contract(store: &SqlStore) -> (ProjectId, Task, Task) {
         "children must list ordered by checklist_position, not insertion order"
     );
 
-    // `list_by_project`: every non-archived task in the project, regardless
-    // of placement or checklist depth — the "project as a flat list" query.
-    let mut in_project = TaskRepository::list_by_project(store, p.id)
+    task_archive_exclusion_contract(store, project_id, a, b, &child_a, &child_b).await;
+}
+
+async fn seed_checklist_children(
+    store: &SqlStore,
+    project_id: ProjectId,
+    parent_id: TaskId,
+) -> (Task, Task) {
+    let mut child_a = task(project_id);
+    child_a.parent_task_id = Some(parent_id);
+    child_a.checklist_position = 1;
+    let mut child_b = task(project_id);
+    child_b.parent_task_id = Some(parent_id);
+    child_b.checklist_position = 0;
+    TaskRepository::insert(store, &child_a).await.unwrap();
+    TaskRepository::insert(store, &child_b).await.unwrap();
+    (child_a, child_b)
+}
+
+/// `list_by_project`: every non-archived task in the project, regardless of
+/// placement or checklist depth — the "project as a flat list" query. Both
+/// it and `list_children` must exclude archived tasks; an archived
+/// checklist item must not keep appearing in its parent's checklist
+/// (mirrors the `list_by_area` fix for archived projects, Phase F3).
+async fn task_archive_exclusion_contract(
+    store: &SqlStore,
+    project_id: ProjectId,
+    a: &Task,
+    b: &Task,
+    child_a: &Task,
+    child_b: &Task,
+) {
+    let mut in_project = TaskRepository::list_by_project(store, project_id)
         .await
         .unwrap()
         .into_iter()
@@ -339,20 +376,19 @@ async fn task_contract(store: &SqlStore) -> (ProjectId, Task, Task) {
         "list_by_project must return every task in the project, including checklist children"
     );
 
-    let archived = anamnesis_core::archive_task(&b, ts(999)).unwrap();
+    let archived = anamnesis_core::archive_task(b, ts(999)).unwrap();
     TaskRepository::update(store, &archived, b.last_touched_at)
         .await
         .unwrap();
-    let after_archive = TaskRepository::list_by_project(store, p.id).await.unwrap();
+    let after_archive = TaskRepository::list_by_project(store, project_id)
+        .await
+        .unwrap();
     assert!(
         !after_archive.iter().any(|t| t.id == b.id),
         "list_by_project must exclude archived tasks"
     );
 
-    // list_children must also exclude archived children -- an archived
-    // checklist item must not keep appearing in its parent's checklist.
-    // Mirrors the list_by_area fix for archived projects (Phase F3).
-    let archived_child = anamnesis_core::archive_task(&child_a, ts(998)).unwrap();
+    let archived_child = anamnesis_core::archive_task(child_a, ts(998)).unwrap();
     TaskRepository::update(store, &archived_child, child_a.last_touched_at)
         .await
         .unwrap();
@@ -365,8 +401,6 @@ async fn task_contract(store: &SqlStore) -> (ProjectId, Task, Task) {
         vec![child_b.id],
         "list_children must exclude archived children"
     );
-
-    (p.id, a, b)
 }
 
 // --- Task field values: typed EAV round trip + overwrite semantics ---
@@ -394,62 +428,39 @@ async fn seed_one_field_definition_per_kind(
     defs
 }
 
-async fn field_value_contract(store: &SqlStore, project_id: ProjectId, task_id: TaskId) {
-    let [
-        number_def,
-        currency_def,
-        date_def,
-        time_def,
-        datetime_def,
-        line_def,
-        block_def,
-    ] = seed_one_field_definition_per_kind(store, project_id).await;
-
-    let values = vec![
-        FieldValue {
-            field_id: number_def.id,
-            task_id,
-            data: FieldData::Number(NumberValue {
-                units: 12345,
-                scale: 2,
-            }),
-        },
-        FieldValue {
-            field_id: currency_def.id,
-            task_id,
-            data: FieldData::Currency(CurrencyAmount {
-                minor_units: 1999,
-                currency: CurrencyCode::new("USD").unwrap(),
-            }),
-        },
-        FieldValue {
-            field_id: date_def.id,
-            task_id,
-            data: FieldData::Date(
-                time::Date::from_calendar_date(2026, time::Month::March, 15).unwrap(),
-            ),
-        },
-        FieldValue {
-            field_id: time_def.id,
-            task_id,
-            data: FieldData::Time(time::Time::from_hms(14, 30, 0).unwrap()),
-        },
-        FieldValue {
-            field_id: datetime_def.id,
-            task_id,
-            data: FieldData::DateTime(ts(1_700_000_000)),
-        },
-        FieldValue {
-            field_id: line_def.id,
-            task_id,
-            data: FieldData::Line("a one-liner".to_string()),
-        },
-        FieldValue {
-            field_id: block_def.id,
-            task_id,
-            data: FieldData::Block("a whole\nparagraph".to_string()),
-        },
+/// One instance of every `FieldData` variant, targeting `task_id` on the
+/// matching definition from [`seed_one_field_definition_per_kind`] (same
+/// order) -- the fixture both the round-trip and overwrite contracts below
+/// build on.
+fn one_of_each_field_value(task_id: TaskId, defs: &[FieldDefinition; 7]) -> Vec<FieldValue> {
+    let data = [
+        FieldData::Number(NumberValue {
+            units: 12345,
+            scale: 2,
+        }),
+        FieldData::Currency(CurrencyAmount {
+            minor_units: 1999,
+            currency: CurrencyCode::new("USD").unwrap(),
+        }),
+        FieldData::Date(time::Date::from_calendar_date(2026, time::Month::March, 15).unwrap()),
+        FieldData::Time(time::Time::from_hms(14, 30, 0).unwrap()),
+        FieldData::DateTime(ts(1_700_000_000)),
+        FieldData::Line("a one-liner".to_string()),
+        FieldData::Block("a whole\nparagraph".to_string()),
     ];
+    defs.iter()
+        .zip(data)
+        .map(|(def, data)| FieldValue {
+            field_id: def.id,
+            task_id,
+            data,
+        })
+        .collect()
+}
+
+async fn field_value_contract(store: &SqlStore, project_id: ProjectId, task_id: TaskId) {
+    let defs = seed_one_field_definition_per_kind(store, project_id).await;
+    let values = one_of_each_field_value(task_id, &defs);
     for value in &values {
         TaskRepository::set_field_value(store, value).await.unwrap();
     }
@@ -464,9 +475,19 @@ async fn field_value_contract(store: &SqlStore, project_id: ProjectId, task_id: 
         "every FieldKind variant must round-trip exactly through the typed EAV columns"
     );
 
-    // Overwriting an existing value (not inserting a duplicate row).
+    overwrite_field_value_contract(store, task_id, defs[0].id).await;
+}
+
+/// Overwriting an existing value updates the row rather than inserting a
+/// duplicate -- distinct from the round-trip contract above, which only
+/// covers first-write semantics.
+async fn overwrite_field_value_contract(
+    store: &SqlStore,
+    task_id: TaskId,
+    number_field_id: anamnesis_core::FieldId,
+) {
     let updated_number = FieldValue {
-        field_id: number_def.id,
+        field_id: number_field_id,
         task_id,
         data: FieldData::Number(NumberValue { units: 1, scale: 0 }),
     };
@@ -526,12 +547,14 @@ async fn optimistic_concurrency_contract(store: &SqlStore, seed: &Task) {
 
 // --- Relationship ---
 
-async fn relationship_contract(store: &SqlStore, a: &Task, b: &Task) {
-    let missing = RelationshipRepository::load(store, Uuid::new_v4().into())
-        .await
-        .unwrap();
-    assert_eq!(missing, None);
-
+/// Inserts the two relationships every assertion below reads back: a
+/// `BUILTIN_BLOCKS` edge from `b` to `a`, and a `BUILTIN_RELATES_TO` edge
+/// from `a` to `b`.
+async fn seed_blocks_and_relates(
+    store: &SqlStore,
+    a: &Task,
+    b: &Task,
+) -> (Relationship, Relationship) {
     let blocks = Relationship {
         id: Uuid::new_v4().into(),
         from_task_id: b.id,
@@ -552,6 +575,16 @@ async fn relationship_contract(store: &SqlStore, a: &Task, b: &Task) {
     RelationshipRepository::insert(store, &relates)
         .await
         .unwrap();
+    (blocks, relates)
+}
+
+async fn relationship_contract(store: &SqlStore, a: &Task, b: &Task) {
+    let missing = RelationshipRepository::load(store, Uuid::new_v4().into())
+        .await
+        .unwrap();
+    assert_eq!(missing, None);
+
+    let (blocks, relates) = seed_blocks_and_relates(store, a, b).await;
 
     let loaded = RelationshipRepository::load(store, blocks.id)
         .await
@@ -594,7 +627,9 @@ async fn relationship_contract(store: &SqlStore, a: &Task, b: &Task) {
 
 // --- Tangle ---
 
-async fn tangle_contract(store: &SqlStore) {
+/// Seeds an area, a project, three tasks and one active tangle over them --
+/// the shared arrange step for every phase of the tangle contract below.
+async fn seed_tangle(store: &SqlStore) -> (Tangle, BTreeSet<TaskId>) {
     let area_row = area(3);
     AreaRepository::insert(store, &area_row).await.unwrap();
     let p = project(area_row.id, ProjectStatus::Active);
@@ -618,6 +653,11 @@ async fn tangle_contract(store: &SqlStore) {
         archived_at: None,
     };
     TangleRepository::insert(store, &tangle).await.unwrap();
+    (tangle, task_ids)
+}
+
+async fn tangle_contract(store: &SqlStore) {
+    let (tangle, task_ids) = seed_tangle(store).await;
 
     let active = TangleRepository::list_active(store).await.unwrap();
     let found = active.iter().find(|t| t.id == tangle.id).unwrap();
@@ -645,12 +685,18 @@ async fn tangle_contract(store: &SqlStore) {
         "load must return None for a tangle id that does not exist"
     );
 
-    // Placing freezes it: `placement`/`frozen` round-trip through storage
-    // exactly as `Task`'s do (`docs/DOMAIN.md`'s Tangle section).
+    tangle_placement_contract(store, &tangle).await;
+    tangle_archive_contract(store, &tangle).await;
+}
+
+/// Placing freezes it: `placement`/`frozen` round-trip through storage
+/// exactly as `Task`'s do (`docs/DOMAIN.md`'s Tangle section). Dropping it
+/// unfreezes it and moves it back below the horizon.
+async fn tangle_placement_contract(store: &SqlStore, tangle: &Tangle) {
     let holding_column = column(9, None, false);
     store.seed_board_column(&holding_column).await.unwrap();
     let column_id = holding_column.id;
-    let placed = anamnesis_core::place_tangle(&tangle, column_id, 4).unwrap();
+    let placed = anamnesis_core::place_tangle(tangle, column_id, 4).unwrap();
     TangleRepository::update(store, &placed).await.unwrap();
     let reloaded = TangleRepository::load(store, tangle.id)
         .await
@@ -665,7 +711,6 @@ async fn tangle_contract(store: &SqlStore) {
     );
     assert!(reloaded.frozen);
 
-    // Dropping it unfreezes it and moves it back below the horizon.
     let dropped = anamnesis_core::drop_tangle(&reloaded).unwrap();
     TangleRepository::update(store, &dropped).await.unwrap();
     let reloaded = TangleRepository::load(store, tangle.id)
@@ -674,7 +719,12 @@ async fn tangle_contract(store: &SqlStore) {
         .unwrap();
     assert_eq!(reloaded.placement, Placement::Below);
     assert!(!reloaded.frozen);
+}
 
+/// Resolving hides a tangle from `list_active`; archiving additionally
+/// round-trips `archived_at` and makes it vanish from its column's item
+/// list (Gap 2).
+async fn tangle_archive_contract(store: &SqlStore, tangle: &Tangle) {
     let mut resolved = tangle.clone();
     resolved.resolved_at = Some(ts(7_500));
     TangleRepository::update(store, &resolved).await.unwrap();
@@ -684,8 +734,6 @@ async fn tangle_contract(store: &SqlStore) {
         "a resolved tangle must no longer be active"
     );
 
-    // --- Gap 2: archived_at round-trips, and an archived tangle vanishes
-    // from both `list_active` and its column's item list.
     assert_eq!(
         resolved.archived_at, None,
         "resolving alone must not archive it"
@@ -708,7 +756,7 @@ async fn tangle_contract(store: &SqlStore) {
     // the assertion has a column to check against.
     let vanish_column = column(11, None, true);
     store.seed_board_column(&vanish_column).await.unwrap();
-    let mut on_the_board = reloaded.clone();
+    let mut on_the_board = reloaded;
     on_the_board.placement = Placement::OnBoard {
         column: vanish_column.id,
         position: 0,
@@ -731,7 +779,13 @@ async fn tangle_contract(store: &SqlStore) {
 
 // --- BoardQuery + suggestion_candidates + blocking_graph ---
 
-async fn board_and_suggestion_contract(store: &SqlStore, project_id: ProjectId) {
+/// Three board columns, with two tasks on the first, inserted out of
+/// position order to prove ordering is read back from `board_position`, not
+/// insertion order.
+async fn seed_todo_column_and_tasks(
+    store: &SqlStore,
+    project_id: ProjectId,
+) -> (Column, Column, Column, Task, Task) {
     let todo = column(0, Some(1), false);
     let doing = column(1, None, false);
     let done = column(2, None, true);
@@ -749,16 +803,24 @@ async fn board_and_suggestion_contract(store: &SqlStore, project_id: ProjectId) 
         column: todo.id,
         position: 0,
     };
-    // Insert out of board-position order to prove ordering is read back
-    // from `board_position`, not insertion order.
     TaskRepository::insert(store, &on_todo_first).await.unwrap();
     TaskRepository::insert(store, &on_todo_second)
         .await
         .unwrap();
 
+    (todo, doing, done, on_todo_first, on_todo_second)
+}
+
+/// A done-column task blocking a below-the-horizon one, for the
+/// `blocking_graph` and `suggestion_candidates` assertions.
+async fn seed_blocking_pair(
+    store: &SqlStore,
+    project_id: ProjectId,
+    done_column: anamnesis_core::ColumnId,
+) -> (Task, Task) {
     let mut blocker = task(project_id);
     blocker.placement = Placement::OnBoard {
-        column: done.id,
+        column: done_column,
         position: 0,
     };
     TaskRepository::insert(store, &blocker).await.unwrap();
@@ -776,13 +838,38 @@ async fn board_and_suggestion_contract(store: &SqlStore, project_id: ProjectId) 
     };
     RelationshipRepository::insert(store, &edge).await.unwrap();
 
-    let count = BoardQuery::count_on_column(store, todo.id).await.unwrap();
-    assert_eq!(count, 2);
+    (blocker, blocked)
+}
 
-    let state = BoardQuery::board_state(store, todo.id).await.unwrap();
-    assert_eq!(state.wip_limit, Some(1));
-    assert_eq!(state.current_count, 2);
+#[allow(clippy::type_complexity)]
+async fn seed_board_and_blocking(
+    store: &SqlStore,
+    project_id: ProjectId,
+) -> (Column, Column, Column, Task, Task, Task, Task) {
+    let (todo, doing, done, on_todo_first, on_todo_second) =
+        seed_todo_column_and_tasks(store, project_id).await;
+    let (blocker, blocked) = seed_blocking_pair(store, project_id, done.id).await;
+    (
+        todo,
+        doing,
+        done,
+        on_todo_first,
+        on_todo_second,
+        blocker,
+        blocked,
+    )
+}
 
+/// `columns_with_items` must order tasks within a column by board position,
+/// and order the columns themselves by their own `position`.
+async fn assert_board_ordering(
+    store: &SqlStore,
+    todo: &Column,
+    doing: &Column,
+    done: &Column,
+    first: &Task,
+    second: &Task,
+) {
     let columns = BoardQuery::columns_with_items(store).await.unwrap();
     let todo_column = columns.iter().find(|c| c.column.id == todo.id).unwrap();
     let todo_task_ids: Vec<TaskId> = todo_column
@@ -795,7 +882,7 @@ async fn board_and_suggestion_contract(store: &SqlStore, project_id: ProjectId) 
         .collect();
     assert_eq!(
         todo_task_ids,
-        vec![on_todo_second.id, on_todo_first.id],
+        vec![second.id, first.id],
         "tasks on a column must be ordered by board position"
     );
     let column_positions: Vec<u32> = columns
@@ -808,6 +895,20 @@ async fn board_and_suggestion_contract(store: &SqlStore, project_id: ProjectId) 
         vec![0, 1, 2],
         "columns must be ordered by position"
     );
+}
+
+async fn board_and_suggestion_contract(store: &SqlStore, project_id: ProjectId) {
+    let (todo, doing, done, on_todo_first, on_todo_second, blocker, blocked) =
+        seed_board_and_blocking(store, project_id).await;
+
+    let count = BoardQuery::count_on_column(store, todo.id).await.unwrap();
+    assert_eq!(count, 2);
+
+    let state = BoardQuery::board_state(store, todo.id).await.unwrap();
+    assert_eq!(state.wip_limit, Some(1));
+    assert_eq!(state.current_count, 2);
+
+    assert_board_ordering(store, &todo, &doing, &done, &on_todo_first, &on_todo_second).await;
 
     let graph: BlockingGraph = BoardQuery::blocking_graph(store).await.unwrap();
     assert!(graph.edges.contains(&(blocker.id, blocked.id)));
@@ -1005,55 +1106,91 @@ async fn membership_contract(store: &SqlStore) {
     let p = project(a.id, ProjectStatus::Pending);
     ProjectRepository::insert(store, &p).await.unwrap();
 
-    store.grant_system_admin(&admin).await.unwrap();
-    assert!(
-        MembershipQuery::is_system_admin(store, &admin)
-            .await
-            .unwrap()
-    );
-    assert!(
-        !MembershipQuery::is_system_admin(store, &member)
-            .await
-            .unwrap()
-    );
+    system_admin_grant_contract(store, &admin, &member).await;
+    membership_inheritance_contract(store, &member, &stranger, &admin, a.id, p.id).await;
+    membership_listing_and_revocation_contract(store, &admin, &member, &stranger, a.id, p.id).await;
+}
 
+async fn system_admin_grant_contract(store: &SqlStore, admin: &UserId, member: &UserId) {
+    store.grant_system_admin(admin).await.unwrap();
+    assert!(
+        MembershipQuery::is_system_admin(store, admin)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !MembershipQuery::is_system_admin(store, member)
+            .await
+            .unwrap()
+    );
+}
+
+/// Area/project role inheritance: no explicit project role falls back to
+/// the area role; strongest wins, not most specific, in either direction;
+/// and a stranger/System Admin both resolve to their expected default with
+/// no membership row of their own.
+async fn membership_inheritance_contract(
+    store: &SqlStore,
+    member: &UserId,
+    stranger: &UserId,
+    admin: &UserId,
+    area_id: anamnesis_core::AreaId,
+    project_id: ProjectId,
+) {
+    membership_area_role_fallback_contract(store, member, area_id, project_id).await;
+    membership_strongest_wins_contract(store, member, area_id, project_id).await;
+    membership_default_roles_contract(store, stranger, admin, area_id, project_id).await;
+}
+
+/// No explicit project role -> the area role applies.
+async fn membership_area_role_fallback_contract(
+    store: &SqlStore,
+    member: &UserId,
+    area_id: anamnesis_core::AreaId,
+    project_id: ProjectId,
+) {
     store
-        .set_area_role(&member, a.id, Role::Member)
+        .set_area_role(member, area_id, Role::Member)
         .await
         .unwrap();
     assert!(matches!(
-        MembershipQuery::area_role(store, &member, a.id)
+        MembershipQuery::area_role(store, member, area_id)
             .await
             .unwrap(),
         Some(Role::Member)
     ));
     assert_eq!(
-        MembershipQuery::project_role(store, &member, p.id)
+        MembershipQuery::project_role(store, member, project_id)
             .await
             .unwrap(),
         None,
         "an area role is not itself a project role"
     );
 
-    // Inheritance: no explicit project role -> the area role applies.
-    let effective = MembershipQuery::effective_role(store, &member, p.id, a.id)
+    let effective = MembershipQuery::effective_role(store, member, project_id, area_id)
         .await
         .unwrap();
     assert!(matches!(effective, Some(Role::Member)));
+}
 
-    // Strongest wins, not most specific: a *lower* explicit project role
-    // does not demote the (higher) area role -- grants are independent and
-    // stack, by analogy to `chmod` (adding a grant must never subtract
-    // capability).
+/// Strongest wins, not most specific, in either direction -- grants are
+/// independent and stack, by analogy to `chmod` (adding a grant must never
+/// subtract capability).
+async fn membership_strongest_wins_contract(
+    store: &SqlStore,
+    member: &UserId,
+    area_id: anamnesis_core::AreaId,
+    project_id: ProjectId,
+) {
     store
-        .set_area_role(&member, a.id, Role::ProjectAdmin)
+        .set_area_role(member, area_id, Role::ProjectAdmin)
         .await
         .unwrap();
     store
-        .set_project_role(&member, p.id, Role::Member)
+        .set_project_role(member, project_id, Role::Member)
         .await
         .unwrap();
-    let effective = MembershipQuery::effective_role(store, &member, p.id, a.id)
+    let effective = MembershipQuery::effective_role(store, member, project_id, area_id)
         .await
         .unwrap();
     assert!(
@@ -1061,47 +1198,73 @@ async fn membership_contract(store: &SqlStore) {
         "a lower explicit project role must not demote a higher area role"
     );
 
-    // And the reverse direction: a *higher* explicit project role still
-    // elevates above a weaker area role.
     store
-        .set_area_role(&member, a.id, Role::Member)
+        .set_area_role(member, area_id, Role::Member)
         .await
         .unwrap();
     store
-        .set_project_role(&member, p.id, Role::ProjectAdmin)
+        .set_project_role(member, project_id, Role::ProjectAdmin)
         .await
         .unwrap();
-    let effective = MembershipQuery::effective_role(store, &member, p.id, a.id)
+    let effective = MembershipQuery::effective_role(store, member, project_id, area_id)
         .await
         .unwrap();
     assert!(
         matches!(effective, Some(Role::ProjectAdmin)),
         "a higher explicit project role must still elevate above a lower area role"
     );
+}
 
-    // A stranger with no rows anywhere and no system admin grant has no
-    // effective role at all.
+/// A stranger with no rows anywhere and no system admin grant has no
+/// effective role at all; System Admin resolves through the same query even
+/// with no membership row anywhere.
+async fn membership_default_roles_contract(
+    store: &SqlStore,
+    stranger: &UserId,
+    admin: &UserId,
+    area_id: anamnesis_core::AreaId,
+    project_id: ProjectId,
+) {
     assert_eq!(
-        MembershipQuery::effective_role(store, &stranger, p.id, a.id)
+        MembershipQuery::effective_role(store, stranger, project_id, area_id)
             .await
             .unwrap(),
         None
     );
 
-    // System Admin resolves through the default `effective_area_role` /
-    // `effective_role` even with no membership row anywhere.
-    let admin_effective = MembershipQuery::effective_role(store, &admin, p.id, a.id)
+    let admin_effective = MembershipQuery::effective_role(store, admin, project_id, area_id)
         .await
         .unwrap();
     assert!(matches!(admin_effective, Some(Role::SystemAdmin)));
+}
 
-    // --- Gap 1: MembershipRepository's listing queries and revocations ---
+/// Gap 1: `MembershipRepository`'s listing queries reflect the roles set up
+/// by `membership_inheritance_contract`, and its revocations actually take
+/// effect -- including as harmless no-ops for a grant nobody holds.
+async fn membership_listing_and_revocation_contract(
+    store: &SqlStore,
+    admin: &UserId,
+    member: &UserId,
+    stranger: &UserId,
+    area_id: anamnesis_core::AreaId,
+    project_id: ProjectId,
+) {
+    membership_listing_contract(store, admin, member, area_id, project_id).await;
+    membership_revocation_contract(store, admin, member, stranger, area_id, project_id).await;
+}
 
+async fn membership_listing_contract(
+    store: &SqlStore,
+    admin: &UserId,
+    member: &UserId,
+    area_id: anamnesis_core::AreaId,
+    project_id: ProjectId,
+) {
     let admins = MembershipQuery::list_system_admins(store).await.unwrap();
-    assert!(admins.contains(&admin));
-    assert!(!admins.contains(&member));
+    assert!(admins.contains(admin));
+    assert!(!admins.contains(member));
 
-    let area_members = MembershipQuery::list_area_members(store, a.id)
+    let area_members = MembershipQuery::list_area_members(store, area_id)
         .await
         .unwrap();
     assert!(
@@ -1109,64 +1272,95 @@ async fn membership_contract(store: &SqlStore) {
         "expected {member:?} with Role::Member in {area_members:?}"
     );
 
-    let project_members = MembershipQuery::list_project_members(store, p.id)
+    let project_members = MembershipQuery::list_project_members(store, project_id)
         .await
         .unwrap();
     assert!(
         project_members.contains(&(member.clone(), Role::ProjectAdmin)),
         "expected {member:?} with Role::ProjectAdmin in {project_members:?}"
     );
+}
 
-    MembershipRepository::revoke_area_role(store, &member, a.id)
+async fn membership_revocation_contract(
+    store: &SqlStore,
+    admin: &UserId,
+    member: &UserId,
+    stranger: &UserId,
+    area_id: anamnesis_core::AreaId,
+    project_id: ProjectId,
+) {
+    member_role_revocation_contract(store, member, area_id, project_id).await;
+    admin_and_stranger_revocation_contract(store, admin, stranger, area_id, project_id).await;
+}
+
+/// Revoking a member's area and project roles actually clears both rows, and
+/// with neither left, `effective_role` reports no role at all.
+async fn member_role_revocation_contract(
+    store: &SqlStore,
+    member: &UserId,
+    area_id: anamnesis_core::AreaId,
+    project_id: ProjectId,
+) {
+    MembershipRepository::revoke_area_role(store, member, area_id)
         .await
         .unwrap();
     assert_eq!(
-        MembershipQuery::area_role(store, &member, a.id)
+        MembershipQuery::area_role(store, member, area_id)
             .await
             .unwrap(),
         None,
         "revoke_area_role must actually clear the row"
     );
 
-    MembershipRepository::revoke_project_role(store, &member, p.id)
+    MembershipRepository::revoke_project_role(store, member, project_id)
         .await
         .unwrap();
     assert_eq!(
-        MembershipQuery::project_role(store, &member, p.id)
+        MembershipQuery::project_role(store, member, project_id)
             .await
             .unwrap(),
         None,
         "revoke_project_role must actually clear the row"
     );
 
-    // After both revocations, the member has no effective role left at all.
     assert_eq!(
-        MembershipQuery::effective_role(store, &member, p.id, a.id)
+        MembershipQuery::effective_role(store, member, project_id, area_id)
             .await
             .unwrap(),
         None
     );
+}
 
-    MembershipRepository::revoke_system_admin(store, &admin)
+/// Revoking an admin's system-admin grant clears it from both the direct
+/// check and the listing; revoking any grant a stranger never held is a
+/// harmless no-op, not an error.
+async fn admin_and_stranger_revocation_contract(
+    store: &SqlStore,
+    admin: &UserId,
+    stranger: &UserId,
+    area_id: anamnesis_core::AreaId,
+    project_id: ProjectId,
+) {
+    MembershipRepository::revoke_system_admin(store, admin)
         .await
         .unwrap();
     assert!(
-        !MembershipQuery::is_system_admin(store, &admin)
+        !MembershipQuery::is_system_admin(store, admin)
             .await
             .unwrap(),
         "revoke_system_admin must actually clear the grant"
     );
     let admins_after = MembershipQuery::list_system_admins(store).await.unwrap();
-    assert!(!admins_after.contains(&admin));
+    assert!(!admins_after.contains(admin));
 
     // Revoking a grant nobody holds is a harmless no-op, not an error.
-    MembershipRepository::revoke_system_admin(store, &stranger)
+    MembershipRepository::revoke_system_admin(store, stranger)
         .await
         .unwrap();
-    MembershipRepository::revoke_area_role(store, &stranger, a.id)
+    MembershipRepository::revoke_area_role(store, stranger, area_id)
         .await
         .unwrap();
-    MembershipRepository::revoke_project_role(store, &stranger, p.id)
+    MembershipRepository::revoke_project_role(store, stranger, project_id)
         .await
         .unwrap();
 }
@@ -1178,9 +1372,21 @@ async fn search_contract(store: &SqlStore) {
     let project_id: ProjectId = Uuid::new_v4().into();
     let task_id: TaskId = Uuid::new_v4().into();
 
-    // A distinctive whole word shared by all three titles -- see
-    // `crate::sql::search`'s module doc comment on why this must be a whole
-    // word, not a substring: FTS5/tsvector both match tokens.
+    search_index_all_kinds_contract(store, area_id, project_id, task_id).await;
+    search_reindex_and_archive_contract(store, area_id, project_id, task_id).await;
+    search_prefix_and_edge_case_contract(store).await;
+}
+
+/// Indexing an area, a project and a task each makes them findable by a
+/// shared distinctive whole word -- see `crate::sql::search`'s module doc
+/// comment on why it must be a whole word, not a substring: FTS5/tsvector
+/// both match tokens.
+async fn search_index_all_kinds_contract(
+    store: &SqlStore,
+    area_id: anamnesis_core::AreaId,
+    project_id: ProjectId,
+    task_id: TaskId,
+) {
     SearchIndex::index_area(store, area_id, "Zylophone practice area")
         .await
         .unwrap();
@@ -1205,8 +1411,32 @@ async fn search_contract(store: &SqlStore) {
         id: task_id,
         title: "Buy zylophone mallets".to_string()
     }));
+}
 
-    // Re-indexing an entity updates its title rather than duplicating it.
+/// Re-indexing updates a title rather than duplicating it; `remove_*`
+/// archives rather than deletes (`SearchIndex`'s trait doc comment:
+/// `docs/DOMAIN.md` §2's "vanished... unless explicitly searched" requires
+/// an explicit path back to them) -- `search_archived` is that path; and
+/// re-indexing an archived entity (the unarchive path) moves it back from
+/// `search_archived` to plain `search`.
+async fn search_reindex_and_archive_contract(
+    store: &SqlStore,
+    area_id: anamnesis_core::AreaId,
+    project_id: ProjectId,
+    task_id: TaskId,
+) {
+    search_reindex_and_removal_contract(store, area_id, project_id, task_id).await;
+    search_archived_round_trip_contract(store, area_id, project_id, task_id).await;
+}
+
+/// Re-indexing drops the old title from search; removing (archiving) an
+/// entity hides it from plain search entirely.
+async fn search_reindex_and_removal_contract(
+    store: &SqlStore,
+    area_id: anamnesis_core::AreaId,
+    project_id: ProjectId,
+    task_id: TaskId,
+) {
     SearchIndex::index_task(store, task_id, "Buy zylophone stands")
         .await
         .unwrap();
@@ -1228,11 +1458,17 @@ async fn search_contract(store: &SqlStore) {
         hits.is_empty(),
         "archived entities must not appear in plain search"
     );
+}
 
-    // But `remove_*` archives rather than deletes (`SearchIndex`'s trait doc
-    // comment: docs/DOMAIN.md §2's "vanished... unless explicitly searched"
-    // requires an explicit path back to them) -- `search_archived` is that
-    // path, and finds exactly the three entries just archived.
+/// `search_archived` finds all three entities removed just above, and
+/// re-indexing the task both restores it to plain search and drops it back
+/// out of `search_archived`.
+async fn search_archived_round_trip_contract(
+    store: &SqlStore,
+    area_id: anamnesis_core::AreaId,
+    project_id: ProjectId,
+    task_id: TaskId,
+) {
     let archived_hits = SearchQuery::search_archived(store, "zylophone")
         .await
         .unwrap();
@@ -1254,8 +1490,6 @@ async fn search_contract(store: &SqlStore) {
         title: "Buy zylophone stands".to_string()
     }));
 
-    // Re-indexing (the unarchive path) clears the archived flag: the entity
-    // moves back from `search_archived` to plain `search`.
     SearchIndex::index_task(store, task_id, "Buy zylophone stands")
         .await
         .unwrap();
@@ -1266,17 +1500,20 @@ async fn search_contract(store: &SqlStore) {
         archived_hits.is_empty(),
         "an unarchived entity must no longer appear in search_archived"
     );
+}
 
-    // A blank query returns no hits rather than every row, for both paths.
+/// A blank query returns no hits rather than every row, for both paths.
+/// Live search-as-you-type queries on every keystroke, so a partial word
+/// must prefix-match a task title as the user is still typing it -- but a
+/// mid-word substring, or punctuation-only input, must degrade to no
+/// results rather than erroring the query.
+async fn search_prefix_and_edge_case_contract(store: &SqlStore) {
     assert_eq!(SearchQuery::search(store, "").await.unwrap(), Vec::new());
     assert_eq!(
         SearchQuery::search_archived(store, "").await.unwrap(),
         Vec::new()
     );
 
-    // Live search-as-you-type queries on every keystroke, so a partial word
-    // must find a task whose title merely *starts with* it -- see
-    // `crate::sql::search`'s module doc comment.
     let prefix_task_id: TaskId = Uuid::new_v4().into();
     SearchIndex::index_task(store, prefix_task_id, "test1")
         .await
@@ -1291,16 +1528,12 @@ async fn search_contract(store: &SqlStore) {
         "a partial word must prefix-match a task title as the user is still typing it"
     );
 
-    // But a substring that isn't a *prefix* of any token still must not
-    // match -- "est1" is inside "test1" but doesn't start it.
     let no_hits = SearchQuery::search(store, "est1").await.unwrap();
     assert!(
         no_hits.is_empty(),
         "a mid-word substring must not match, only a leading prefix: {no_hits:?}"
     );
 
-    // Punctuation-only or otherwise unsearchable input must degrade to no
-    // results rather than erroring the query.
     let hits = SearchQuery::search(store, "!!!").await.unwrap();
     assert!(hits.is_empty());
 
@@ -1311,8 +1544,8 @@ async fn search_contract(store: &SqlStore) {
 
 // --- Settings ---
 
-async fn settings_contract(store: &SqlStore) {
-    let defaults = Settings {
+fn default_settings() -> Settings {
+    Settings {
         active_project_limit: 5,
         suggestion: SuggestionSettings {
             cooldown_seconds: 259_200,
@@ -1320,21 +1553,25 @@ async fn settings_contract(store: &SqlStore) {
         },
         sweep_recurrence: Recurrence::Never,
         last_swept_at: None,
-    };
+    }
+}
 
-    // Seeding is idempotent: a second seed call must not clobber a value
-    // already changed by `update` in between (mirrors
-    // `anamnesis-web::bootstrap`'s own idempotency requirement).
+/// Seeding is idempotent: a second seed call must not clobber a value
+/// already changed by `update` in between (mirrors
+/// `anamnesis-web::bootstrap`'s own idempotency requirement).
+async fn seed_and_verify_default_settings(store: &SqlStore, defaults: Settings) {
     store
         .seed_settings_if_missing(&defaults, "UTC")
         .await
         .unwrap();
     let loaded = SettingsRepository::load(store).await.unwrap();
     assert_eq!(loaded, defaults);
+}
 
-    // `update` round-trips every editable field, including a real
-    // `EveryNWeeks` recurrence (exercising the weekday encode/decode path,
-    // not just `Never`/`DayOfMonth`).
+/// `update` round-trips every editable field, including a real
+/// `EveryNWeeks` recurrence (exercising the weekday encode/decode path, not
+/// just `Never`/`DayOfMonth`) and then a `DayOfMonth` recurrence too.
+async fn settings_update_round_trip_contract(store: &SqlStore) -> Settings {
     let edited = Settings {
         active_project_limit: 11,
         suggestion: SuggestionSettings {
@@ -1364,7 +1601,6 @@ async fn settings_contract(store: &SqlStore) {
         "update must not touch last_swept_at"
     );
 
-    // A `DayOfMonth` recurrence round-trips too.
     let day_of_month = Settings {
         sweep_recurrence: Recurrence::DayOfMonth { day: 15 },
         ..edited
@@ -1378,22 +1614,33 @@ async fn settings_contract(store: &SqlStore) {
         Recurrence::DayOfMonth { day: 15 }
     );
 
-    // `record_sweep` writes only `last_swept_at`, leaving every other field
-    // exactly as `update` last left it.
+    day_of_month
+}
+
+/// `record_sweep` writes only `last_swept_at`, leaving every other field
+/// exactly as `settings_update_round_trip_contract` last left it.
+async fn settings_record_sweep_contract(store: &SqlStore, current: Settings) -> Settings {
     let swept_at = ts(123_456);
     SettingsRepository::record_sweep(store, swept_at)
         .await
         .unwrap();
     let after_sweep = SettingsRepository::load(store).await.unwrap();
     assert_eq!(after_sweep.last_swept_at, Some(swept_at));
-    assert_eq!(after_sweep.active_project_limit, 11);
     assert_eq!(
-        after_sweep.sweep_recurrence,
-        Recurrence::DayOfMonth { day: 15 }
+        after_sweep.active_project_limit,
+        current.active_project_limit
     );
+    assert_eq!(after_sweep.sweep_recurrence, current.sweep_recurrence);
+    after_sweep
+}
 
-    // Seeding again now that a real row (and a real edit) exists must be a
-    // pure no-op -- the whole point of "if missing".
+/// Seeding again now that a real row (and a real edit) exists must be a
+/// pure no-op -- the whole point of "if missing".
+async fn reseed_after_edit_is_noop_contract(
+    store: &SqlStore,
+    defaults: Settings,
+    after_sweep: Settings,
+) {
     store
         .seed_settings_if_missing(&defaults, "UTC")
         .await
@@ -1403,6 +1650,14 @@ async fn settings_contract(store: &SqlStore) {
         still_after_sweep, after_sweep,
         "seeding a second time must not overwrite an already-edited settings row"
     );
+}
+
+async fn settings_contract(store: &SqlStore) {
+    let defaults = default_settings();
+    seed_and_verify_default_settings(store, defaults).await;
+    let edited = settings_update_round_trip_contract(store).await;
+    let after_sweep = settings_record_sweep_contract(store, edited).await;
+    reseed_after_edit_is_noop_contract(store, defaults, after_sweep).await;
 }
 
 #[tokio::test]
