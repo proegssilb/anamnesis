@@ -101,19 +101,8 @@ async fn reposition_impl(
     if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
         return Err(WebError::CsrfMismatch);
     }
-    let item = match form.item_kind.as_str() {
-        "task" => BoardItemKind::Task(TaskId::new(form.item_id)),
-        "tangle" => BoardItemKind::Tangle(TangleId::new(form.item_id)),
-        other => {
-            return Err(WebError::BadRequest(format!(
-                "{other:?} is not a known board item kind"
-            )));
-        }
-    };
-    let role = match item {
-        BoardItemKind::Task(id) => role_for_task(state, &user.user_id, id).await?.1,
-        BoardItemKind::Tangle(id) => role_for_tangle(state, &user.user_id, id).await?,
-    };
+    let item = parse_board_item(&form.item_kind, form.item_id)?;
+    let role = role_for_board_item(state, &user.user_id, item).await?;
     let column = ColumnId::new(form.column_id);
 
     // The source column (if any), read *before* the move, so its fragment
@@ -151,6 +140,33 @@ async fn reposition_impl(
         return render_reposition_fragment(state, user, column, previous_column).await;
     }
     Ok(Redirect::to("/board").into_response())
+}
+
+/// The `item_kind`/`item_id` pair every reposition form posts, as the typed
+/// board item it names — `static/app.js`'s drag handler and
+/// `templates/_reposition_form.html` both submit exactly these two fields.
+fn parse_board_item(item_kind: &str, item_id: uuid::Uuid) -> Result<BoardItemKind, WebError> {
+    match item_kind {
+        "task" => Ok(BoardItemKind::Task(TaskId::new(item_id))),
+        "tangle" => Ok(BoardItemKind::Tangle(TangleId::new(item_id))),
+        other => Err(WebError::BadRequest(format!(
+            "{other:?} is not a known board item kind"
+        ))),
+    }
+}
+
+/// The role a placement action on `item` is authorized against: a task's own
+/// project role, or — for a tangle, which spans however many projects its
+/// knot touches — the role [`role_for_tangle`] resolves from its anchor task.
+async fn role_for_board_item(
+    state: &AppState,
+    user_id: &anamnesis_core::UserId,
+    item: BoardItemKind,
+) -> Result<Option<Role>, WebError> {
+    match item {
+        BoardItemKind::Task(id) => Ok(role_for_task(state, user_id, id).await?.1),
+        BoardItemKind::Tangle(id) => role_for_tangle(state, user_id, id).await,
+    }
 }
 
 /// `item`'s current column, if it is on the board at all — `None` for a
@@ -247,14 +263,42 @@ async fn view_board_impl(
     error: Option<&str>,
     status: StatusCode,
 ) -> Result<Response, WebError> {
-    // Keeps tangle state current before it is read below (the "quiet
-    // indicator", and the suggestion engine's tangled-task exclusion) —
-    // detection is a pure reconciliation pass, cheap to re-run per view at
-    // this phase's scale; a scheduled job is a natural later home for it.
-    // Frozen (placed) tangles are untouched by detection — see
-    // `run_tangle_detection`'s own doc comment — so `resolve_frozen_tangles`
-    // is the separate pass that closes one out once its frozen task set is
-    // no longer cyclic in the live graph.
+    refresh_tangles(state).await?;
+
+    // Read after resolution: a tangle that just closed may have moved into
+    // the `is_done` column, and the view must reflect that.
+    let columns = state.board.columns_with_items().await?;
+
+    // The entry column — where a suggestion, once accepted, lands — is the
+    // board's first (lowest-position) column: `crate::bootstrap` always
+    // seeds To-Do at position 0, the one column `docs/DOMAIN.md` §3 actually
+    // calls out as WIP-limited.
+    let suggestion = match columns.first() {
+        Some(entry) => Some(fetch_suggestion(state, user, entry.column.id).await?),
+        None => None,
+    };
+
+    // `docs/DOMAIN.md` §8: "one endpoint, two representations" — an
+    // `HX-Request` gets just the columns fragment (useful for an
+    // htmx-driven refresh that never wants the surrounding page again),
+    // everything else gets the full page.
+    if is_hx_request(headers) {
+        return render_columns_fragment(state, user, &columns, status).await;
+    }
+    render_board_page(state, user, &columns, suggestion.as_ref(), error, status).await
+}
+
+/// Brings tangle state up to date before the board reads it — both the
+/// "quiet indicator" and the suggestion engine's tangled-task exclusion
+/// depend on it being current.
+///
+/// Detection is a pure reconciliation pass, cheap to re-run per view at this
+/// phase's scale; a scheduled job is a natural later home for it. Frozen
+/// (placed) tangles are untouched by detection — see `run_tangle_detection`'s
+/// own doc comment — so `resolve_frozen_tangles` is the separate pass that
+/// closes one out once its frozen task set is no longer cyclic in the live
+/// graph.
+async fn refresh_tangles(state: &AppState) -> Result<(), WebError> {
     run_tangle_detection(
         state.relationships.as_ref(),
         state.tangles.as_ref(),
@@ -278,49 +322,26 @@ async fn view_board_impl(
         done_column,
     )
     .await?;
-    // Re-read after resolution: a tangle that just closed may have moved
-    // into the `is_done` column, and the view must reflect that.
-    let columns = state.board.columns_with_items().await?;
+    Ok(())
+}
 
-    let active_tangles = state.tangles.list_active().await?;
-
-    // The entry column — where a suggestion, once accepted, lands — is the
-    // board's first (lowest-position) column: `crate::bootstrap` always
-    // seeds To-Do at position 0, the one column `docs/DOMAIN.md` §3 actually
-    // calls out as WIP-limited.
-    let suggestion = match columns.first() {
-        Some(entry) => Some(fetch_suggestion(state, user, entry.column.id).await?),
-        None => None,
-    };
-
-    // `docs/DOMAIN.md` §8: "one endpoint, two representations" — an
-    // `HX-Request` gets just the columns fragment (useful for an
-    // htmx-driven refresh that never wants the surrounding page again),
-    // everything else gets the full page.
-    if is_hx_request(headers) {
-        let column_views = build_column_views(state, &columns).await?;
-        let tmpl = state
-            .templates
-            .get_template("_board_columns.html")
-            .map_err(WebError::template)?;
-        let body = tmpl
-            .render(context! { columns => column_views, csrf_token => user.csrf_token })
-            .map_err(WebError::template)?;
-        return Ok((status, Html(body)).into_response());
-    }
-
-    let is_system_admin = access::is_system_admin(state, &user.user_id).await?;
-    render_board_page(
-        state,
-        user,
-        &columns,
-        &active_tangles,
-        suggestion.as_ref(),
-        is_system_admin,
-        error,
-        status,
-    )
-    .await
+/// The `HX-Request` half of [`view_board_impl`]: just the columns, with no
+/// page shell around them.
+async fn render_columns_fragment(
+    state: &AppState,
+    user: &CurrentUser,
+    columns: &[anamnesis_app::BoardColumn],
+    status: StatusCode,
+) -> Result<Response, WebError> {
+    let column_views = build_column_views(state, columns).await?;
+    let tmpl = state
+        .templates
+        .get_template("_board_columns.html")
+        .map_err(WebError::template)?;
+    let body = tmpl
+        .render(context! { columns => column_views, csrf_token => user.csrf_token })
+        .map_err(WebError::template)?;
+    Ok((status, Html(body)).into_response())
 }
 
 async fn fetch_suggestion(
@@ -528,12 +549,88 @@ fn blockage_message(blockage: Blockage) -> &'static str {
 /// from — factored out so a reposition's fragment response reflects the
 /// exact same card content (including `show_on_card` fields) as a full
 /// board load, not a stripped-down copy of it.
+/// A per-request memo of each project's field definitions. One board load
+/// shows many tasks drawn from few projects, so without this the
+/// `show_on_card` lookup would re-load the same project aggregate once per
+/// card.
+struct FieldDefCache(HashMap<ProjectId, Vec<anamnesis_core::FieldDefinition>>);
+
+impl FieldDefCache {
+    fn new() -> Self {
+        FieldDefCache(HashMap::new())
+    }
+
+    async fn defs_for(
+        &mut self,
+        state: &AppState,
+        project_id: ProjectId,
+    ) -> Result<&[anamnesis_core::FieldDefinition], WebError> {
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.0.entry(project_id) {
+            let defs = state
+                .projects
+                .load(project_id)
+                .await?
+                .map(|a| a.field_definitions)
+                .unwrap_or_default();
+            slot.insert(defs);
+        }
+        Ok(&self.0[&project_id])
+    }
+}
+
+/// One task's board card. The task's own aggregate is loaded only when its
+/// project actually marks some field `show_on_card` — the columns query
+/// already carries everything else the card shows.
+async fn task_card_view(
+    state: &AppState,
+    task: &anamnesis_core::Task,
+    cache: &mut FieldDefCache,
+) -> Result<minijinja::Value, WebError> {
+    let defs = cache.defs_for(state, task.project_id).await?;
+    let card_fields = if defs.iter().any(|d| d.show_on_card) {
+        let values = state
+            .tasks
+            .load(task.id)
+            .await?
+            .map(|a| a.field_values)
+            .unwrap_or_default();
+        defs.iter()
+            .filter(|d| d.show_on_card)
+            .filter_map(|def| {
+                values.iter().find(|v| v.field_id == def.id).map(
+                    |v| context! { name => def.name.as_str(), value => format_field_data(&v.data) },
+                )
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    Ok(context! {
+        kind => "task",
+        id => task.id.to_string(),
+        title => task.title.as_str(),
+        bounce_count => task.bounce_count,
+        card_fields => card_fields,
+    })
+}
+
+/// One placed tangle's board card. A tangle is a relationship between tasks
+/// rather than a task itself, so it carries no custom fields.
+fn tangle_card_view(tangle: &Tangle) -> minijinja::Value {
+    context! {
+        kind => "tangle",
+        id => tangle.id.to_string(),
+        size => tangle.task_ids.len(),
+        task_ids => tangle.task_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+        resolved => tangle.resolved_at.is_some(),
+    }
+}
+
 async fn build_column_views(
     state: &AppState,
     columns: &[anamnesis_app::BoardColumn],
 ) -> Result<Vec<minijinja::Value>, WebError> {
-    let mut field_def_cache: HashMap<ProjectId, Vec<anamnesis_core::FieldDefinition>> =
-        HashMap::new();
+    let mut cache = FieldDefCache::new();
     let mut column_views = Vec::with_capacity(columns.len());
     for bc in columns {
         // Tasks and placed tangles interleaved by position, in one list —
@@ -542,58 +639,10 @@ async fn build_column_views(
         // "tasks then tangles").
         let mut item_views = Vec::with_capacity(bc.items.len());
         for item in &bc.items {
-            match item {
-                BoardItem::Task(task) => {
-                    let defs = match field_def_cache.get(&task.project_id) {
-                        Some(defs) => defs.clone(),
-                        None => {
-                            let defs = state
-                                .projects
-                                .load(task.project_id)
-                                .await?
-                                .map(|a| a.field_definitions)
-                                .unwrap_or_default();
-                            field_def_cache.insert(task.project_id, defs.clone());
-                            defs
-                        }
-                    };
-                    let card_fields = if defs.iter().any(|d| d.show_on_card) {
-                        let values = state
-                            .tasks
-                            .load(task.id)
-                            .await?
-                            .map(|a| a.field_values)
-                            .unwrap_or_default();
-                        defs.iter()
-                            .filter(|d| d.show_on_card)
-                            .filter_map(|def| {
-                                values
-                                    .iter()
-                                    .find(|v| v.field_id == def.id)
-                                    .map(|v| context! { name => def.name.as_str(), value => format_field_data(&v.data) })
-                            })
-                            .collect::<Vec<_>>()
-                    } else {
-                        Vec::new()
-                    };
-                    item_views.push(context! {
-                        kind => "task",
-                        id => task.id.to_string(),
-                        title => task.title.as_str(),
-                        bounce_count => task.bounce_count,
-                        card_fields => card_fields,
-                    });
-                }
-                BoardItem::Tangle(tangle) => {
-                    item_views.push(context! {
-                        kind => "tangle",
-                        id => tangle.id.to_string(),
-                        size => tangle.task_ids.len(),
-                        task_ids => tangle.task_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
-                        resolved => tangle.resolved_at.is_some(),
-                    });
-                }
-            }
+            item_views.push(match item {
+                BoardItem::Task(task) => task_card_view(state, task, &mut cache).await?,
+                BoardItem::Tangle(tangle) => tangle_card_view(tangle),
+            });
         }
         // A placed tangle counts against the column's WIP limit exactly
         // like a task (`docs/DOMAIN.md`'s Tangle section) -- `items.len()`
@@ -610,20 +659,10 @@ async fn build_column_views(
     Ok(column_views)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn render_board_page(
-    state: &AppState,
-    user: &CurrentUser,
-    columns: &[anamnesis_app::BoardColumn],
-    active_tangles: &[Tangle],
-    suggestion: Option<&Outcome>,
-    is_system_admin: bool,
-    error: Option<&str>,
-    status: StatusCode,
-) -> Result<Response, WebError> {
-    let column_views = build_column_views(state, columns).await?;
-
-    let tangle_views: Vec<_> = active_tangles
+/// The sidebar list of every active tangle, placed or not — distinct from
+/// [`tangle_card_view`], which renders only the ones sitting in a column.
+fn build_tangle_views(active_tangles: &[Tangle]) -> Vec<minijinja::Value> {
+    active_tangles
         .iter()
         .map(|t| {
             context! {
@@ -633,45 +672,75 @@ async fn render_board_page(
                 on_board => t.placement.is_on_board(),
             }
         })
-        .collect();
+        .collect()
+}
 
-    let suggestion_view = match suggestion {
-        None | Some(Outcome::Full) => None,
-        Some(Outcome::Stuck(blockage)) => Some(context! {
+/// The suggestion prompt, if there is one to show. `Full` renders nothing —
+/// a board with no room has nothing to suggest — so it shares the `None`
+/// arm rather than getting a prompt of its own (`docs/DOMAIN.md` §8).
+async fn build_suggestion_view(
+    state: &AppState,
+    suggestion: Option<&Outcome>,
+) -> Result<Option<minijinja::Value>, WebError> {
+    match suggestion {
+        None | Some(Outcome::Full) => Ok(None),
+        Some(Outcome::Stuck(blockage)) => Ok(Some(context! {
             kind => "stuck",
             message => blockage_message(*blockage),
-        }),
+        })),
         Some(Outcome::Offer(offer)) => {
             let mut items = Vec::with_capacity(offer.items.len());
             for item in &offer.items {
-                match item {
-                    OfferItem::Task(task_offer) => {
-                        let title = state
-                            .tasks
-                            .load(task_offer.task_id)
-                            .await?
-                            .map(|a| a.task.title.as_str().to_string())
-                            .unwrap_or_else(|| "(deleted task)".to_string());
-                        items.push(context! {
-                            kind => "task",
-                            task_id => task_offer.task_id.to_string(),
-                            title => title,
-                            high_bounce => task_offer.high_bounce,
-                        });
-                    }
-                    OfferItem::Tangle(tangle) => {
-                        items.push(context! {
-                            kind => "tangle",
-                            tangle_id => tangle.id.to_string(),
-                            size => tangle.task_ids.len(),
-                            task_ids => tangle.task_ids.iter().map(|id: &anamnesis_core::TaskId| id.to_string()).collect::<Vec<_>>(),
-                        });
-                    }
-                }
+                items.push(offer_item_view(state, item).await?);
             }
-            Some(context! { kind => "offer", items => items })
+            Ok(Some(context! { kind => "offer", items => items }))
         }
-    };
+    }
+}
+
+/// One entry in an offer. A task offer needs its title looked up (the offer
+/// itself carries only ids); a tangle offer is self-describing.
+async fn offer_item_view(state: &AppState, item: &OfferItem) -> Result<minijinja::Value, WebError> {
+    match item {
+        OfferItem::Task(task_offer) => {
+            let title = state
+                .tasks
+                .load(task_offer.task_id)
+                .await?
+                .map(|a| a.task.title.as_str().to_string())
+                .unwrap_or_else(|| "(deleted task)".to_string());
+            Ok(context! {
+                kind => "task",
+                task_id => task_offer.task_id.to_string(),
+                title => title,
+                high_bounce => task_offer.high_bounce,
+            })
+        }
+        OfferItem::Tangle(tangle) => Ok(context! {
+            kind => "tangle",
+            tangle_id => tangle.id.to_string(),
+            size => tangle.task_ids.len(),
+            task_ids => tangle.task_ids.iter().map(|id: &anamnesis_core::TaskId| id.to_string()).collect::<Vec<_>>(),
+        }),
+    }
+}
+
+/// Renders the whole board page. The active tangles and the viewer's
+/// System Admin flag are read here rather than passed in: they are derived
+/// from `state` and `user`, not decisions the caller makes, and every caller
+/// was fetching them purely to hand them straight back.
+async fn render_board_page(
+    state: &AppState,
+    user: &CurrentUser,
+    columns: &[anamnesis_app::BoardColumn],
+    suggestion: Option<&Outcome>,
+    error: Option<&str>,
+    status: StatusCode,
+) -> Result<Response, WebError> {
+    let column_views = build_column_views(state, columns).await?;
+    let tangle_views = build_tangle_views(&state.tangles.list_active().await?);
+    let suggestion_view = build_suggestion_view(state, suggestion).await?;
+    let is_system_admin = access::is_system_admin(state, &user.user_id).await?;
 
     let tmpl = state
         .templates

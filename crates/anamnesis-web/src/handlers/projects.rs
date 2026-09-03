@@ -675,32 +675,65 @@ fn sort_projects(
     });
 }
 
-async fn list_projects_impl(
-    state: &AppState,
-    user: &CurrentUser,
-    params: ProjectListParams,
-) -> Result<Response, WebError> {
-    let admin = access::is_system_admin(state, &user.user_id).await?;
-    let visible_areas = visible_areas_for(state, user, admin).await?;
+/// The Projects grid's sortable columns, as `(query-string value, header
+/// label)`. One table, so the rendered header, the sort links and the names
+/// [`sort_projects`] understands cannot drift apart.
+const SORT_COLUMNS: [(&str, &str); 5] = [
+    ("title", "Title"),
+    ("area", "Area"),
+    ("status", "Status"),
+    ("created", "Created"),
+    ("updated", "Updated"),
+];
 
-    let all_projects = list_all_projects(state.projects.as_ref(), Some(Role::Member)).await?;
-    let area_titles: std::collections::HashMap<_, _> = visible_areas
+/// Which column the grid is sorted by, defaulting to title when the query
+/// string names one that doesn't exist.
+fn sort_field(requested: &str) -> &'static str {
+    SORT_COLUMNS
         .iter()
-        .map(|a| (a.id, a.title.as_str().to_string()))
-        .collect();
+        .find(|(name, _)| *name == requested)
+        .map_or("title", |(name, _)| *name)
+}
 
-    let include_archived = !params.archived.is_empty();
-    let status_filter = params.status.as_str();
-    let mut projects = filter_projects(all_projects, &area_titles, &params);
+/// One header cell per sortable column: its label, the link that re-sorts by
+/// it, and the arrow marking the column currently in force. Clicking the
+/// active column flips its direction; clicking any other starts it ascending.
+fn sort_header_views(
+    params: &ProjectListParams,
+    sort: &str,
+    dir_desc: bool,
+) -> Vec<minijinja::Value> {
+    SORT_COLUMNS
+        .iter()
+        .map(|(field, label)| {
+            let active = *field == sort;
+            context! {
+                label => label,
+                indicator => match (active, dir_desc) {
+                    (false, _) => "",
+                    (true, false) => " \u{25b2}",
+                    (true, true) => " \u{25bc}",
+                },
+                link => format!(
+                    "/projects?status={status}&area={area}&archived={archived}&sort={field}&dir={dir}",
+                    status = params.status.as_str(),
+                    area = params.area,
+                    archived = if params.archived.is_empty() { "" } else { "1" },
+                    dir = if active && !dir_desc { "desc" } else { "asc" },
+                ),
+            }
+        })
+        .collect()
+}
 
-    let sort = match params.sort.as_str() {
-        "area" | "status" | "created" | "updated" => params.sort.as_str(),
-        _ => "title",
-    };
-    let dir_desc = params.dir == "desc";
-    sort_projects(&mut projects, &area_titles, sort, dir_desc);
-
-    let rows: Vec<_> = projects
+/// One row per project, with its area's title resolved from `area_titles`
+/// (every project reaching here is in a visible area, so the lookup only
+/// misses if that invariant breaks).
+fn project_row_views(
+    projects: &[Project],
+    area_titles: &std::collections::HashMap<anamnesis_core::AreaId, String>,
+) -> Vec<minijinja::Value> {
+    projects
         .iter()
         .map(|p| {
             context! {
@@ -714,30 +747,32 @@ async fn list_projects_impl(
                 updated_at => p.updated_at.unix_seconds(),
             }
         })
+        .collect()
+}
+
+async fn list_projects_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    params: ProjectListParams,
+) -> Result<Response, WebError> {
+    let admin = access::is_system_admin(state, &user.user_id).await?;
+    let visible_areas = visible_areas_for(state, user, admin).await?;
+
+    let all_projects = list_all_projects(state.projects.as_ref(), Some(Role::Member)).await?;
+    let area_titles: std::collections::HashMap<_, _> = visible_areas
+        .iter()
+        .map(|a| (a.id, a.title.as_str().to_string()))
         .collect();
+    let mut projects = filter_projects(all_projects, &area_titles, &params);
+
+    let sort = sort_field(params.sort.as_str());
+    let dir_desc = params.dir == "desc";
+    sort_projects(&mut projects, &area_titles, sort, dir_desc);
 
     let area_options: Vec<_> = visible_areas
         .iter()
         .map(|a| context! { id => a.id.to_string(), title => a.title.as_str() })
         .collect();
-
-    let dir_for = |field: &str| {
-        if sort == field && !dir_desc {
-            "desc"
-        } else {
-            "asc"
-        }
-    };
-    let sort_link = |field: &str| {
-        format!(
-            "/projects?status={status}&area={area}&archived={archived}&sort={field}&dir={dir}",
-            status = status_filter,
-            area = params.area,
-            archived = if include_archived { "1" } else { "" },
-            field = field,
-            dir = dir_for(field),
-        )
-    };
 
     let tmpl = state
         .templates
@@ -745,18 +780,14 @@ async fn list_projects_impl(
         .map_err(WebError::template)?;
     let body = tmpl
         .render(context! {
-            projects => rows,
+            projects => project_row_views(&projects, &area_titles),
             areas => area_options,
-            status => status_filter,
+            status => params.status.as_str(),
             area => params.area,
-            include_archived => include_archived,
+            include_archived => !params.archived.is_empty(),
             sort => sort,
             dir => if dir_desc { "desc" } else { "asc" },
-            sort_link_title => sort_link("title"),
-            sort_link_area => sort_link("area"),
-            sort_link_status => sort_link("status"),
-            sort_link_created => sort_link("created"),
-            sort_link_updated => sort_link("updated"),
+            sort_headers => sort_header_views(&params, sort, dir_desc),
             csrf_token => user.csrf_token,
             current_user => user.display_name,
             is_system_admin => admin,
