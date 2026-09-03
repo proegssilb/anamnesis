@@ -6,9 +6,10 @@
 
 mod support;
 
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::http::{Response, StatusCode};
 
-use support::{TestApp, body_text, location_of};
+use support::{TestApp, body_text, set_active_project_limit, set_project_status};
 
 #[tokio::test]
 async fn get_settings_by_a_non_admin_is_forbidden() {
@@ -81,87 +82,36 @@ async fn updating_active_project_limit_through_settings_changes_the_enforced_lim
     let cookie: Option<&str> = None;
 
     // Lower the active-project limit to 1 through the settings UI.
-    let save = app
-        .post_form(
-            "/settings",
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("active_project_limit", "1"),
-                ("cooldown_seconds", "259200"),
-                ("high_bounce_threshold", "3"),
-                ("sweep_kind", "never"),
-            ],
-            cookie,
-        )
-        .await;
-    assert_eq!(save.status(), StatusCode::SEE_OTHER);
+    set_active_project_limit(&app, 1, cookie).await;
 
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Home"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let first_project = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "One"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let second_project = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Two"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
+    let area_path = support::new_area(&app, "Home", support::DEV_CSRF_TOKEN, cookie).await;
+    let first_project =
+        support::new_project_in(&app, &area_path, "One", support::DEV_CSRF_TOKEN, cookie).await;
+    let second_project =
+        support::new_project_in(&app, &area_path, "Two", support::DEV_CSRF_TOKEN, cookie).await;
 
-    let first_active = app
-        .post_form(
-            &format!("{first_project}/status"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("status", "active"),
-            ],
-            cookie,
-        )
-        .await;
+    let first_active = set_project_status(
+        &app,
+        &first_project,
+        "active",
+        support::DEV_CSRF_TOKEN,
+        cookie,
+    )
+    .await;
     assert_eq!(
         first_active.status(),
         StatusCode::SEE_OTHER,
         "the first project must fit under the new limit of 1"
     );
 
-    let second_active = app
-        .post_form(
-            &format!("{second_project}/status"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("status", "active"),
-            ],
-            cookie,
-        )
-        .await;
+    let second_active = set_project_status(
+        &app,
+        &second_project,
+        "active",
+        support::DEV_CSRF_TOKEN,
+        cookie,
+    )
+    .await;
     assert_eq!(
         second_active.status(),
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -178,51 +128,9 @@ async fn updating_the_suggestion_cooldown_through_settings_changes_eligibility()
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None;
 
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Home"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Kitchen remodel"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    app.post_form(
-        &format!("{project_path}/status"),
-        &[
-            ("csrf_token", support::DEV_CSRF_TOKEN),
-            ("status", "active"),
-        ],
-        cookie,
-    )
-    .await;
-    app.post_form(
-        &format!("{project_path}/tasks"),
-        &[
-            ("csrf_token", support::DEV_CSRF_TOKEN),
-            ("title", "Regrout the shower"),
-            ("description", ""),
-        ],
-        cookie,
-    )
-    .await;
+    let (_, project_path) =
+        support::new_active_project(&app, "Home", "Kitchen remodel", cookie).await;
+    support::new_task(&app, &project_path, "Regrout the shower", cookie).await;
 
     // First view: the one backlog task is offered (stamping
     // `last_offered_at`) under the default ~3-day cooldown.
@@ -243,19 +151,7 @@ async fn updating_the_suggestion_cooldown_through_settings_changes_eligibility()
     );
 
     // Now zero out the cooldown through the settings UI...
-    let save = app
-        .post_form(
-            "/settings",
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("active_project_limit", "5"),
-                ("cooldown_seconds", "0"),
-                ("high_bounce_threshold", "3"),
-                ("sweep_kind", "never"),
-            ],
-            cookie,
-        )
-        .await;
+    let save = set_suggestion_cooldown(&app, 0, cookie).await;
     assert_eq!(save.status(), StatusCode::SEE_OTHER);
 
     // ...and the very same lone candidate is offered again immediately --
@@ -267,4 +163,28 @@ async fn updating_the_suggestion_cooldown_through_settings_changes_eligibility()
         "with the cooldown set to 0, the lone candidate must be offered \
          again on the very next view: {third}"
     );
+}
+
+/// Posts the settings form with a chosen suggestion cooldown, leaving the
+/// other settings at their bootstrap defaults. Local to this file (rather
+/// than `support::set_active_project_limit`) because its callers vary the
+/// opposite axis: that helper fixes the cooldown and varies the limit, this
+/// test needs the limit fixed and the cooldown varied.
+async fn set_suggestion_cooldown(
+    app: &TestApp,
+    cooldown_seconds: u32,
+    cookie: Option<&str>,
+) -> Response<Body> {
+    app.post_form(
+        "/settings",
+        &[
+            ("csrf_token", support::DEV_CSRF_TOKEN),
+            ("active_project_limit", "5"),
+            ("cooldown_seconds", &cooldown_seconds.to_string()),
+            ("high_bounce_threshold", "3"),
+            ("sweep_kind", "never"),
+        ],
+        cookie,
+    )
+    .await
 }

@@ -15,45 +15,15 @@ async fn search_finds_an_area_a_project_and_a_task_just_created() {
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None;
 
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Homesteading"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
+    let (area_path, project_path) = support::new_area_with_project(
+        &app,
+        "Homesteading",
+        "Renovation",
+        support::DEV_CSRF_TOKEN,
+        cookie,
     )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Renovation"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let task_path = location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Regrout the shower"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
+    .await;
+    let task_path = support::new_task(&app, &project_path, "Regrout the shower", cookie).await;
 
     // The href is HTML-escaped (MiniJinja auto-escapes `/` too, defense in
     // depth against attribute-breaking — see `templates.rs`'s own test for
@@ -135,45 +105,15 @@ async fn archiving_a_task_removes_it_from_plain_search_but_leaves_it_findable_ar
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None;
 
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Home hunting"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
+    let (_, project_path) = support::new_area_with_project(
+        &app,
+        "Home hunting",
+        "House shopping",
+        support::DEV_CSRF_TOKEN,
+        cookie,
     )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "House shopping"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let task_path = location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Retire the fixer-upper"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
+    .await;
+    let task_path = support::new_task(&app, &project_path, "Retire the fixer-upper", cookie).await;
 
     // Findable before archiving.
     let hits = body_text(app.get("/search?q=fixer-upper", cookie).await).await;

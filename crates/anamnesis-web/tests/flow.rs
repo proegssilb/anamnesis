@@ -7,65 +7,33 @@ mod support;
 use axum::http::StatusCode;
 
 use anamnesis_app::BoardQuery;
-use support::{TestApp, body_text, location_of};
+use support::{TestApp, body_text};
 
 #[tokio::test]
 async fn area_then_project_then_task_all_render() {
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None; // dev-auth-bypass needs no cookie at all.
 
-    let create_area = app
-        .post_form(
-            "/areas",
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Home"),
-                ("description", "household stuff"),
-            ],
-            cookie,
-        )
-        .await;
-    assert_eq!(create_area.status(), StatusCode::SEE_OTHER);
-    let area_path = location_of(&create_area).to_string();
-
+    let area_path = support::new_area(&app, "Home", support::DEV_CSRF_TOKEN, cookie).await;
     let area_page = app.get(&area_path, cookie).await;
     assert_eq!(area_page.status(), StatusCode::OK);
     let area_body = body_text(area_page).await;
     assert!(area_body.contains("Home"));
 
-    let create_project = app
-        .post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Kitchen remodel"),
-                ("description", "regrout, repaint"),
-            ],
-            cookie,
-        )
-        .await;
-    assert_eq!(create_project.status(), StatusCode::SEE_OTHER);
-    let project_path = location_of(&create_project).to_string();
-
+    let project_path = support::new_project_in(
+        &app,
+        &area_path,
+        "Kitchen remodel",
+        support::DEV_CSRF_TOKEN,
+        cookie,
+    )
+    .await;
     let project_page = app.get(&project_path, cookie).await;
     assert_eq!(project_page.status(), StatusCode::OK);
     let project_body = body_text(project_page).await;
     assert!(project_body.contains("Kitchen remodel"));
 
-    let create_task = app
-        .post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Regrout the shower"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await;
-    assert_eq!(create_task.status(), StatusCode::SEE_OTHER);
-    let task_path = location_of(&create_task).to_string();
-
+    let task_path = support::new_task(&app, &project_path, "Regrout the shower", cookie).await;
     let task_page = app.get(&task_path, cookie).await;
     assert_eq!(task_page.status(), StatusCode::OK);
     let task_body = body_text(task_page).await;
@@ -86,45 +54,15 @@ async fn raising_a_task_onto_the_board_and_dropping_it_back() {
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None;
 
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Home"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
+    let (_, project_path) = support::new_area_with_project(
+        &app,
+        "Home",
+        "Kitchen remodel",
+        support::DEV_CSRF_TOKEN,
+        cookie,
     )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Kitchen remodel"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let task_path = location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Regrout the shower"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
+    .await;
+    let task_path = support::new_task(&app, &project_path, "Regrout the shower", cookie).await;
 
     let todo_column = app.store.columns_with_items().await.unwrap()[0].column.id;
 
@@ -181,45 +119,15 @@ async fn double_submitting_a_drop_only_bounces_once() {
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None;
 
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Home"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
+    let (_, project_path) = support::new_area_with_project(
+        &app,
+        "Home",
+        "Kitchen remodel",
+        support::DEV_CSRF_TOKEN,
+        cookie,
     )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Kitchen remodel"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let task_path = location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Regrout the shower"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
+    .await;
+    let task_path = support::new_task(&app, &project_path, "Regrout the shower", cookie).await;
 
     let todo_column = app.store.columns_with_items().await.unwrap()[0].column.id;
 
@@ -268,45 +176,15 @@ async fn moving_a_task_between_columns_does_not_bounce_it() {
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None;
 
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Home"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
+    let (_, project_path) = support::new_area_with_project(
+        &app,
+        "Home",
+        "Kitchen remodel",
+        support::DEV_CSRF_TOKEN,
+        cookie,
     )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Kitchen remodel"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let task_path = location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Regrout the shower"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
+    .await;
+    let task_path = support::new_task(&app, &project_path, "Regrout the shower", cookie).await;
 
     let columns = app.store.columns_with_items().await.unwrap();
     let todo = columns[0].column.id;
