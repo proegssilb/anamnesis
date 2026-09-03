@@ -422,15 +422,34 @@ pub fn suggest(
         .map(PoolItem::Task)
         .chain(offerable_tangles.into_iter().map(PoolItem::Tangle))
         .collect();
-    let tail = stale_tail(now, &pool);
+    let items = draw_offer(now, seed, &pool, offer_size)
+        .into_iter()
+        .map(|(i, reason)| offer_item(&pool, i, reason, settings.high_bounce_threshold))
+        .collect();
 
+    Outcome::Offer(Offer { items })
+}
+
+/// Which pool items fill this offer's slots, and which kind of slot each one
+/// filled. The forgotten slot is drawn first, and only from the stale tail:
+/// the other order would let the next-up draw take the single tail item and
+/// leave the forgotten slot nothing to fill from.
+///
+/// The result is ordered by pool position rather than by draw order — the
+/// reason an item was drawn for need not be exposed as ordering, and a
+/// deterministic order keeps `Offer` equality meaningful for the
+/// seed-stability test regardless of internal draw order.
+fn draw_offer(
+    now: Timestamp,
+    seed: u64,
+    pool: &[PoolItem],
+    offer_size: u32,
+) -> Vec<(usize, SuggestionReason)> {
+    let tail = stale_tail(now, pool);
     let (next_up_count, forgotten_count) = composition(offer_size);
     let mut rng = SplitMix64::new(seed);
     let mut available: Vec<usize> = (0..pool.len()).collect();
 
-    // The forgotten slot is drawn first, and only from the stale tail: doing
-    // it the other way round would let the next-up draw take the one tail
-    // item and leave the forgotten slot nothing to fill from.
     let forgotten = draw_slots(
         &mut rng,
         &mut available,
@@ -442,23 +461,13 @@ pub fn suggest(
         recency_weight(now, pool[i].reference_time())
     });
 
-    // Stable output order: the reason an item was drawn for doesn't need to
-    // be exposed as ordering, but a deterministic order (by original pool
-    // position) keeps `Offer` equality meaningful for the seed-stability
-    // test regardless of internal draw order.
     let mut drawn: Vec<(usize, SuggestionReason)> = forgotten
         .into_iter()
         .map(|i| (i, SuggestionReason::Forgotten))
         .chain(next_up.into_iter().map(|i| (i, SuggestionReason::NextUp)))
         .collect();
     drawn.sort_by_key(|&(i, _)| i);
-
-    let items = drawn
-        .into_iter()
-        .map(|(i, reason)| offer_item(&pool, i, reason, settings.high_bounce_threshold))
-        .collect();
-
-    Outcome::Offer(Offer { items })
+    drawn
 }
 
 /// The "older tail" the forgotten slot samples from: the staler half of the
