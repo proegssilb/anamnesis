@@ -417,15 +417,54 @@ pub fn suggest(
         return Outcome::Stuck(diagnose(candidates, graph, tangled_ids));
     }
 
-    let mut pool: Vec<PoolItem> = eligible_tasks
+    let pool: Vec<PoolItem> = eligible_tasks
         .into_iter()
         .map(PoolItem::Task)
         .chain(offerable_tangles.into_iter().map(PoolItem::Tangle))
         .collect();
+    let tail = stale_tail(now, &pool);
 
-    // The "older tail" the forgotten slot samples from: the staler half of
-    // the pool by reference time (ties broken by a stable secondary key so
-    // the split is deterministic). A pool of 0 or 1 items is its own tail.
+    let (next_up_count, forgotten_count) = composition(offer_size);
+    let mut rng = SplitMix64::new(seed);
+    let mut available: Vec<usize> = (0..pool.len()).collect();
+
+    // The forgotten slot is drawn first, and only from the stale tail: doing
+    // it the other way round would let the next-up draw take the one tail
+    // item and leave the forgotten slot nothing to fill from.
+    let forgotten = draw_slots(
+        &mut rng,
+        &mut available,
+        forgotten_count,
+        Some(&tail),
+        |i| staleness_weight(now, pool[i].reference_time()),
+    );
+    let next_up = draw_slots(&mut rng, &mut available, next_up_count, None, |i| {
+        recency_weight(now, pool[i].reference_time())
+    });
+
+    // Stable output order: the reason an item was drawn for doesn't need to
+    // be exposed as ordering, but a deterministic order (by original pool
+    // position) keeps `Offer` equality meaningful for the seed-stability
+    // test regardless of internal draw order.
+    let mut drawn: Vec<(usize, SuggestionReason)> = forgotten
+        .into_iter()
+        .map(|i| (i, SuggestionReason::Forgotten))
+        .chain(next_up.into_iter().map(|i| (i, SuggestionReason::NextUp)))
+        .collect();
+    drawn.sort_by_key(|&(i, _)| i);
+
+    let items = drawn
+        .into_iter()
+        .map(|(i, reason)| offer_item(&pool, i, reason, settings.high_bounce_threshold))
+        .collect();
+
+    Outcome::Offer(Offer { items })
+}
+
+/// The "older tail" the forgotten slot samples from: the staler half of the
+/// pool by reference time, as pool indices. Ties break on a stable secondary
+/// key so the split is deterministic. A pool of 0 or 1 items is its own tail.
+fn stale_tail(now: Timestamp, pool: &[PoolItem]) -> BTreeSet<usize> {
     let mut by_age: Vec<usize> = (0..pool.len()).collect();
     by_age.sort_by(|&a, &b| {
         age_seconds(now, pool[a].reference_time())
@@ -434,66 +473,58 @@ pub fn suggest(
             .then_with(|| pool_sort_key(&pool[a]).cmp(&pool_sort_key(&pool[b])))
     });
     let tail_len = by_age.len().div_ceil(2).max(1.min(by_age.len()));
-    let tail: BTreeSet<usize> = by_age.into_iter().take(tail_len).collect();
+    by_age.into_iter().take(tail_len).collect()
+}
 
-    let (next_up_count, forgotten_count) = composition(offer_size);
-    let mut rng = SplitMix64::new(seed);
-    let mut drawn: Vec<(usize, SuggestionReason)> = Vec::new();
-    let mut available: Vec<usize> = (0..pool.len()).collect();
-
-    for _ in 0..forgotten_count {
-        let tail_available: Vec<usize> = available
+/// Fills up to `count` offer slots by repeated weighted draw, removing each
+/// pick from `available` so no item is offered twice. `restrict`, when set,
+/// narrows the draw to those pool indices (the forgotten slot's stale tail);
+/// `weight` is the per-item bias, which is the only thing that differs
+/// between the two kinds of slot. Stops early when nothing is left to draw.
+fn draw_slots(
+    rng: &mut SplitMix64,
+    available: &mut Vec<usize>,
+    count: u32,
+    restrict: Option<&BTreeSet<usize>>,
+    weight: impl Fn(usize) -> f64,
+) -> Vec<usize> {
+    let mut drawn = Vec::new();
+    for _ in 0..count {
+        let pickable: Vec<usize> = available
             .iter()
             .copied()
-            .filter(|i| tail.contains(i))
+            .filter(|i| restrict.is_none_or(|tail| tail.contains(i)))
             .collect();
-        if tail_available.is_empty() {
+        if pickable.is_empty() {
             break;
         }
-        let weights: Vec<f64> = tail_available
-            .iter()
-            .map(|&i| staleness_weight(now, pool[i].reference_time()))
-            .collect();
-        let pick = tail_available[weighted_index(&mut rng, &weights)];
-        drawn.push((pick, SuggestionReason::Forgotten));
+        let weights: Vec<f64> = pickable.iter().map(|&i| weight(i)).collect();
+        let pick = pickable[weighted_index(rng, &weights)];
+        drawn.push(pick);
         available.retain(|&i| i != pick);
     }
+    drawn
+}
 
-    for _ in 0..next_up_count {
-        if available.is_empty() {
-            break;
+/// The offered form of pool item `i`: a task carries the reason it was drawn
+/// and its high-bounce flag; a tangle is offered whole.
+fn offer_item(
+    pool: &[PoolItem],
+    i: usize,
+    reason: SuggestionReason,
+    high_bounce_threshold: u32,
+) -> OfferItem {
+    match &pool[i] {
+        PoolItem::Task(_) => {
+            let summary = eligible_task_by_index(pool, i);
+            OfferItem::Task(TaskOffer {
+                task_id: summary.task_id,
+                reason,
+                high_bounce: summary.bounce_count >= high_bounce_threshold,
+            })
         }
-        let weights: Vec<f64> = available
-            .iter()
-            .map(|&i| recency_weight(now, pool[i].reference_time()))
-            .collect();
-        let pick = available[weighted_index(&mut rng, &weights)];
-        drawn.push((pick, SuggestionReason::NextUp));
-        available.retain(|&i| i != pick);
+        PoolItem::Tangle(t) => OfferItem::Tangle((*t).clone()),
     }
-
-    // Stable output order: reason the item was drawn for doesn't need to be
-    // exposed as ordering, but a deterministic order (by original pool
-    // position) keeps `Offer` equality meaningful for the seed-stability
-    // test regardless of internal draw order.
-    drawn.sort_by_key(|&(i, _)| i);
-
-    let items = drawn
-        .into_iter()
-        .map(|(i, reason)| match &pool[i] {
-            PoolItem::Task(_) => {
-                let summary = eligible_task_by_index(&mut pool, i);
-                OfferItem::Task(TaskOffer {
-                    task_id: summary.task_id,
-                    reason,
-                    high_bounce: summary.bounce_count >= settings.high_bounce_threshold,
-                })
-            }
-            PoolItem::Tangle(t) => OfferItem::Tangle((*t).clone()),
-        })
-        .collect();
-
-    Outcome::Offer(Offer { items })
 }
 
 /// A stable secondary sort key for age ties in the tail split: a task's own
@@ -506,7 +537,7 @@ fn pool_sort_key(item: &PoolItem) -> u128 {
         .unwrap_or(0)
 }
 
-fn eligible_task_by_index<'a>(pool: &mut [PoolItem<'a>], i: usize) -> &'a TaskSummary {
+fn eligible_task_by_index<'a>(pool: &[PoolItem<'a>], i: usize) -> &'a TaskSummary {
     match pool[i] {
         PoolItem::Task(t) => t,
         PoolItem::Tangle(_) => unreachable!("caller only calls this for a Task pool item"),

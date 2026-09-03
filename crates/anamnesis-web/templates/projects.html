@@ -43,11 +43,9 @@
       <table class="data-grid">
         <thead>
           <tr>
-            <th><a href="{{ sort_link_title }}">Title{% if sort == "title" %} {% if dir == "asc" %}▲{% else %}▼{% endif %}{% endif %}</a></th>
-            <th><a href="{{ sort_link_area }}">Area{% if sort == "area" %} {% if dir == "asc" %}▲{% else %}▼{% endif %}{% endif %}</a></th>
-            <th><a href="{{ sort_link_status }}">Status{% if sort == "status" %} {% if dir == "asc" %}▲{% else %}▼{% endif %}{% endif %}</a></th>
-            <th><a href="{{ sort_link_created }}">Created{% if sort == "created" %} {% if dir == "asc" %}▲{% else %}▼{% endif %}{% endif %}</a></th>
-            <th><a href="{{ sort_link_updated }}">Updated{% if sort == "updated" %} {% if dir == "asc" %}▲{% else %}▼{% endif %}{% endif %}</a></th>
+            {% for col in sort_headers %}
+              <th><a href="{{ col.link }}">{{ col.label }}{{ col.indicator }}</a></th>
+            {% endfor %}
           </tr>
         </thead>
         <tbody>

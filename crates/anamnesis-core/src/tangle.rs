@@ -571,8 +571,6 @@ pub fn reconcile(
         .copied()
         .filter(|t| !t.frozen)
         .collect();
-    let detected_fingerprints: HashSet<Fingerprint> =
-        detected.iter().map(|d| d.fingerprint).collect();
 
     // Frozen tangles are never rewritten by detection: pass every one
     // through unconditionally, whatever this pass did or did not detect.
@@ -587,45 +585,66 @@ pub fn reconcile(
             still_holding.push((*prev).clone());
             continue;
         }
-        // No unfrozen tangle matches this detection by fingerprint. Before
-        // minting a new one, suppress it if some active tangle (frozen or
-        // not) already fully covers this knot — the "no duplicate cards for
-        // one knot" rule.
-        let already_covered = active_previous
-            .iter()
-            .any(|t| d.task_ids.is_subset(&t.task_ids));
-        if already_covered {
+        if covered_by_any(d, &active_previous) {
             continue;
         }
         let id = fresh_ids
             .next()
             .expect("reconcile: not enough fresh_ids for newly detected tangles");
-        newly_detected.push(Tangle {
-            id,
-            task_ids: d.task_ids.clone(),
-            fingerprint: d.fingerprint,
-            placement: Placement::Below,
-            frozen: false,
-            detected_at: now,
-            resolved_at: None,
-            archived_at: None,
-        });
+        newly_detected.push(mint_tangle(d, id, now));
     }
-
-    let resolved = unfrozen_previous
-        .into_iter()
-        .filter(|t| !detected_fingerprints.contains(&t.fingerprint))
-        .map(|t| Tangle {
-            resolved_at: Some(now),
-            ..t.clone()
-        })
-        .collect();
 
     Reconciliation {
         newly_detected,
         still_holding,
-        resolved,
+        resolved: resolved_tangles(&unfrozen_previous, detected, now),
     }
+}
+
+/// Whether some already-active tangle (frozen or not) fully covers this
+/// detection's task set — the "no duplicate cards for one knot" rule. Most
+/// commonly the live graph still contains exactly the cycle a frozen,
+/// on-board tangle already owns.
+fn covered_by_any(d: &DetectedTangle, active_previous: &[&Tangle]) -> bool {
+    active_previous
+        .iter()
+        .any(|t| d.task_ids.is_subset(&t.task_ids))
+}
+
+/// A brand-new tangle for a knot nothing active already tracks: below the
+/// horizon and unfrozen, since nothing has placed it on the board yet.
+fn mint_tangle(d: &DetectedTangle, id: TangleId, now: Timestamp) -> Tangle {
+    Tangle {
+        id,
+        task_ids: d.task_ids.clone(),
+        fingerprint: d.fingerprint,
+        placement: Placement::Below,
+        frozen: false,
+        detected_at: now,
+        resolved_at: None,
+        archived_at: None,
+    }
+}
+
+/// The unfrozen tangles this pass no longer detects — their knot has been
+/// broken since the last one — stamped resolved at `now`. Frozen tangles are
+/// absent from `unfrozen_previous` by construction: detection never closes
+/// one out, `resolve_frozen_tangles` does.
+fn resolved_tangles(
+    unfrozen_previous: &[&Tangle],
+    detected: &[DetectedTangle],
+    now: Timestamp,
+) -> Vec<Tangle> {
+    let detected_fingerprints: HashSet<Fingerprint> =
+        detected.iter().map(|d| d.fingerprint).collect();
+    unfrozen_previous
+        .iter()
+        .filter(|t| !detected_fingerprints.contains(&t.fingerprint))
+        .map(|t| Tangle {
+            resolved_at: Some(now),
+            ..(*t).clone()
+        })
+        .collect()
 }
 
 #[cfg(test)]
