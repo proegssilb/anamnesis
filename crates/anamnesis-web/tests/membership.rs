@@ -7,18 +7,13 @@ mod support;
 
 use axum::http::StatusCode;
 
-use support::{DEV_CSRF_TOKEN, TestApp, body_text, location_of};
+use support::{
+    DEV_CSRF_TOKEN, TestApp, body_text, location_of, new_area, new_area_with_project,
+    new_project_in, set_active_project_limit,
+};
 
 async fn create_area(app: &TestApp, cookie: &str, csrf: &str, title: &str) -> String {
-    location_of(
-        &app.post_form(
-            "/areas",
-            &[("csrf_token", csrf), ("title", title), ("description", "")],
-            Some(cookie),
-        )
-        .await,
-    )
-    .to_string()
+    new_area(app, title, csrf, Some(cookie)).await
 }
 
 async fn create_project(
@@ -28,15 +23,7 @@ async fn create_project(
     area_path: &str,
     title: &str,
 ) -> String {
-    location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[("csrf_token", csrf), ("title", title), ("description", "")],
-            Some(cookie),
-        )
-        .await,
-    )
-    .to_string()
+    new_project_in(app, area_path, title, csrf, Some(cookie)).await
 }
 
 // --- Area members: grant lets a user in, revoke locks them back out ---
@@ -403,32 +390,8 @@ async fn granting_system_admin_without_a_valid_csrf_token_is_rejected() {
 async fn transitioning_a_projects_status_via_hx_returns_all_three_area_lanes_as_oob_fragments() {
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None;
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", DEV_CSRF_TOKEN),
-                ("title", "Home"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", DEV_CSRF_TOKEN),
-                ("title", "Repaint"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
+    let (_, project_path) =
+        new_area_with_project(&app, "Home", "Repaint", DEV_CSRF_TOKEN, cookie).await;
 
     let response = app
         .post_form_hx(
@@ -463,62 +426,11 @@ async fn transitioning_a_projects_status_via_hx_silently_reverts_when_the_active
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None;
 
-    // Lower the active-project limit to 1, exactly like
-    // `tests/settings.rs::updating_active_project_limit_through_settings_changes_the_enforced_limit`.
-    let save = app
-        .post_form(
-            "/settings",
-            &[
-                ("csrf_token", DEV_CSRF_TOKEN),
-                ("active_project_limit", "1"),
-                ("cooldown_seconds", "259200"),
-                ("high_bounce_threshold", "3"),
-                ("sweep_kind", "never"),
-            ],
-            cookie,
-        )
-        .await;
-    assert_eq!(save.status(), StatusCode::SEE_OTHER);
+    set_active_project_limit(&app, 1, cookie).await;
 
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", DEV_CSRF_TOKEN),
-                ("title", "Home"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let first_project = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", DEV_CSRF_TOKEN),
-                ("title", "One"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let second_project = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", DEV_CSRF_TOKEN),
-                ("title", "Two"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
+    let (area_path, first_project) =
+        new_area_with_project(&app, "Home", "One", DEV_CSRF_TOKEN, cookie).await;
+    let second_project = new_project_in(&app, &area_path, "Two", DEV_CSRF_TOKEN, cookie).await;
 
     // Fill the limit of 1 with the first project.
     let first_active = app
