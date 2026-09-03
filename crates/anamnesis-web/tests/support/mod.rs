@@ -265,35 +265,67 @@ fn signed_cookie_header(key: &Key, cookie: Cookie<'static>) -> String {
     set_cookie.split(';').next().unwrap().to_string()
 }
 
-/// Creates an area, a project in it, and returns the project's path — the
-/// shared setup every task-picker test needs before it can create tasks.
-pub async fn new_project(app: &TestApp, cookie: Option<&str>) -> String {
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", DEV_CSRF_TOKEN),
-                ("title", "Homesteading"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
+/// Posts one of the app's `title`/`description` create forms and returns the
+/// new resource's path from the `Location` header. Areas, projects and tasks
+/// all submit exactly this shape, so every `new_*` helper below is a thin
+/// naming of a URL over this one primitive.
+async fn create_titled(
+    app: &TestApp,
+    path: &str,
+    title: &str,
+    csrf: &str,
+    cookie: Option<&str>,
+) -> String {
     location_of(
         &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", DEV_CSRF_TOKEN),
-                ("title", "Renovation"),
-                ("description", ""),
-            ],
+            path,
+            &[("csrf_token", csrf), ("title", title), ("description", "")],
             cookie,
         )
         .await,
     )
     .to_string()
+}
+
+/// Creates an area and returns its path.
+pub async fn new_area(app: &TestApp, title: &str, csrf: &str, cookie: Option<&str>) -> String {
+    create_titled(app, "/areas", title, csrf, cookie).await
+}
+
+/// Creates a project inside an existing area and returns its path.
+pub async fn new_project_in(
+    app: &TestApp,
+    area_path: &str,
+    title: &str,
+    csrf: &str,
+    cookie: Option<&str>,
+) -> String {
+    create_titled(app, &format!("{area_path}/projects"), title, csrf, cookie).await
+}
+
+/// Creates an area with one project inside it, returning
+/// `(area_path, project_path)` — the setup almost every web test opens with,
+/// since a task needs a project and a project needs an area.
+pub async fn new_area_with_project(
+    app: &TestApp,
+    area_title: &str,
+    project_title: &str,
+    csrf: &str,
+    cookie: Option<&str>,
+) -> (String, String) {
+    let area_path = new_area(app, area_title, csrf, cookie).await;
+    let project_path = new_project_in(app, &area_path, project_title, csrf, cookie).await;
+    (area_path, project_path)
+}
+
+/// Creates a project in a fresh area under dev-auth-bypass and returns just
+/// the project's path — the shared setup every task-picker test needs before
+/// it can create tasks. The titles are fixed because several tests assert on
+/// them by name.
+pub async fn new_project(app: &TestApp, cookie: Option<&str>) -> String {
+    new_area_with_project(app, "Homesteading", "Renovation", DEV_CSRF_TOKEN, cookie)
+        .await
+        .1
 }
 
 /// Creates a task under `project_path` and returns its path.
@@ -303,19 +335,40 @@ pub async fn new_task(
     title: &str,
     cookie: Option<&str>,
 ) -> String {
-    location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
+    create_titled(
+        app,
+        &format!("{project_path}/tasks"),
+        title,
+        DEV_CSRF_TOKEN,
+        cookie,
+    )
+    .await
+}
+
+/// Lowers the active-project limit through the settings UI, leaving the other
+/// settings at their bootstrap defaults. The settings form is all-or-nothing
+/// — it posts every knob at once — so changing one means restating the rest,
+/// which is why this is worth a helper rather than an inline form post.
+pub async fn set_active_project_limit(app: &TestApp, limit: u32, cookie: Option<&str>) {
+    let limit = limit.to_string();
+    let response = app
+        .post_form(
+            "/settings",
             &[
                 ("csrf_token", DEV_CSRF_TOKEN),
-                ("title", title),
-                ("description", ""),
+                ("active_project_limit", &limit),
+                ("cooldown_seconds", "259200"),
+                ("high_bounce_threshold", "3"),
+                ("sweep_kind", "never"),
             ],
             cookie,
         )
-        .await,
-    )
-    .to_string()
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::SEE_OTHER,
+        "saving settings redirects back to the settings page"
+    );
 }
 
 /// Bootstraps a fresh admin-owned area/project/task under real OIDC-style
@@ -329,45 +382,22 @@ pub async fn new_task(
 pub async fn setup_task_as_admin() -> (TestApp, String, String) {
     let app = TestApp::with_bootstrap_admin(false, "admin").await;
     let admin_cookie = app.login_cookie_header("admin", "admin-token");
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", "admin-token"),
-                ("title", "Homesteading"),
-                ("description", ""),
-            ],
-            Some(&admin_cookie),
-        )
-        .await,
+    let (_, project_path) = new_area_with_project(
+        &app,
+        "Homesteading",
+        "Renovation",
+        "admin-token",
+        Some(&admin_cookie),
     )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", "admin-token"),
-                ("title", "Renovation"),
-                ("description", ""),
-            ],
-            Some(&admin_cookie),
-        )
-        .await,
+    .await;
+    let task_path = create_titled(
+        &app,
+        &format!("{project_path}/tasks"),
+        "Regrout the shower",
+        "admin-token",
+        Some(&admin_cookie),
     )
-    .to_string();
-    let task_path = location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", "admin-token"),
-                ("title", "Regrout the shower"),
-                ("description", ""),
-            ],
-            Some(&admin_cookie),
-        )
-        .await,
-    )
-    .to_string();
+    .await;
 
     let stranger_cookie = app.login_cookie_header("stranger", "stranger-token");
     (app, task_path, stranger_cookie)
