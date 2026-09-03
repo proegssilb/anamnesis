@@ -206,49 +206,8 @@ async fn archive_task_without_a_valid_csrf_token_is_rejected() {
 
 #[tokio::test]
 async fn archive_task_by_an_ungranted_user_is_forbidden() {
-    let app = TestApp::with_bootstrap_admin(false, "admin").await;
-    let admin_cookie = app.login_cookie_header("admin", "admin-token");
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", "admin-token"),
-                ("title", "Home hunting"),
-                ("description", ""),
-            ],
-            Some(&admin_cookie),
-        )
-        .await,
-    )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", "admin-token"),
-                ("title", "House shopping"),
-                ("description", ""),
-            ],
-            Some(&admin_cookie),
-        )
-        .await,
-    )
-    .to_string();
-    let task_path = location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", "admin-token"),
-                ("title", "123 Maple St"),
-                ("description", ""),
-            ],
-            Some(&admin_cookie),
-        )
-        .await,
-    )
-    .to_string();
+    let (app, task_path, stranger_cookie) = support::setup_task_as_admin().await;
 
-    let stranger_cookie = app.login_cookie_header("stranger", "stranger-token");
     let response = app
         .post_form(
             &format!("{task_path}/archive"),
@@ -365,8 +324,15 @@ async fn defining_a_field_setting_it_and_seeing_it_on_the_card_needs_no_sql_seed
     let project_path = create_project(&app, &area_path, "House shopping").await;
     let task_path = create_task(&app, &project_path, "123 Maple St").await;
 
-    // Define a Currency field through the UI (no SQL, no direct app-layer
-    // call), with show_on_card checked.
+    define_currency_field_shown_on_card(&app, &project_path).await;
+    set_currency_value_on_task(&app, &task_path).await;
+    raise_and_assert_value_shows_on_card(&app, &task_path, "123 Maple St").await;
+}
+
+/// Defines a Currency field through the UI (no SQL, no direct app-layer
+/// call), with `show_on_card` checked, and confirms it renders on the
+/// project page.
+async fn define_currency_field_shown_on_card(app: &TestApp, project_path: &str) {
     let define = app
         .post_form(
             &format!("{project_path}/fields"),
@@ -382,14 +348,18 @@ async fn defining_a_field_setting_it_and_seeing_it_on_the_card_needs_no_sql_seed
     assert_eq!(define.status(), StatusCode::SEE_OTHER);
     assert_eq!(location_of(&define), project_path);
 
-    let project_body = body_text(app.get(&project_path, None).await).await;
+    let project_body = body_text(app.get(project_path, None).await).await;
     assert!(project_body.contains("Price"));
     assert!(project_body.contains("currency"));
     assert!(project_body.contains("shown on card"));
+}
 
-    // Find the field's id from the task page's rendered field form
-    // (`action="/tasks/{id}/fields/{field_id}"`).
-    let task_body = body_text(app.get(&task_path, None).await).await;
+/// Scrapes the field's id from the task page's rendered field form
+/// (`action="/tasks/{id}/fields/{field_id}"`) and sets a value on it --
+/// proof the field is reachable without seeding it through SQL or the app
+/// layer directly.
+async fn set_currency_value_on_task(app: &TestApp, task_path: &str) {
+    let task_body = body_text(app.get(task_path, None).await).await;
     let fields_marker = "/fields/";
     let start = task_body
         .find(fields_marker)
@@ -401,7 +371,6 @@ async fn defining_a_field_setting_it_and_seeing_it_on_the_card_needs_no_sql_seed
         "could not find the field id: {task_body}"
     );
 
-    // Set a value on it.
     let set_value = app
         .post_form(
             &format!("{task_path}/fields/{field_id}"),
@@ -414,12 +383,15 @@ async fn defining_a_field_setting_it_and_seeing_it_on_the_card_needs_no_sql_seed
         )
         .await;
     assert_eq!(set_value.status(), StatusCode::SEE_OTHER);
+}
 
-    // Raise the task onto the board and confirm the value shows on its card.
-    // The entry column is the board's first (lowest-position) column —
-    // always To-Do per `crate::bootstrap` — read directly via `BoardQuery`
-    // rather than scraping the board page (that column has no cards in it
-    // yet, so its reposition-form picker is not even rendered).
+/// Raises the task onto the board's entry column and confirms the
+/// show_on_card field's value renders on its card. The entry column is the
+/// board's first (lowest-position) column -- always To-Do per
+/// `crate::bootstrap` -- read directly via `BoardQuery` rather than
+/// scraping the board page (that column has no cards in it yet, so its
+/// reposition-form picker is not even rendered).
+async fn raise_and_assert_value_shows_on_card(app: &TestApp, task_path: &str, title: &str) {
     let columns = app.store.columns_with_items().await.unwrap();
     let column_id = columns
         .first()
@@ -442,7 +414,7 @@ async fn defining_a_field_setting_it_and_seeing_it_on_the_card_needs_no_sql_seed
 
     let board_body = body_text(app.get("/board", None).await).await;
     assert!(
-        board_body.contains("123 Maple St"),
+        board_body.contains(title),
         "the task must appear on the board: {board_body}"
     );
     assert!(

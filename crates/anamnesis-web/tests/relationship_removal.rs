@@ -199,125 +199,24 @@ async fn linked_pair_authed(
     linked_pair_as(app, csrf_token, Some(cookie)).await
 }
 
-/// The full untangle loop, end to end: two tasks block each other, a tangle
-/// is detected and accepted onto the board, the blocking relationship is
-/// removed *through the HTTP route this change adds*, and the tangle then
-/// resolves and lands in the Done column. This is the whole point of the
-/// change -- previously there was no way to close this loop at all.
-#[tokio::test]
-async fn removing_a_blocking_edge_through_the_route_resolves_the_tangle_into_done() {
-    let app = TestApp::new(true).await;
-    let cookie: Option<&str> = None;
-
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Home"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Kitchen remodel"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    app.post_form(
-        &format!("{project_path}/status"),
-        &[
-            ("csrf_token", support::DEV_CSRF_TOKEN),
-            ("status", "active"),
-        ],
-        cookie,
-    )
-    .await;
-
-    let task_a_path = location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Design the layout"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let task_b_path = location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("title", "Order the tile"),
-                ("description", ""),
-            ],
-            cookie,
-        )
-        .await,
-    )
-    .to_string();
-    let task_a_id = task_a_path.trim_start_matches("/tasks/").to_string();
-    let task_b_id = task_b_path.trim_start_matches("/tasks/").to_string();
-
-    // A blocks B, and B blocks A: a knotted pair.
-    let block_ab = app
-        .post_form(
-            &format!("{task_a_path}/relationships"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("to_task_id", &task_b_id),
-                ("kind", "blocks"),
-            ],
-            cookie,
-        )
-        .await;
-    assert_eq!(block_ab.status(), StatusCode::SEE_OTHER);
-    let block_ba = app
-        .post_form(
-            &format!("{task_b_path}/relationships"),
-            &[
-                ("csrf_token", support::DEV_CSRF_TOKEN),
-                ("to_task_id", &task_a_id),
-                ("kind", "blocks"),
-            ],
-            cookie,
-        )
-        .await;
-    assert_eq!(block_ba.status(), StatusCode::SEE_OTHER);
-
-    // Viewing the board runs detection and offers the tangle.
+/// Views the board (running tangle detection), asserts the knot is offered
+/// from the suggestion prompt, accepts it, and returns the now-placed,
+/// frozen tangle.
+async fn detect_and_accept_tangle(app: &TestApp, cookie: Option<&str>) -> anamnesis_core::Tangle {
     let board_body = body_text(app.get("/board", cookie).await).await;
     assert!(
         board_body.contains("knotted together"),
         "the board must offer the tangle from the suggestion prompt: {board_body}"
     );
 
-    let tangle = {
-        let active = app.store.list_active().await.unwrap();
-        assert_eq!(
-            active.len(),
-            1,
-            "exactly one tangle must have been detected"
-        );
-        active[0].clone()
-    };
+    let active = app.store.list_active().await.unwrap();
+    assert_eq!(
+        active.len(),
+        1,
+        "exactly one tangle must have been detected"
+    );
+    let tangle = active[0].clone();
 
-    // Accept the offer onto the board.
     let accept = app
         .post_form(
             "/board/suggestion/accept-tangle",
@@ -336,15 +235,22 @@ async fn removing_a_blocking_edge_through_the_route_resolves_the_tangle_into_don
         .expect("the tangle must still exist after being placed");
     assert!(placed.placement.is_on_board(), "accepting must place it");
     assert!(placed.frozen, "placing must freeze its membership");
+    placed
+}
 
-    // Untangle it: remove the A-blocks-B edge *through the HTTP route this
-    // change adds* -- the one edge that, with its mirror still standing,
-    // leaves no cycle in the live blocking graph.
-    let a_task_id = anamnesis_core::TaskId::new(task_a_id.parse().unwrap());
-    let a_relationships = app.store.list_for_task(a_task_id).await.unwrap();
+/// Removes the A-blocks-B edge -- with its mirror still standing, the one
+/// edge whose removal leaves no cycle in the live blocking graph -- through
+/// the HTTP delete route this change adds.
+async fn remove_blocking_edge(
+    app: &TestApp,
+    task_a_path: &str,
+    task_a_id: anamnesis_core::TaskId,
+    cookie: Option<&str>,
+) {
+    let a_relationships = app.store.list_for_task(task_a_id).await.unwrap();
     let blocking_edge = a_relationships
         .iter()
-        .find(|r| r.kind_id == anamnesis_core::builtin_blocks().id && r.from_task_id == a_task_id)
+        .find(|r| r.kind_id == anamnesis_core::builtin_blocks().id && r.from_task_id == task_a_id)
         .expect("the A-blocks-B edge must exist");
 
     let remove = app
@@ -355,12 +261,18 @@ async fn removing_a_blocking_edge_through_the_route_resolves_the_tangle_into_don
         )
         .await;
     assert_eq!(remove.status(), StatusCode::SEE_OTHER);
+}
 
-    // Viewing the board again must resolve the now-acyclic frozen tangle
-    // and move it into the Done column.
+/// Views the board again (running reconciliation) and asserts the
+/// now-acyclic frozen tangle resolved and landed in the Done column.
+async fn assert_tangle_resolved_into_done(
+    app: &TestApp,
+    tangle_id: anamnesis_core::TangleId,
+    cookie: Option<&str>,
+) {
     let after_body = body_text(app.get("/board", cookie).await).await;
 
-    let resolved = anamnesis_app::TangleRepository::load(app.store.as_ref(), tangle.id)
+    let resolved = anamnesis_app::TangleRepository::load(app.store.as_ref(), tangle_id)
         .await
         .unwrap()
         .expect("the tangle row still exists once resolved");
@@ -385,4 +297,36 @@ async fn removing_a_blocking_edge_through_the_route_resolves_the_tangle_into_don
             panic!("a resolved, previously-placed tangle must stay on the board")
         }
     }
+}
+
+/// The full untangle loop, end to end: two tasks block each other, a tangle
+/// is detected and accepted onto the board, the blocking relationship is
+/// removed *through the HTTP route this change adds*, and the tangle then
+/// resolves and lands in the Done column. This is the whole point of the
+/// change -- previously there was no way to close this loop at all.
+#[tokio::test]
+async fn removing_a_blocking_edge_through_the_route_resolves_the_tangle_into_done() {
+    let app = TestApp::new(true).await;
+    let cookie: Option<&str> = None;
+
+    let (_, project_path) =
+        support::new_active_project(&app, "Home", "Kitchen remodel", cookie).await;
+    let task_a_path = support::new_task(&app, &project_path, "Design the layout", cookie).await;
+    let task_b_path = support::new_task(&app, &project_path, "Order the tile", cookie).await;
+    support::knot_together(
+        &app,
+        &task_a_path,
+        &task_b_path,
+        support::DEV_CSRF_TOKEN,
+        cookie,
+    )
+    .await;
+
+    let tangle = detect_and_accept_tangle(&app, cookie).await;
+
+    let task_a_id =
+        anamnesis_core::TaskId::new(task_a_path.trim_start_matches("/tasks/").parse().unwrap());
+    remove_blocking_edge(&app, &task_a_path, task_a_id, cookie).await;
+
+    assert_tangle_resolved_into_done(&app, tangle.id, cookie).await;
 }

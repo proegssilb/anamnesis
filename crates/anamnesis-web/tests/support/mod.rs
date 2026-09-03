@@ -462,6 +462,47 @@ pub async fn setup_task_as_admin() -> (TestApp, String, String) {
     (app, task_path, stranger_cookie)
 }
 
+/// Makes `task_a` block `task_b` and `task_b` block `task_a` through the
+/// HTTP relationships route -- a knot, the shape `anamnesis_core::reconcile`
+/// detects and offers as a tangle. Shared by every test that needs a
+/// knotted pair to place and/or untangle (`tangle_board.rs`,
+/// `relationship_removal.rs`), which used to build this setup verbatim.
+pub async fn knot_together(
+    app: &TestApp,
+    task_a_path: &str,
+    task_b_path: &str,
+    csrf: &str,
+    cookie: Option<&str>,
+) {
+    let task_b_id = task_b_path.trim_start_matches("/tasks/").to_string();
+    let task_a_id = task_a_path.trim_start_matches("/tasks/").to_string();
+
+    let block_ab = app
+        .post_form(
+            &format!("{task_a_path}/relationships"),
+            &[
+                ("csrf_token", csrf),
+                ("to_task_id", &task_b_id),
+                ("kind", "blocks"),
+            ],
+            cookie,
+        )
+        .await;
+    assert_eq!(block_ab.status(), StatusCode::SEE_OTHER);
+    let block_ba = app
+        .post_form(
+            &format!("{task_b_path}/relationships"),
+            &[
+                ("csrf_token", csrf),
+                ("to_task_id", &task_a_id),
+                ("kind", "blocks"),
+            ],
+            cookie,
+        )
+        .await;
+    assert_eq!(block_ba.status(), StatusCode::SEE_OTHER);
+}
+
 pub fn location_of(response: &Response<Body>) -> &str {
     response
         .headers()

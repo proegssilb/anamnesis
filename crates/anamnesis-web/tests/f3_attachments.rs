@@ -182,49 +182,8 @@ async fn upload_without_a_valid_csrf_token_is_rejected() {
 
 #[tokio::test]
 async fn upload_by_an_ungranted_user_is_forbidden() {
-    let app = TestApp::with_bootstrap_admin(false, "admin").await;
-    let admin_cookie = app.login_cookie_header("admin", "admin-token");
-    let area_path = location_of(
-        &app.post_form(
-            "/areas",
-            &[
-                ("csrf_token", "admin-token"),
-                ("title", "Home hunting"),
-                ("description", ""),
-            ],
-            Some(&admin_cookie),
-        )
-        .await,
-    )
-    .to_string();
-    let project_path = location_of(
-        &app.post_form(
-            &format!("{area_path}/projects"),
-            &[
-                ("csrf_token", "admin-token"),
-                ("title", "House shopping"),
-                ("description", ""),
-            ],
-            Some(&admin_cookie),
-        )
-        .await,
-    )
-    .to_string();
-    let task_path = location_of(
-        &app.post_form(
-            &format!("{project_path}/tasks"),
-            &[
-                ("csrf_token", "admin-token"),
-                ("title", "123 Maple St"),
-                ("description", ""),
-            ],
-            Some(&admin_cookie),
-        )
-        .await,
-    )
-    .to_string();
+    let (app, task_path, stranger_cookie) = support::setup_task_as_admin().await;
 
-    let stranger_cookie = app.login_cookie_header("stranger", "stranger-token");
     let upload = app
         .post_multipart(
             &format!("{task_path}/attachments/file"),
