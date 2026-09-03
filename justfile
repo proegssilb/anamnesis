@@ -73,14 +73,15 @@ clippy:
 
 # Complexity/parameter-count/length check via Lizard, run standalone since
 # Codacy's own CLI/MCP can't analyze Rust in this environment (see
-# CLAUDE.md). Uses Lizard's own default thresholds (CCN 15, length 1000)
-# since this repo has no checked-in .codacy.yml telling us what Codacy's
-# cloud scan is actually configured to use — treat a pass here as a local
-# proxy, not proof Codacy's PR scan agrees, and a fail as a prompt to look
+# CLAUDE.md). Codacy's function-length limit is 50 *NLOC* — learned from
+# PR #17's own annotations, which named two functions at exactly the 55 and
+# 89 this invocation reports. `-T nloc=50` is the knob that matches it;
+# `-L 50` is not (it thresholds raw length, counting blank and comment
+# lines, and over-flags by about a fifth). A fail here is a prompt to look
 # at the actual function, not to restructure around this tool's counting
 # behavior.
 lizard:
-    python3 -m lizard -l rust crates -w
+    python3 -m lizard -l rust crates -T nloc=50 -w
 
 # The two static-analysis proxies for what Codacy checks on a PR.
 quality: clippy lizard
