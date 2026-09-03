@@ -325,6 +325,87 @@ pub async fn transition_project_status_handler(
     }
 }
 
+/// The outcome of attempting a project's status transition, independent of
+/// how it will end up being rendered — that's `respond_to_transition`'s job.
+enum TransitionOutcome {
+    Ok,
+    ActiveProjectLimitExceeded,
+    Rule(String),
+}
+
+/// Attempts the transition itself and classifies the result. A rule
+/// violation or a hit against the active-project limit is business-as-usual
+/// here (the caller decides how to show it); anything else is a genuine
+/// [`WebError`].
+async fn apply_status_transition(
+    state: &AppState,
+    role: Option<Role>,
+    project_id: ProjectId,
+    new_status: ProjectStatus,
+    active_project_limit: u32,
+) -> Result<TransitionOutcome, WebError> {
+    match transition_project_status(
+        state.projects.as_ref(),
+        state.clock.as_ref(),
+        role,
+        project_id,
+        new_status,
+        active_project_limit,
+    )
+    .await
+    {
+        Ok(_) => Ok(TransitionOutcome::Ok),
+        Err(AppError::ActiveProjectLimitExceeded) => {
+            Ok(TransitionOutcome::ActiveProjectLimitExceeded)
+        }
+        Err(AppError::Rule(e)) => Ok(TransitionOutcome::Rule(e.to_string())),
+        Err(err) => Err(WebError::from(err)),
+    }
+}
+
+/// Turns a [`TransitionOutcome`] into a response, in whichever of the two
+/// shapes this request wants:
+///
+/// - An htmx drag always gets the re-rendered lanes back, success or not —
+///   there is no per-card spot to surface an error mid-drag, exactly like
+///   `crate::handlers::projects::raise_project_task_impl`'s
+///   `WipLimitExceeded` branch on the same shape of problem. On failure the
+///   lanes just reflect the true (unchanged) DB state.
+/// - A plain form post gets a redirect on success, or the whole area page
+///   reloaded with the error on failure.
+async fn respond_to_transition(
+    state: &AppState,
+    user: &CurrentUser,
+    headers: &HeaderMap,
+    role: Option<Role>,
+    area_id: AreaId,
+    can_manage: bool,
+    outcome: TransitionOutcome,
+) -> Result<Response, WebError> {
+    if is_hx_request(headers) {
+        return render_area_lanes_fragment(state, area_id, can_manage, &user.csrf_token).await;
+    }
+    let message = match outcome {
+        TransitionOutcome::Ok => {
+            return Ok(Redirect::to(&format!("/areas/{area_id}")).into_response());
+        }
+        TransitionOutcome::ActiveProjectLimitExceeded => {
+            "The active project limit has been reached.".to_string()
+        }
+        TransitionOutcome::Rule(message) => message,
+    };
+    render_area_page_reloaded(
+        state,
+        user,
+        role,
+        area_id,
+        can_manage,
+        Some(&message),
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await
+}
+
 async fn transition_project_status_impl(
     state: &AppState,
     user: &CurrentUser,
@@ -351,49 +432,9 @@ async fn transition_project_status_impl(
     // enforced on the very next request.
     let active_project_limit = state.settings.load().await?.active_project_limit;
 
-    // Silently reverts on the hx path -- there is no per-card spot to
-    // surface an error during a drag, exactly like
-    // `crate::handlers::projects::raise_project_task_impl`'s
-    // `WipLimitExceeded` branch on the same shape of problem. The
-    // re-rendered lanes reflect the true (unchanged) DB state.
-    let message = match transition_project_status(
-        state.projects.as_ref(),
-        state.clock.as_ref(),
-        role,
-        project_id,
-        new_status,
-        active_project_limit,
-    )
-    .await
-    {
-        Ok(_) => None,
-        Err(AppError::ActiveProjectLimitExceeded) | Err(AppError::Rule(_))
-            if is_hx_request(headers) =>
-        {
-            return render_area_lanes_fragment(state, area_id, can_manage, &user.csrf_token).await;
-        }
-        Err(AppError::ActiveProjectLimitExceeded) => {
-            Some("The active project limit has been reached.".to_string())
-        }
-        Err(AppError::Rule(e)) => Some(e.to_string()),
-        Err(err) => return Err(WebError::from(err)),
-    };
-    if let Some(message) = message {
-        return render_area_page_reloaded(
-            state,
-            user,
-            role,
-            area_id,
-            can_manage,
-            Some(&message),
-            StatusCode::UNPROCESSABLE_ENTITY,
-        )
-        .await;
-    }
-    if is_hx_request(headers) {
-        return render_area_lanes_fragment(state, area_id, can_manage, &user.csrf_token).await;
-    }
-    Ok(Redirect::to(&format!("/areas/{area_id}")).into_response())
+    let outcome =
+        apply_status_transition(state, role, project_id, new_status, active_project_limit).await?;
+    respond_to_transition(state, user, headers, role, area_id, can_manage, outcome).await
 }
 
 fn parse_status(raw: &str) -> Result<ProjectStatus, WebError> {

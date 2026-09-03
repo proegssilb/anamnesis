@@ -43,45 +43,52 @@ impl From<RepoError> for WebError {
     }
 }
 
+/// Maps a domain [`AppError`] (from `anamnesis-app`, shared by every
+/// non-web caller too) to the HTTP status and user-facing message it
+/// becomes here. Split out of [`WebError::status_and_message`] because this
+/// half is really a different job wearing a `WebError` costume: it is pure
+/// `AppError` → HTTP translation, with no knowledge of the web layer's own
+/// failure modes (CSRF, login, bad requests, template rendering) that the
+/// rest of that match handles.
+fn app_status_and_message(err: &AppError) -> (StatusCode, String) {
+    match err {
+        AppError::NotFound => (StatusCode::NOT_FOUND, "That was not found.".to_string()),
+        AppError::Forbidden => (
+            StatusCode::FORBIDDEN,
+            "You do not have access to do that.".to_string(),
+        ),
+        AppError::Rule(e) => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
+        AppError::Invalid(message) => (StatusCode::UNPROCESSABLE_ENTITY, message.clone()),
+        AppError::Conflict => (
+            StatusCode::CONFLICT,
+            "That was changed by someone else in the meantime — reload and try again.".to_string(),
+        ),
+        AppError::ActiveProjectLimitExceeded => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "The active project limit has been reached.".to_string(),
+        ),
+        AppError::WipLimitExceeded => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "That column is already at its work-in-progress limit.".to_string(),
+        ),
+        AppError::LastSystemAdmin => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "That is the last System Admin — grant someone else System Admin first.".to_string(),
+        ),
+        AppError::Repo(e) => {
+            tracing::error!(error = %e, "repository error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Something went wrong on our end.".to_string(),
+            )
+        }
+    }
+}
+
 impl WebError {
     fn status_and_message(&self) -> (StatusCode, String) {
         match self {
-            WebError::App(AppError::NotFound) => {
-                (StatusCode::NOT_FOUND, "That was not found.".to_string())
-            }
-            WebError::App(AppError::Forbidden) => (
-                StatusCode::FORBIDDEN,
-                "You do not have access to do that.".to_string(),
-            ),
-            WebError::App(AppError::Rule(e)) => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
-            WebError::App(AppError::Invalid(message)) => {
-                (StatusCode::UNPROCESSABLE_ENTITY, message.clone())
-            }
-            WebError::App(AppError::Conflict) => (
-                StatusCode::CONFLICT,
-                "That was changed by someone else in the meantime — reload and try again."
-                    .to_string(),
-            ),
-            WebError::App(AppError::ActiveProjectLimitExceeded) => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "The active project limit has been reached.".to_string(),
-            ),
-            WebError::App(AppError::WipLimitExceeded) => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "That column is already at its work-in-progress limit.".to_string(),
-            ),
-            WebError::App(AppError::LastSystemAdmin) => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "That is the last System Admin — grant someone else System Admin first."
-                    .to_string(),
-            ),
-            WebError::App(AppError::Repo(e)) => {
-                tracing::error!(error = %e, "repository error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Something went wrong on our end.".to_string(),
-                )
-            }
+            WebError::App(err) => app_status_and_message(err),
             WebError::CsrfMismatch => (
                 StatusCode::FORBIDDEN,
                 "That form's security token was missing or stale. Please try again.".to_string(),

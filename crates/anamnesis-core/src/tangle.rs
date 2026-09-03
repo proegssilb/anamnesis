@@ -347,18 +347,7 @@ pub fn detect_tangles(
 /// the frame and folding the child's `lowlink` into the parent's, exactly as
 /// the recursive version would on unwind.
 fn tarjan_sccs(adjacency: &HashMap<TaskId, Vec<TaskId>>) -> Vec<Vec<TaskId>> {
-    struct NodeState {
-        index: u32,
-        lowlink: u32,
-        on_stack: bool,
-    }
-
-    let mut next_index: u32 = 0;
-    let mut state: HashMap<TaskId, NodeState> = HashMap::new();
-    // Tarjan's "S": the set of nodes visited but not yet assigned to a
-    // finished SCC, in discovery-adjacent order.
-    let mut on_stack_order: Vec<TaskId> = Vec::new();
-    let mut sccs: Vec<Vec<TaskId>> = Vec::new();
+    let mut tarjan = Tarjan::default();
     let empty: Vec<TaskId> = Vec::new();
 
     // Deterministic root order: `adjacency`'s `HashMap` iteration order is
@@ -369,81 +358,129 @@ fn tarjan_sccs(adjacency: &HashMap<TaskId, Vec<TaskId>>) -> Vec<Vec<TaskId>> {
     roots.sort();
 
     for root in roots {
-        if state.contains_key(&root) {
+        if tarjan.is_visited(root) {
             continue;
         }
+        tarjan.discover(root);
 
         // The simulated call stack: (node, index into its neighbour list of
         // the next neighbour still to examine).
         let mut work: Vec<(TaskId, usize)> = vec![(root, 0)];
-        state.insert(
-            root,
-            NodeState {
-                index: next_index,
-                lowlink: next_index,
-                on_stack: true,
-            },
-        );
-        next_index += 1;
-        on_stack_order.push(root);
-
         while let Some(&(v, cursor)) = work.last() {
-            let neighbours = adjacency.get(&v).unwrap_or(&empty);
-            if cursor < neighbours.len() {
-                work.last_mut().expect("just peeked").1 += 1;
-                let w = neighbours[cursor];
-                if let Some(w_state) = state.get(&w) {
-                    if w_state.on_stack {
-                        let w_index = w_state.index;
-                        let v_state = state.get_mut(&v).expect("v is in state");
-                        v_state.lowlink = v_state.lowlink.min(w_index);
+            match adjacency.get(&v).unwrap_or(&empty).get(cursor) {
+                Some(&w) => {
+                    work.last_mut().expect("just peeked").1 += 1;
+                    if tarjan.visit_edge(v, w) {
+                        work.push((w, 0));
                     }
-                    // else: w is finished and in an earlier SCC already —
-                    // a cross edge, contributes nothing to v's lowlink.
-                } else {
-                    // Unvisited: descend into it (the recursive call).
-                    state.insert(
-                        w,
-                        NodeState {
-                            index: next_index,
-                            lowlink: next_index,
-                            on_stack: true,
-                        },
-                    );
-                    next_index += 1;
-                    on_stack_order.push(w);
-                    work.push((w, 0));
                 }
-            } else {
-                // All of v's neighbours examined: v's subtree is finished.
-                work.pop();
-                let v_index = state[&v].index;
-                let v_lowlink = state[&v].lowlink;
-                if v_lowlink == v_index {
-                    let mut scc = Vec::new();
-                    while let Some(last) = on_stack_order.pop() {
-                        state
-                            .get_mut(&last)
-                            .expect("on stack implies in state")
-                            .on_stack = false;
-                        scc.push(last);
-                        if last == v {
-                            break;
-                        }
-                    }
-                    sccs.push(scc);
-                }
-                // Fold v's lowlink into its parent's, as the recursive
-                // version would on returning from the call.
-                if let Some(&(parent, _)) = work.last() {
-                    let parent_state = state.get_mut(&parent).expect("parent is in state");
-                    parent_state.lowlink = parent_state.lowlink.min(v_lowlink);
+                // All of v's neighbours examined: v's subtree is finished,
+                // so "return" from the simulated call.
+                None => {
+                    work.pop();
+                    tarjan.finish(v, work.last().map(|&(parent, _)| parent));
                 }
             }
         }
     }
 
-    sccs
+    tarjan.sccs
+}
+
+struct NodeState {
+    index: u32,
+    lowlink: u32,
+    on_stack: bool,
+}
+
+/// Tarjan's own traversal state, named as the algorithm names it: the
+/// discovery-index counter, the per-node bookkeeping, "S" (nodes visited but
+/// not yet assigned to a finished SCC), and the finished components.
+///
+/// These live together because the algorithm's steps — descending into a
+/// node, folding a back edge, unwinding out of a node — each touch several of
+/// them at once. Giving those steps names is what makes the iterative
+/// reformulation readable: in one flat loop body they are interleaved and
+/// only a comment distinguishes "this is the recursive call" from "this is
+/// the return from it".
+#[derive(Default)]
+struct Tarjan {
+    next_index: u32,
+    state: HashMap<TaskId, NodeState>,
+    on_stack_order: Vec<TaskId>,
+    sccs: Vec<Vec<TaskId>>,
+}
+
+impl Tarjan {
+    fn is_visited(&self, node: TaskId) -> bool {
+        self.state.contains_key(&node)
+    }
+
+    /// Assigns `node` its discovery index and pushes it onto S — the
+    /// recursive version's function entry.
+    fn discover(&mut self, node: TaskId) {
+        self.state.insert(
+            node,
+            NodeState {
+                index: self.next_index,
+                lowlink: self.next_index,
+                on_stack: true,
+            },
+        );
+        self.next_index += 1;
+        self.on_stack_order.push(node);
+    }
+
+    /// Examines the edge `v -> w`. Returns whether the caller should descend
+    /// into `w`, i.e. whether this edge is the recursive call.
+    fn visit_edge(&mut self, v: TaskId, w: TaskId) -> bool {
+        let Some(w_state) = self.state.get(&w) else {
+            self.discover(w);
+            return true;
+        };
+        // A back edge to a node still on the stack lowers v's lowlink; an
+        // edge to a finished node is a cross edge into an earlier SCC and
+        // contributes nothing.
+        if w_state.on_stack {
+            let w_index = w_state.index;
+            self.lower_lowlink(v, w_index);
+        }
+        false
+    }
+
+    /// Unwinds out of `v`: closes the SCC `v` roots, if it roots one, then
+    /// folds `v`'s lowlink into its parent's exactly as the recursive version
+    /// would on returning from the call.
+    fn finish(&mut self, v: TaskId, parent: Option<TaskId>) {
+        let NodeState { index, lowlink, .. } = self.state[&v];
+        if lowlink == index {
+            self.close_scc(v);
+        }
+        if let Some(parent) = parent {
+            self.lower_lowlink(parent, lowlink);
+        }
+    }
+
+    fn lower_lowlink(&mut self, node: TaskId, candidate: u32) {
+        let state = self.state.get_mut(&node).expect("node is in state");
+        state.lowlink = state.lowlink.min(candidate);
+    }
+
+    /// Pops S down to and including `v`; everything popped is one SCC.
+    fn close_scc(&mut self, v: TaskId) {
+        let mut scc = Vec::new();
+        while let Some(last) = self.on_stack_order.pop() {
+            self.state
+                .get_mut(&last)
+                .expect("on stack implies in state")
+                .on_stack = false;
+            scc.push(last);
+            if last == v {
+                break;
+            }
+        }
+        self.sccs.push(scc);
+    }
 }
 
 /// The outcome of comparing freshly [`detect_tangles`]d tangles against

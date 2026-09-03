@@ -10,7 +10,7 @@ use axum_extra::extract::cookie::{Key, SignedCookieJar};
 use minijinja::context;
 use serde::Deserialize;
 
-use anamnesis_app::{IdentityError, LoginCallback};
+use anamnesis_app::{IdentityError, IdentityProvider, LoginCallback};
 
 use crate::auth::CurrentUser;
 use crate::error::WebError;
@@ -83,39 +83,73 @@ pub async fn callback_handler(
             .into_response_with(&state.templates);
     };
 
+    let (jar, callback) = match validate_callback_state(&state, jar, query) {
+        Ok(pair) => pair,
+        Err(response) => return *response,
+    };
+
+    exchange_and_establish_session(&state, jar, identity.as_ref(), callback).await
+}
+
+/// Checks that this callback actually continues a login this server started:
+/// a still-present, parseable pending-login cookie, and a `code`/`state`
+/// pair on the query string. Consumes the (single-use) pending-login cookie
+/// either way. Returns the state needed for the token exchange — nothing
+/// here has talked to the identity provider yet.
+fn validate_callback_state(
+    state: &AppState,
+    jar: SignedCookieJar<Key>,
+    query: CallbackQuery,
+) -> Result<(SignedCookieJar<Key>, LoginCallback), Box<Response>> {
     let Some(pending) = jar
         .get(PENDING_LOGIN_COOKIE_NAME)
         .and_then(|cookie| parse_pending_login(cookie.value()))
     else {
-        return WebError::LoginFailed(IdentityError::new(
-            "no pending login found — the login attempt may have expired or this callback was \
-             not reached from /login",
-        ))
-        .into_response_with(&state.templates);
+        return Err(Box::new(
+            WebError::LoginFailed(IdentityError::new(
+                "no pending login found — the login attempt may have expired or this callback \
+                 was not reached from /login",
+            ))
+            .into_response_with(&state.templates),
+        ));
     };
     // The pending-login cookie is single-use regardless of how this
     // callback resolves.
     let jar = jar.remove(removal_cookie(PENDING_LOGIN_COOKIE_NAME));
 
     let (Some(code), Some(returned_state)) = (query.code, query.state) else {
-        return (
-            jar,
-            WebError::BadRequest(
-                "the identity provider's callback was missing code or state".into(),
+        return Err(Box::new(
+            (
+                jar,
+                WebError::BadRequest(
+                    "the identity provider's callback was missing code or state".into(),
+                )
+                .into_response_with(&state.templates),
             )
-            .into_response_with(&state.templates),
-        )
-            .into_response();
+                .into_response(),
+        ));
     };
 
-    let callback = LoginCallback {
-        code,
-        state: returned_state,
-        expected_state: pending.csrf_state,
-        pkce_verifier: pending.pkce_verifier,
-        expected_nonce: pending.nonce,
-    };
+    Ok((
+        jar,
+        LoginCallback {
+            code,
+            state: returned_state,
+            expected_state: pending.csrf_state,
+            pkce_verifier: pending.pkce_verifier,
+            expected_nonce: pending.nonce,
+        },
+    ))
+}
 
+/// Redeems the authorization code with the identity provider and, on
+/// success, opens the session cookie a signed-in user carries from here on.
+async fn exchange_and_establish_session(
+    state: &AppState,
+    jar: SignedCookieJar<Key>,
+    identity: &dyn IdentityProvider,
+    callback: LoginCallback,
+) -> Response {
     match identity.complete_login(callback).await {
         Ok(user_id) => {
             let session = SessionData {
