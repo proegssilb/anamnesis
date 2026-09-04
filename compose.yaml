@@ -1,0 +1,62 @@
+# Anamnesis, SQLite-backed, behind Caddy for TLS.
+#
+# SQLite is the default here on purpose: a Compose deployment is one host and
+# one instance, which is exactly the shape SQLite is best at, and it removes a
+# whole service from the stack. Use compose.postgres.yaml when you want
+# Postgres:
+#
+#   podman-compose -f compose.yaml -f compose.postgres.yaml up
+#
+# Before the first start, copy deploy/compose.env.example to .env and fill it
+# in — the session secret and the OIDC client secret have no safe defaults.
+
+services:
+  anamnesis:
+    image: ghcr.io/proegssilb/anamnesis:latest
+    # Uncomment to build from this checkout instead of pulling a release:
+    # build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Three slashes. `sqlite://anamnesis.db` is *relative* to the working
+      # directory; `sqlite:///var/lib/...` is the absolute path meant here.
+      # This is the single easiest thing in this file to get wrong, and it
+      # fails as a confusing "unable to open database file" rather than as a
+      # path error.
+      #
+      # `mode=rwc` creates the database on first boot. Migrations run
+      # automatically at startup — there is no separate migration step.
+      ANAMNESIS_DATABASE_URL: sqlite:///var/lib/anamnesis/anamnesis.db?mode=rwc
+      ANAMNESIS_BIND_ADDR: 0.0.0.0:8080
+    volumes:
+      - anamnesis-data:/var/lib/anamnesis
+    # The blob root and the SQLite file both live on the volume above, so the
+    # image's own filesystem never needs to be written to.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Not published to the host: Caddy is the only thing that should reach it.
+    expose:
+      - "8080"
+
+  caddy:
+    image: docker.io/library/caddy:2
+    restart: unless-stopped
+    depends_on:
+      - anamnesis
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile.example:/etc/caddy/Caddyfile:ro,z
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  anamnesis-data:
+  caddy-data:
+  caddy-config:

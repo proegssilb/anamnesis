@@ -1,0 +1,80 @@
+# Anamnesis as a system service on a Linux VM or an unprivileged Proxmox LXC
+# container. Install:
+#
+#   useradd --system --home-dir /var/lib/anamnesis --shell /usr/sbin/nologin anamnesis
+#   install -m 0755 anamnesis-web /usr/local/bin/anamnesis-web
+#   install -d -m 0755 /etc/anamnesis
+#   install -m 0640 -o root -g anamnesis anamnesis.env /etc/anamnesis/anamnesis.env
+#   install -m 0644 anamnesis.service /etc/systemd/system/anamnesis.service
+#   systemctl daemon-reload && systemctl enable --now anamnesis
+#
+# Every hardening directive below works inside an unprivileged LXC container.
+
+[Unit]
+Description=Anamnesis
+Documentation=https://github.com/proegssilb/anamnesis/blob/main/docs/DEPLOYMENT.md
+After=network-online.target
+Wants=network-online.target
+# Uncomment when Postgres runs on this same host:
+# After=postgresql.service
+# Wants=postgresql.service
+
+[Service]
+Type=exec
+# A fixed system user rather than DynamicUser=yes: a dynamic uid changes
+# across reinstalls, which breaks both Postgres peer authentication and
+# ownership of the state directory that must outlive the package.
+User=anamnesis
+Group=anamnesis
+
+# Creates and chowns /var/lib/anamnesis for free, and keeps it across
+# restarts and upgrades. The SQLite database (if used) and the blob root both
+# live here; ANAMNESIS_BLOB_ROOT should point inside it.
+StateDirectory=anamnesis
+WorkingDirectory=/var/lib/anamnesis
+
+# Holds ANAMNESIS_SESSION_SECRET and ANAMNESIS_OIDC_CLIENT_SECRET, so it must
+# be 0640 root:anamnesis — readable by the service, by nobody else.
+EnvironmentFile=/etc/anamnesis/anamnesis.env
+
+ExecStart=/usr/local/bin/anamnesis-web
+
+# Anamnesis drains in-flight requests on SIGTERM and then exits, so stopping
+# is fast and lossless; TimeoutStopSec is a backstop, not the normal path. If
+# a stop regularly takes the full 30s, the signal is not being handled.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=2s
+
+# --- Hardening --------------------------------------------------------------
+# Binding a port above 1024 needs no capability at all, so the bounding set is
+# empty. Bind to 127.0.0.1:8080 (see anamnesis.env.example) and let a reverse
+# proxy hold 80/443.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

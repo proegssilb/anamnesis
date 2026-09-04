@@ -1,0 +1,124 @@
+#cloud-config
+#
+# First-boot installation of Anamnesis on a cloud-init VM (Proxmox, libvirt,
+# or any cloud image). It performs exactly the steps in
+# `docs/DEPLOYMENT.md` §8, in the same order.
+#
+# Proxmox:
+#   cp user-data.example.yaml /var/lib/vz/snippets/anamnesis-user-data.yaml
+#   # edit it (see CHANGEME below), then:
+#   qm set <vmid> --cicustom "user=local:snippets/anamnesis-user-data.yaml"
+#   qm start <vmid>
+#
+# BEFORE BOOTING, EDIT:
+#   - every CHANGEME in the write_files block below
+#   - ANAMNESIS_VERSION in runcmd, if you want a pinned release rather than
+#     whatever `latest` points at on the day the VM first boots
+#
+# This file ends up world-readable in most cloud-init datastores, and on
+# Proxmox it is a plain file in the snippets directory. It therefore does NOT
+# carry the two secrets: `runcmd` generates the session secret on the VM, and
+# the OIDC client secret is left as a CHANGEME you fill in over SSH before
+# the first successful start. See the note at the end.
+
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  # Only needed for the Postgres path below; harmless otherwise. Drop it if
+  # your database lives on another host.
+  - postgresql
+
+users:
+  - name: anamnesis
+    system: true
+    homedir: /var/lib/anamnesis
+    shell: /usr/sbin/nologin
+    lock_passwd: true
+
+write_files:
+  # The service unit, copied verbatim from deploy/systemd/anamnesis.service.
+  # Kept as a URL fetch in runcmd rather than inlined here so the two cannot
+  # drift apart -- see runcmd step 2.
+
+  - path: /etc/anamnesis/anamnesis.env
+    owner: root:anamnesis
+    permissions: "0640"
+    content: |
+      # Postgres (the default for a VM).
+      ANAMNESIS_DATABASE_URL=postgres://anamnesis:CHANGEME@localhost/anamnesis?sslmode=disable
+      # No Postgres? Comment the line above and uncomment this one:
+      # ANAMNESIS_DATABASE_URL=sqlite:///var/lib/anamnesis/anamnesis.db?mode=rwc
+
+      ANAMNESIS_BIND_ADDR=127.0.0.1:8080
+      ANAMNESIS_BASE_URL=https://anamnesis.CHANGEME.example.com
+      ANAMNESIS_BLOB_ROOT=/var/lib/anamnesis/blobs
+
+      ANAMNESIS_OIDC_ISSUER_URL=https://idp.CHANGEME.example.com/application/o/anamnesis/
+      ANAMNESIS_OIDC_CLIENT_ID=CHANGEME
+      ANAMNESIS_OIDC_CLIENT_SECRET=CHANGEME
+
+      # Identity provider behind a private CA? Point this at its PEM bundle.
+      # Anamnesis reads nothing from the system trust store, so
+      # update-ca-certificates alone has no effect on it.
+      # ANAMNESIS_TLS_CA_BUNDLE=/etc/anamnesis/ca.crt
+
+      # Written by runcmd on first boot. Rotating it logs out every user, so
+      # it is generated once here and then left alone.
+      ANAMNESIS_SESSION_SECRET=PLACEHOLDER
+
+      ANAMNESIS_TIMEZONE=America/New_York
+      ANAMNESIS_BOOTSTRAP_ADMIN=CHANGEME
+
+      # Whole-request ceiling, in bytes (40 MB). Any reverse proxy in front
+      # of Anamnesis must allow at least as much, or its limit becomes the
+      # real one.
+      # ANAMNESIS_MAX_BODY_BYTES=41943040
+
+      RUST_LOG=info
+
+runcmd:
+  # 1. The release binary. `latest/download/<asset>` always resolves to the
+  #    newest release and moves under you; to pin a tag, note that GitHub
+  #    swaps the path segments -- it is `download/v0.1.0/<asset>`, NOT
+  #    `v0.1.0/download/<asset>`:
+  #      ANAMNESIS_URL=".../releases/download/v0.1.0/anamnesis-web-x86_64-unknown-linux-gnu"
+  - ANAMNESIS_URL="https://github.com/proegssilb/anamnesis/releases/latest/download/anamnesis-web-x86_64-unknown-linux-gnu"
+  - ANAMNESIS_REF=main
+  - curl -fsSL -o /usr/local/bin/anamnesis-web "$ANAMNESIS_URL"
+  - chmod 0755 /usr/local/bin/anamnesis-web
+
+  # 2. The service unit. Set ANAMNESIS_REF to the same tag you pinned above,
+  #    so the unit always matches the binary it starts.
+  - curl -fsSL -o /etc/systemd/system/anamnesis.service
+      "https://raw.githubusercontent.com/proegssilb/anamnesis/${ANAMNESIS_REF}/deploy/systemd/anamnesis.service"
+  - chmod 0644 /etc/systemd/system/anamnesis.service
+
+  # 3. The session secret: generated on the VM, once, so it never sits in a
+  #    world-readable snippet file. `sed -i` on the placeholder keeps the
+  #    file's 0640 root:anamnesis mode.
+  - sed -i "s|^ANAMNESIS_SESSION_SECRET=.*|ANAMNESIS_SESSION_SECRET=$(openssl rand -base64 64 | tr -d '\n')|"
+      /etc/anamnesis/anamnesis.env
+
+  # 4. Postgres role and database, for the default connection string above.
+  #    Skip this block entirely on the SQLite path.
+  - su - postgres -c "psql -c \"CREATE ROLE anamnesis LOGIN PASSWORD 'CHANGEME'\"" || true
+  - su - postgres -c "createdb -O anamnesis anamnesis" || true
+
+  # 5. Start it. StateDirectory=anamnesis creates /var/lib/anamnesis with the
+  #    right ownership; migrations run at startup, before the socket binds.
+  - systemctl daemon-reload
+  - systemctl enable --now anamnesis
+
+# The VM comes up serving plain HTTP on 127.0.0.1:8080 and nothing else --
+# there is deliberately no TLS here. Put a reverse proxy in front of it whose
+# public URL matches ANAMNESIS_BASE_URL exactly and whose body limit is at
+# least ANAMNESIS_MAX_BODY_BYTES (docs/DEPLOYMENT.md §4).
+#
+# Until the CHANGEME values above are real, the service will fail to start and
+# say which variable is wrong -- that is the intended behaviour, not a broken
+# install. Fix them over SSH and `systemctl restart anamnesis`.
+#
+# ANAMNESIS_DEV_AUTH_BYPASS is deliberately absent. Setting it would log in
+# anything that can reach the port, as an administrator, with no identity
+# provider involved.

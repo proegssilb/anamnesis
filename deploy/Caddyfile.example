@@ -1,0 +1,40 @@
+# Caddy in front of Anamnesis. Replace anamnesis.example.com with your own
+# domain and Caddy will obtain and renew a certificate for it automatically.
+#
+# Whatever proxy you use, two things must hold:
+#
+#   * The URL clients reach must be exactly ANAMNESIS_BASE_URL. It is both the
+#     OIDC redirect URI Anamnesis registers with your identity provider and
+#     what decides whether the session cookie gets the `Secure` attribute
+#     (purely by `https://` prefix).
+#   * The proxy's own request body limit must be at least
+#     ANAMNESIS_MAX_BODY_BYTES. Otherwise the proxy's limit is the real one,
+#     and an over-large upload fails with the proxy's error page rather than
+#     the app's message.
+#
+#   * Do not rewrite paths. Anamnesis serves from the root and builds absolute
+#     paths in its own markup.
+
+anamnesis.example.com {
+	# Must be >= ANAMNESIS_MAX_BODY_BYTES (default 41943040 = 40 MiB).
+	# These two numbers move together.
+	#
+	# `MiB`, not `MB`: Caddy reads `MB` as decimal, so `40MB` is 40,000,000 --
+	# 1.9 MB *below* the app's ceiling, which would make Caddy the real limit
+	# and produce its error page instead of the app's message. `40MiB` adapts
+	# to exactly 41943040.
+	request_body {
+		max_size 40MiB
+	}
+
+	reverse_proxy anamnesis:8080
+
+	encode gzip
+
+	# Caddy already sets Strict-Transport-Security on HTTPS sites; these are
+	# the ones it does not set for you.
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+	}
+}

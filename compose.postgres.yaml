@@ -1,0 +1,44 @@
+# Postgres override. Layer it over compose.yaml:
+#
+#   podman-compose -f compose.yaml -f compose.postgres.yaml up
+#
+# Switching an existing SQLite deployment to Postgres is not a migration —
+# Anamnesis will create an empty schema in the new database. Move your data
+# first if you have any.
+
+services:
+  anamnesis:
+    environment:
+      # Overrides compose.yaml's SQLite URL. The volume stays mounted: file
+      # attachment bytes live on disk under ANAMNESIS_BLOB_ROOT regardless of
+      # which database backs the metadata, so it must be backed up alongside
+      # the database either way.
+      ANAMNESIS_DATABASE_URL: postgres://anamnesis:anamnesis@postgres:5432/anamnesis
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Same major version as CI's contract-test container, so the behaviour the
+  # test suite pins is the behaviour you get.
+  postgres:
+    image: docker.io/library/postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: anamnesis
+      POSTGRES_PASSWORD: anamnesis
+      POSTGRES_DB: anamnesis
+    volumes:
+      # `/var/lib/postgresql`, NOT the pre-18 `/var/lib/postgresql/data`.
+      # The 18+ images store data in a major-version-specific subdirectory so
+      # `pg_upgrade --link` can work across a single mount point; given a
+      # volume at the old path they refuse to start outright, reporting it as
+      # an "unused mount/volume".
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anamnesis -d anamnesis"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:

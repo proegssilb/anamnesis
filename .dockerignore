@@ -1,0 +1,16 @@
+# `target/` is by far the largest thing in this repo; without it the build
+# context alone is gigabytes, and none of it is usable inside the image.
+target/
+debug/
+**/mutants.out*/
+
+.git/
+.github/
+
+# Real secrets and local databases must never enter a build context — a build
+# context is copied into layers that get published.
+.env
+.env.local
+*.db
+
+.claude/

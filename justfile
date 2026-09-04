@@ -89,3 +89,24 @@ quality: clippy lizard
 # Everything CI's `check` job runs, plus the Codacy proxies (stricter than
 # CI, which doesn't run Lizard yet).
 check: fmt-check quality test
+
+# Build the container image locally. `--format docker` is required: Podman
+# defaults to the OCI image format, whose spec has no healthcheck field, so
+# an OCI build silently DROPS the Dockerfile's HEALTHCHECK (it warns, then
+# carries on). Swap `podman` for `docker` if that's what you have — Docker
+# keeps the healthcheck either way, and ignores the flag's absence.
+image tag="anamnesis:dev":
+    podman build --format docker -t {{tag}} .
+
+# Bring up the Compose stack (SQLite + Caddy). Needs deploy/compose.env.example
+# copied to .env and filled in first — see docs/DEPLOYMENT.md.
+compose-up:
+    podman-compose up -d
+
+# The same stack backed by Postgres instead of SQLite. Note this is a
+# different database, not a migration of the SQLite one.
+compose-up-postgres:
+    podman-compose -f compose.yaml -f compose.postgres.yaml up -d
+
+compose-down:
+    podman-compose down
