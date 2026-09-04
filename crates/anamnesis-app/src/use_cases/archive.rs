@@ -11,7 +11,9 @@ use anamnesis_core::{self as core, TangleId, TaskId};
 
 use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
-use crate::ports::{BoardItem, BoardQuery, Clock, SearchIndex, TangleRepository, TaskRepository};
+use crate::ports::{
+    BoardItem, BoardQuery, Clock, SearchIndex, TangleRepository, TaskRepository, TaskUpdateError,
+};
 
 use super::indexing::log_index_failure;
 
@@ -67,12 +69,14 @@ pub async fn archive_done_tasks(
         archived_task_ids: archive_swept_tasks(
             task_repo,
             search,
+            &columns,
             core::sweep_done(&tasks, &columns, now),
             now,
         )
         .await?,
         archived_tangle_ids: archive_swept_tangles(
             tangle_repo,
+            &columns,
             core::sweep_done_tangles(&tangles, &columns, now),
             now,
         )
@@ -107,39 +111,102 @@ fn board_tangles(board_columns: &[crate::ports::BoardColumn]) -> Vec<core::Tangl
         .collect()
 }
 
+/// How many times [`archive_one_task`] will re-read a task that someone else
+/// wrote to underneath it before leaving it for the next pass.
+///
+/// Two, because the second read is the one that answers the question the
+/// first `Conflict` raised — "is this still a task the sweep should archive?"
+/// — and a *third* attempt would be answering it against a board that is
+/// evidently being edited right now. Losing twice in a row is not a transient
+/// hiccup to grind through; it means someone is actively working on that task,
+/// and archiving it out from under them is the wrong outcome even when the
+/// write would succeed.
+const ARCHIVE_ATTEMPTS: usize = 2;
+
 /// Archives each swept task and drops it from the search index, returning
-/// the ids actually archived. A task that vanished between the board query
-/// and now is skipped rather than failing the pass; an index write that
-/// fails is logged and skipped for the same reason (see this module's
-/// `archive_done_tasks` doc comment).
+/// the ids actually archived. One task's outcome never decides another's: a
+/// task that vanished, that no longer qualifies, or that is being edited
+/// right now is skipped and the pass continues (see [`archive_one_task`]),
+/// and an index write that fails is logged and skipped for the same reason
+/// (see this module's `archive_done_tasks` doc comment).
 async fn archive_swept_tasks(
     task_repo: &dyn TaskRepository,
     search: &dyn SearchIndex,
+    columns: &[core::Column],
     to_archive: Vec<TaskId>,
     now: anamnesis_core::Timestamp,
 ) -> Result<Vec<TaskId>, AppError> {
     let mut archived = Vec::with_capacity(to_archive.len());
     for task_id in to_archive {
-        let Some(aggregate) = task_repo.load(task_id).await? else {
-            continue; // vanished between the query and now; nothing to do.
-        };
-        let done = core::archive_task(&aggregate.task, now)?;
-        task_repo
-            .update(&done, aggregate.task.last_touched_at)
-            .await?;
-        if let Err(err) = search.remove_task(task_id).await {
-            log_index_failure("archive_done_tasks", err);
+        if archive_one_task(task_repo, columns, task_id, now).await? {
+            if let Err(err) = search.remove_task(task_id).await {
+                log_index_failure("archive_done_tasks", err);
+            }
+            archived.push(task_id);
         }
-        archived.push(task_id);
     }
     Ok(archived)
+}
+
+/// Archives one swept task, reporting whether it actually did.
+///
+/// The id arrived from `core::sweep_done` run over a *board snapshot*, and
+/// between that snapshot and this write anyone — another instance's sweep,
+/// another user's "Archive all", a user simply dragging the card back to
+/// Doing — may have moved or archived it. So the freshly loaded row is put
+/// back through the very same domain rule before it is written: if
+/// `sweep_done` no longer selects it, it is not ours to archive, and saying
+/// so with the rule itself rather than a hand-written `archived_at.is_some()`
+/// check is what keeps the two from drifting apart. That subsumes the
+/// already-archived case, which is why nothing here matches on
+/// `DomainError::AlreadyArchived`: a task another writer archived first is
+/// simply one `sweep_done` no longer returns.
+///
+/// A [`TaskUpdateError::Conflict`] means the write was rejected *and nothing
+/// was written*, so the honest response is neither to retry blindly nor to
+/// give up: it is to re-read and ask again, which is exactly what looping
+/// here does. See [`ARCHIVE_ATTEMPTS`] for why that loop is short.
+async fn archive_one_task(
+    task_repo: &dyn TaskRepository,
+    columns: &[core::Column],
+    task_id: TaskId,
+    now: anamnesis_core::Timestamp,
+) -> Result<bool, AppError> {
+    for _ in 0..ARCHIVE_ATTEMPTS {
+        let Some(aggregate) = task_repo.load(task_id).await? else {
+            return Ok(false); // vanished between the query and now.
+        };
+        if core::sweep_done(std::slice::from_ref(&aggregate.task), columns, now).is_empty() {
+            return Ok(false); // no longer a task the sweep should archive.
+        }
+        let done = core::archive_task(&aggregate.task, now)?;
+        match task_repo
+            .update(&done, aggregate.task.last_touched_at)
+            .await
+        {
+            Ok(()) => return Ok(true),
+            Err(TaskUpdateError::Conflict) => continue,
+            Err(TaskUpdateError::Repo(err)) => return Err(err.into()),
+        }
+    }
+    Ok(false)
 }
 
 /// Archives each swept tangle, returning the ids actually archived. Tangles
 /// are never search-indexed, so unlike [`archive_swept_tasks`] there is no
 /// index write to undo.
+///
+/// This re-checks the freshly loaded tangle against `sweep_done_tangles` for
+/// the same reason [`archive_one_task`] re-checks its task, and it subsumes
+/// both of `core::archive_tangle`'s rejections rather than just one: a tangle
+/// that has since been archived and a tangle that has since been unresolved
+/// are both tangles that rule no longer selects. What it has no counterpart
+/// of is the conflict retry — [`TangleRepository::update`] carries no
+/// optimistic-concurrency token to be rejected by, so a tangle's only lost
+/// race is one this re-check catches.
 async fn archive_swept_tangles(
     tangle_repo: &dyn TangleRepository,
+    columns: &[core::Column],
     to_archive: Vec<TangleId>,
     now: anamnesis_core::Timestamp,
 ) -> Result<Vec<TangleId>, AppError> {
@@ -148,6 +215,9 @@ async fn archive_swept_tangles(
         let Some(tangle) = tangle_repo.load(tangle_id).await? else {
             continue; // vanished between the query and now; nothing to do.
         };
+        if core::sweep_done_tangles(std::slice::from_ref(&tangle), columns, now).is_empty() {
+            continue; // no longer a tangle the sweep should archive.
+        }
         let done = core::archive_tangle(&tangle, now)?;
         tangle_repo.update(&done).await?;
         archived.push(tangle_id);

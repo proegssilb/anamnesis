@@ -2,16 +2,26 @@
 name = "anamnesis-adapters"
 version = "0.1.0"
 edition.workspace = true
+# This is an application crate, not a library anyone should depend on; only
+# `job-lease` in this workspace is meant for crates.io.
+publish = false
 
 [dependencies]
 anamnesis-app = { version = "0.1.0", path = "../anamnesis-app" }
 anamnesis-core = { version = "0.1.0", path = "../anamnesis-core" }
 async-trait = "0.1.92"
+job-lease = { version = "0.1.0", path = "../job-lease" }
 openidconnect = "4.0.1"
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "tls-rustls", "sqlite", "postgres", "uuid"] }
 time = "0.3.55"
 time-tz = "2.0.0"
-tokio = { version = "1.53.1", features = ["fs", "rt"] }
+# "time" is for `connect_sqlite`'s journal-mode retry and the migration
+# lease's renewal, not for anything resembling a scheduler -- background work
+# lives in `anamnesis-web`.
+tokio = { version = "1.53.1", features = ["fs", "rt", "time"] }
+# Only for startup: a migration that waits on another instance, or a lease
+# renewal that fails, must not do so silently.
+tracing = "0.1.44"
 uuid = { version = "1.25.0", features = ["v4"] }
 
 [dev-dependencies]

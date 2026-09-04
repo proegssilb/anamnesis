@@ -2,7 +2,11 @@
 //! (attachment files) and `SearchIndex` (keeping global search current).
 //! Plus `TimezoneResolver`, needed to drive `anamnesis_core::next_run` and
 //! the sweep but not itself named as a port in §7 — see the doc comment on
-//! the trait for why it exists.
+//! the trait for why it exists. And [`JobLease`], which is here for a
+//! structural reason rather than a use-case one — again, see its own doc
+//! comment.
+
+use std::time::Duration;
 
 use async_trait::async_trait;
 
@@ -62,6 +66,51 @@ pub trait SearchIndex: Send + Sync {
     async fn remove_project(&self, id: anamnesis_core::ProjectId) -> Result<(), RepoError>;
     /// Flags the task's search entry as archived — see the trait doc comment.
     async fn remove_task(&self, id: anamnesis_core::TaskId) -> Result<(), RepoError>;
+}
+
+/// Claims the exclusive right to run a named background job, so that exactly
+/// one of several concurrently running instances does it.
+///
+/// **This port is here for a different reason than its neighbours.**
+/// `BlobStore`, `SearchIndex`, and `TimezoneResolver` all live in
+/// `anamnesis-app` because `crate::use_cases` consume them. *No use case
+/// consumes this one*, and none should: every caller is in the shell
+/// (`anamnesis-web`'s sweep ticker and bootstrap), and
+/// [`crate::use_cases::archive_done_tasks`] is what leased code *calls*, not
+/// where a lease is taken. It is defined here because the implementor
+/// (`anamnesis-adapters`) and the consumer (`anamnesis-web`) have no other
+/// common ancestor — web depends on adapters rather than the reverse, and
+/// `anamnesis-core` carries no I/O traits at all.
+///
+/// The mechanism itself is generic and lives in the `job-lease` crate, which
+/// is not an anamnesis layer and speaks neutral types (`i64` unix seconds, its
+/// own error). This port is anamnesis's own vocabulary for it; translating
+/// between the two is `anamnesis-adapters`' job. That is what keeps
+/// `anamnesis-app` free of a database dependency structurally rather than by
+/// convention.
+///
+/// A lease is expiry-based, not connection-scoped: a holder that crashes
+/// mid-job releases it by lapsing. That makes it good enough to stop N
+/// instances duplicating work, and *not* a distributed mutex to bet
+/// correctness on — leased jobs should stay idempotent, as
+/// `archive_done_tasks` already is.
+#[async_trait]
+pub trait JobLease: Send + Sync {
+    /// Claims `job` for `owner` until `now + ttl`, returning whether the claim
+    /// succeeded. Renewal is the same call: the current holder always
+    /// succeeds, and pushes its own expiry out.
+    async fn try_acquire(
+        &self,
+        job: &str,
+        owner: &str,
+        now: Timestamp,
+        ttl: Duration,
+    ) -> Result<bool, RepoError>;
+
+    /// Releases `job` if `owner` still holds it, so the next claimant need not
+    /// wait out the remaining TTL. A no-op otherwise; releasing someone else's
+    /// lease is never possible.
+    async fn release(&self, job: &str, owner: &str) -> Result<(), RepoError>;
 }
 
 /// Converts between UTC instants and local wall-clock calendar values in a

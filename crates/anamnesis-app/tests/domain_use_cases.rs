@@ -1227,6 +1227,188 @@ async fn archive_done_tasks_archives_everything_in_an_is_done_column() {
     assert!(fakes.task(task.id).archived_at.is_some());
 }
 
+// --- Losing a race to another writer must never cost the rest of the pass.
+//
+// Both the "Archive all" button and the scheduled sweep run this one use
+// case, and both work from a board snapshot that any other writer -- another
+// instance's sweep, another user's button, a user dragging a card -- can
+// invalidate between the snapshot and the write. What must not happen is for
+// one contested task to end the pass, leaving the user an error page over a
+// half-archived board.
+
+/// What the rival writer does to the contended task, in the window
+/// [`Contended`] opens.
+#[derive(Clone, Copy)]
+enum Rival {
+    /// Saves the task without changing anything the sweep cares about. The
+    /// reload finds it still sitting in Done, so the archive should go
+    /// through on the second attempt.
+    Touches,
+    /// Archives it first — what a second "Archive all" or a second instance's
+    /// sweep does. The reload should find it no longer swept and move on.
+    Archives,
+}
+
+/// A `TaskRepository` that lets exactly one rival writer in, immediately
+/// before the first `update` of `target` — the concurrency window
+/// `archive_done_tasks` has to survive, made deterministic. Everything else
+/// delegates to the real fakes, including the optimistic-concurrency check
+/// the rival's write is about to fail.
+struct Contended<'a> {
+    inner: &'a Fakes,
+    target: TaskId,
+    rival: Rival,
+    fired: std::sync::Mutex<bool>,
+}
+
+impl<'a> Contended<'a> {
+    fn new(inner: &'a Fakes, target: TaskId, rival: Rival) -> Self {
+        Self {
+            inner,
+            target,
+            rival,
+            fired: std::sync::Mutex::new(false),
+        }
+    }
+
+    /// Writes to `target` through the same port the use case uses, bumping
+    /// `last_touched_at` so the write already in flight is rejected.
+    async fn interfere(&self) {
+        let agg = TaskRepository::load(self.inner, self.target)
+            .await
+            .unwrap()
+            .unwrap();
+        let was = agg.task.last_touched_at;
+        let now = anamnesis_core::Timestamp::from_unix_seconds(was.unix_seconds() + 1).unwrap();
+        let next = match self.rival {
+            Rival::Touches => Task {
+                last_touched_at: now,
+                ..agg.task.clone()
+            },
+            Rival::Archives => anamnesis_core::archive_task(&agg.task, now).unwrap(),
+        };
+        TaskRepository::update(self.inner, &next, was)
+            .await
+            .unwrap();
+    }
+}
+
+#[async_trait::async_trait]
+impl TaskRepository for Contended<'_> {
+    async fn load(&self, id: TaskId) -> Result<Option<TaskAggregate>, RepoError> {
+        TaskRepository::load(self.inner, id).await
+    }
+
+    async fn list_children(&self, parent_id: TaskId) -> Result<Vec<Task>, RepoError> {
+        self.inner.list_children(parent_id).await
+    }
+
+    async fn list_by_project(&self, project_id: ProjectId) -> Result<Vec<Task>, RepoError> {
+        self.inner.list_by_project(project_id).await
+    }
+
+    async fn insert(&self, task: &Task) -> Result<(), RepoError> {
+        TaskRepository::insert(self.inner, task).await
+    }
+
+    async fn update(
+        &self,
+        task: &Task,
+        expected_last_touched_at: anamnesis_core::Timestamp,
+    ) -> Result<(), TaskUpdateError> {
+        let open_the_window = {
+            let mut fired = self.fired.lock().unwrap();
+            let first = !*fired && task.id == self.target;
+            *fired |= first;
+            first
+        };
+        if open_the_window {
+            self.interfere().await;
+        }
+        TaskRepository::update(self.inner, task, expected_last_touched_at).await
+    }
+
+    async fn set_field_value(&self, value: &anamnesis_core::FieldValue) -> Result<(), RepoError> {
+        self.inner.set_field_value(value).await
+    }
+}
+
+/// Two tasks sitting in one Done column, ready to be swept.
+async fn two_tasks_in_done(fakes: &Fakes, ids: &SequentialIdGen, clock: &FixedClock) -> Vec<Task> {
+    let project_id = some_project_id(ids);
+    let done = make_column(ids, "Done", 0, None, true);
+    fakes.seed_column(done.clone());
+
+    let mut tasks = Vec::new();
+    for (position, title) in ["First", "Second"].into_iter().enumerate() {
+        let task = create_task(fakes, ids, clock, fakes, member(), project_id, title, "")
+            .await
+            .unwrap();
+        raise_task(
+            fakes,
+            fakes,
+            clock,
+            member(),
+            task.id,
+            done.id,
+            position as u32,
+        )
+        .await
+        .unwrap();
+        tasks.push(task);
+    }
+    tasks
+}
+
+#[tokio::test]
+async fn archive_all_reloads_and_retries_a_task_a_rival_wrote_to_mid_pass() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let tasks = two_tasks_in_done(&fakes, &ids, &clock).await;
+    let repo = Contended::new(&fakes, tasks[0].id, Rival::Touches);
+
+    let archived = archive_done_tasks(&fakes, &repo, &fakes, &clock, &fakes, member())
+        .await
+        .unwrap();
+
+    for task in &tasks {
+        assert!(
+            archived.archived_task_ids.contains(&task.id),
+            "a rival's unrelated save must cost a reload, not the archive: {archived:?}"
+        );
+        assert!(fakes.task(task.id).archived_at.is_some());
+    }
+}
+
+#[tokio::test]
+async fn archive_all_skips_a_task_a_rival_archived_mid_pass_and_finishes_the_rest() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    let tasks = two_tasks_in_done(&fakes, &ids, &clock).await;
+    let repo = Contended::new(&fakes, tasks[0].id, Rival::Archives);
+
+    let archived = archive_done_tasks(&fakes, &repo, &fakes, &clock, &fakes, member())
+        .await
+        .unwrap();
+
+    assert!(
+        !archived.archived_task_ids.contains(&tasks[0].id),
+        "a task the rival archived first was not archived by this pass: {archived:?}"
+    );
+    assert!(
+        archived.archived_task_ids.contains(&tasks[1].id),
+        "losing one task to a rival must not end the pass: {archived:?}"
+    );
+    for task in &tasks {
+        assert!(
+            fakes.task(task.id).archived_at.is_some(),
+            "either way, every swept task ends up archived"
+        );
+    }
+}
+
 // --- Gap 2: a resolved tangle sitting in Done must be archived too, an
 // unresolved one must not, and an archived tangle must never be resurrected
 // by a later detection pass over the same (still-cyclic) tasks.

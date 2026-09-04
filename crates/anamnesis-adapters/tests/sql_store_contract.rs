@@ -9,13 +9,15 @@
 //! Postgres server.
 
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use anamnesis_adapters::SqlStore;
 use anamnesis_app::{
     AreaRepository, Attachment, AttachmentId, AttachmentKind, AttachmentRepository, BoardQuery,
-    Comment, CommentId, CommentRepository, MembershipQuery, MembershipRepository, ProjectAggregate,
-    ProjectRepository, RelationshipRepository, SearchHit, SearchIndex, SearchQuery, Settings,
-    SettingsRepository, TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
+    Comment, CommentId, CommentRepository, JobLease, MembershipQuery, MembershipRepository,
+    ProjectAggregate, ProjectRepository, RelationshipRepository, SearchHit, SearchIndex,
+    SearchQuery, Settings, SettingsRepository, TangleRepository, TaskAggregate, TaskRepository,
+    TaskUpdateError,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
@@ -130,6 +132,7 @@ async fn contract(store: &SqlStore) {
     membership_contract(store).await;
     search_contract(store).await;
     settings_contract(store).await;
+    job_lease_contract(store).await;
 }
 
 // --- Area ---
@@ -1658,6 +1661,191 @@ async fn settings_contract(store: &SqlStore) {
     let edited = settings_update_round_trip_contract(store).await;
     let after_sweep = settings_record_sweep_contract(store, edited).await;
     reseed_after_edit_is_noop_contract(store, defaults, after_sweep).await;
+}
+
+// --- Job leases ---
+
+/// How long every lease taken below is claimed for. A constant rather than a
+/// parameter because the interesting number in each assertion is *when* the
+/// claim is made, not how long it lasts.
+const LEASE_TTL: Duration = Duration::from_secs(60);
+
+/// Both backends must agree on when a lease blocks a rival and when it does
+/// not, since the whole point of the lease is that N instances — which may be
+/// running against either backend — reach the same answer.
+///
+/// The two halves take separate jobs and are independent: expiry is about
+/// `try_acquire` deciding against the clock, release is about `release`
+/// handing the job over early. Neither inherits the other's leftover state.
+async fn job_lease_contract(store: &SqlStore) {
+    let leases = store.job_lease().await.expect("open the job-lease store");
+    lease_expiry_contract(&leases).await;
+    lease_release_contract(&leases).await;
+}
+
+/// A fresh job name per run: unlike the SQLite temp file, a Postgres scratch
+/// database keeps its `job_leases` rows between runs, and the truncation the
+/// contract does at the top deliberately covers only domain tables.
+fn scratch_job() -> String {
+    format!("contract-{}", Uuid::new_v4())
+}
+
+/// `try_acquire` reduced to the question each assertion actually asks: as of
+/// `at`, can `owner` hold `job`?
+///
+/// Time is a parameter throughout — never `Clock::now` — so expiry is tested
+/// by naming a later instant rather than by sleeping.
+async fn claims(leases: &dyn JobLease, job: &str, owner: &str, at: i64) -> bool {
+    leases
+        .try_acquire(job, owner, ts(at), LEASE_TTL)
+        .await
+        .expect("try_acquire must not fail")
+}
+
+/// Who holds the lease is decided by the clock: a live claim blocks, a lapsed
+/// one does not, and the holder can push its own expiry out by renewing.
+async fn lease_expiry_contract(leases: &dyn JobLease) {
+    let job = scratch_job();
+
+    assert!(
+        claims(leases, &job, "a", 10_000).await,
+        "an unclaimed job must be claimable"
+    );
+    assert!(
+        !claims(leases, &job, "b", 10_030).await,
+        "a live lease must block a second owner"
+    );
+    assert!(
+        claims(leases, &job, "a", 10_030).await,
+        "the current holder must be able to renew"
+    );
+    assert!(
+        !claims(leases, &job, "b", 10_061).await,
+        "the renewal must have pushed expiry out to 10_090, so a rival that \
+         would have won against the original 10_060 expiry must still lose"
+    );
+    assert!(
+        claims(leases, &job, "b", 10_091).await,
+        "an expired lease must not block"
+    );
+
+    leases.release(&job, "b").await.unwrap();
+}
+
+/// `release` hands the job over immediately rather than at expiry — and only
+/// the actual holder's release counts, so a straggler cannot free a lease it
+/// no longer owns.
+async fn lease_release_contract(leases: &dyn JobLease) {
+    let job = scratch_job();
+
+    assert!(claims(leases, &job, "a", 20_000).await);
+    leases.release(&job, "a").await.unwrap();
+    assert!(
+        claims(leases, &job, "b", 20_010).await,
+        "a released lease must be claimable at once, well inside the TTL it \
+         would otherwise have run for"
+    );
+
+    leases
+        .release(&job, "a")
+        .await
+        .expect("releasing a lease someone else holds is a no-op, not an error");
+    assert!(
+        !claims(leases, &job, "a", 20_020).await,
+        "a's release must not have removed b's lease"
+    );
+
+    leases.release(&job, "b").await.unwrap();
+}
+
+/// Two processes starting against one fresh SQLite file at the same instant
+/// must both come up. This is the same-machine multi-process topology's very
+/// first moment, and it is entirely a `SqlStore::connect` concern — the
+/// journal-mode conversion and the unlocked SQLite migrator both happen there,
+/// before any port is ever called.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_concurrent_connects_to_a_fresh_sqlite_file_both_succeed() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let url = format!(
+        "sqlite://{}?mode=rwc",
+        dir.path().join("connect-race.db").display()
+    );
+
+    let (a, b) = tokio::join!(SqlStore::connect(&url), SqlStore::connect(&url));
+    a.expect("first instance connects and migrates");
+    b.expect("second instance connects and migrates");
+}
+
+/// Enough concurrent starts to make the window reliable rather than
+/// occasional. Two is the real-world minimum but races only sometimes.
+const CONCURRENT_INSTANCES: usize = 4;
+
+/// The sharper version of the test above: several instances starting together
+/// against a database that already carries sqlx's bookkeeping table but has
+/// migrations outstanding — a rolling upgrade, rather than a first boot.
+///
+/// That distinction is what makes this deterministic instead of occasional.
+/// `ensure_migrations_table` is itself a write, so on a genuinely fresh file
+/// the instances queue behind it and the winner usually commits its migration
+/// before the others get as far as reading what has been applied — the race is
+/// hidden by an accident of locking. Creating that table up front removes the
+/// accidental barrier and leaves nothing between the instances and sqlx's
+/// unprotected check-then-act, which is also the real deployment shape: a
+/// database being upgraded has had that table since its first boot.
+///
+/// Without `SqlStore::connect`'s migration lease every run of this fails with
+/// `(code: 1) table areas already exists` — `SQLITE_ERROR`, not `SQLITE_BUSY`,
+/// which is why no `busy_timeout` and no lock-contention retry covers it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn several_instances_upgrading_one_sqlite_file_at_once_all_succeed() {
+    use std::str::FromStr;
+
+    use sqlx::migrate::Migrate;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("upgrade-race.db");
+    let url = format!("sqlite://{}?mode=rwc", path.display());
+
+    // Setup, deliberately not part of the race: WAL (under the default
+    // rollback journal a writer blocks readers, which would serialise the
+    // check-then-act by accident) and sqlx's bookkeeping table.
+    let options = sqlx::sqlite::SqliteConnectOptions::from_str(&url)
+        .expect("parse sqlite url")
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+    let setup = sqlx::SqlitePool::connect_with(options)
+        .await
+        .expect("create the database in WAL mode");
+    {
+        let mut conn = setup.acquire().await.expect("setup connection");
+        (*conn)
+            .ensure_migrations_table("_sqlx_migrations")
+            .await
+            .expect("bookkeeping table");
+    }
+    setup.close().await;
+
+    // Separate tasks, not `tokio::join!`: joined futures share one task and
+    // interleave only at await points, which is too gentle to expose this.
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(CONCURRENT_INSTANCES));
+    let mut instances = Vec::with_capacity(CONCURRENT_INSTANCES);
+    for _ in 0..CONCURRENT_INSTANCES {
+        let url = url.clone();
+        let barrier = std::sync::Arc::clone(&barrier);
+        instances.push(tokio::spawn(async move {
+            barrier.wait().await;
+            SqlStore::connect(&url).await
+        }));
+    }
+    for instance in instances {
+        instance
+            .await
+            .expect("instance panicked")
+            .expect("instance connects and migrates");
+    }
+
+    // And the schema it produced is usable, not merely present.
+    let store = SqlStore::connect(&url).await.expect("verifying connect");
+    store.columns_with_items().await.expect("query the board");
 }
 
 #[tokio::test]

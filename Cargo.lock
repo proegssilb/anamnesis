@@ -25,6 +25,7 @@ dependencies = [
  "anamnesis-core",
  "async-trait",
  "chrono",
+ "job-lease",
  "openidconnect",
  "rsa",
  "serde_json",
@@ -33,6 +34,7 @@ dependencies = [
  "time",
  "time-tz",
  "tokio",
+ "tracing",
  "uuid",
  "wiremock",
 ]
@@ -1764,6 +1766,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "875a5a69ac2bab1a891711cf5eccbec1ce0341ea805560dcd90b7a2e925132e8"
 dependencies = [
  "jiff-tzdb",
+]
+
+[[package]]
+name = "job-lease"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]

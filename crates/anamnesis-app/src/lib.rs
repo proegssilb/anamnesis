@@ -28,10 +28,10 @@ pub use entities::{
 pub use error::{AppError, IdentityError, RepoError};
 pub use ports::{
     AreaRepository, AttachmentRepository, BlobStore, BoardColumn, BoardItem, BoardQuery, Clock,
-    CommentRepository, IdGen, IdentityProvider, LoginCallback, LoginRedirect, MembershipQuery,
-    MembershipRepository, ProjectAggregate, ProjectRepository, RelationshipRepository, SearchHit,
-    SearchIndex, SearchQuery, SettingsRepository, TangleRepository, TaskAggregate, TaskRepository,
-    TaskUpdateError, TimezoneResolver,
+    CommentRepository, IdGen, IdentityProvider, JobLease, LoginCallback, LoginRedirect,
+    MembershipQuery, MembershipRepository, ProjectAggregate, ProjectRepository,
+    RelationshipRepository, SearchHit, SearchIndex, SearchQuery, SettingsRepository,
+    TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError, TimezoneResolver,
 };
 pub use settings::{
     DEFAULT_ACTIVE_PROJECT_LIMIT, DEFAULT_HIGH_BOUNCE_THRESHOLD,

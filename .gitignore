@@ -17,6 +17,9 @@ target
 .env
 .env.local
 *.db
+# SQLite runs in WAL mode, which keeps two sidecars beside every database file
+*.db-wal
+*.db-shm
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

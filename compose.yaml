@@ -30,8 +30,11 @@ services:
       ANAMNESIS_BIND_ADDR: 0.0.0.0:8080
     volumes:
       - anamnesis-data:/var/lib/anamnesis
-    # The blob root and the SQLite file both live on the volume above, so the
-    # image's own filesystem never needs to be written to.
+    # The blob root and the SQLite files -- the data one and the `-leases`
+    # sibling beside it, see docs/DEPLOYMENT.md section 3 -- all live on the
+    # volume above, so the image's own filesystem never needs to be written
+    # to. Note this is a *directory*: the app creates the lease file next to
+    # the data one, which a bind mount of a single file would not allow.
     read_only: true
     tmpfs:
       - /tmp
