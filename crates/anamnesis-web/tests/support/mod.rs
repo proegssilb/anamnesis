@@ -44,6 +44,10 @@ pub const DEV_USER_ID: &str = "dev-user";
 
 pub struct TestApp {
     router: Router,
+    /// The same `AppState` the router was built from, kept so a test can
+    /// drive the background work the router no longer does — see
+    /// [`TestApp::refresh_tangles`].
+    pub state: AppState,
     pub key: Key,
     pub store: Arc<SqlStore>,
     pub blob_root: std::path::PathBuf,
@@ -107,9 +111,10 @@ impl TestApp {
             dev_auth_bypass,
             max_body_bytes,
         );
-        let router = routes::build_router(state);
+        let router = routes::build_router(state.clone());
         Self {
             router,
+            state,
             key,
             store,
             blob_root,
@@ -130,6 +135,22 @@ impl TestApp {
         };
         let cookie = session::session_cookie(&session, false);
         signed_cookie_header(&self.key, cookie)
+    }
+
+    /// Runs one tangle-detection pass — detection plus the resolution of
+    /// frozen tangles — exactly as `anamnesis_web::tangles`'s ticker does
+    /// once it holds the job lease.
+    ///
+    /// A board GET used to do this as a side effect. It no longer does: both
+    /// passes are system-wide reconciliation writes and now run on a schedule
+    /// instead of on the read path (see that module's doc comment). So a test
+    /// that needs tangle state to be current asks for it here, which drives
+    /// the real pass without a ticker ever being spawned — the structural
+    /// property that keeps background tasks out of this harness entirely.
+    pub async fn refresh_tangles(&self) {
+        anamnesis_web::tangles::refresh_tangles(&self.state)
+            .await
+            .expect("a tangle detection pass succeeds");
     }
 
     pub async fn get(&self, path: &str, cookie: Option<&str>) -> Response<Body> {

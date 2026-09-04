@@ -4,8 +4,14 @@
 //! pipeline (`anamnesis_core::detect_tangles` + `anamnesis_core::reconcile`)
 //! running over the whole system's blocking graph, so there is no "which
 //! project is this action scoped to" for a role check to apply against.
-//! Real deployments would run this from a scheduled job, the same way a
-//! sweep ticker runs `crate::use_cases::archive_done_tasks`.
+//!
+//! **Called from a scheduled job, not from a handler.** `anamnesis_web`'s
+//! `tangles` ticker runs [`run_tangle_detection`] and
+//! [`resolve_frozen_tangles`] on a timer under a job lease, the same way its
+//! sweep ticker runs `crate::use_cases::archive_done_tasks`. Both are
+//! system-wide reconciliation *writes*, so neither belongs on a read path —
+//! and the lease is what keeps them single-writer once more than one instance
+//! is running.
 
 use anamnesis_core::policy::Role;
 use anamnesis_core::{self as core, ColumnId, Reconciliation, Tangle, TangleId};

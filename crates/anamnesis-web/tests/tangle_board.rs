@@ -29,10 +29,16 @@ async fn setup_knotted_pair(app: &TestApp, cookie: Option<&str>) -> (String, Str
     (task_a_path, task_b_path)
 }
 
-/// Views the board (which runs tangle detection as a side effect), asserts
-/// the knotted pair is offered from the suggestion prompt in place of its
-/// individually-ineligible tasks, and returns the detected tangle.
+/// Runs a detection pass, then asserts the knotted pair is offered from the
+/// board's suggestion prompt in place of its individually-ineligible tasks,
+/// and returns the detected tangle.
+///
+/// The pass is explicit because the board GET no longer runs one: detection
+/// moved onto `anamnesis_web::tangles`'s scheduled ticker, so the board reads
+/// tangle state rather than computing it. This is the same call that ticker
+/// makes.
 async fn assert_board_offers_the_tangle(app: &TestApp, cookie: Option<&str>) -> Tangle {
+    app.refresh_tangles().await;
     let board_body = body_text(app.get("/board", cookie).await).await;
     assert!(
         board_body.contains("knotted together"),
@@ -114,6 +120,34 @@ async fn drop_and_assert_below_horizon(app: &TestApp, tangle: &Tangle, cookie: O
     assert!(
         !after_drop.contains("tangle-card"),
         "a dropped tangle must no longer render as a board card: {after_drop}"
+    );
+}
+
+/// The behaviour change moving detection off the read path makes, pinned: a
+/// board GET is a pure *read* of tangle state and no longer computes it.
+///
+/// The knot exists in the blocking graph the whole time; what differs is only
+/// whether anything has looked. If detection ever creeps back into a handler,
+/// this is what fails.
+#[tokio::test]
+async fn viewing_the_board_does_not_run_tangle_detection() {
+    let app = TestApp::new(true).await;
+    let cookie: Option<&str> = None;
+
+    setup_knotted_pair(&app, cookie).await;
+
+    let board_body = body_text(app.get("/board", cookie).await).await;
+    assert!(
+        app.store.list_active().await.unwrap().is_empty(),
+        "a board GET must not detect tangles -- that is the scheduled \
+         ticker's job: {board_body}"
+    );
+
+    app.refresh_tangles().await;
+    assert_eq!(
+        app.store.list_active().await.unwrap().len(),
+        1,
+        "the very same knot must be detected once a scheduled pass runs"
     );
 }
 
