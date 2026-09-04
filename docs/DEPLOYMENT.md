@@ -369,8 +369,21 @@ restoring the backup from step 1.
 **Anamnesis can run as several instances sharing one machine.** The request
 path holds no server-side state, and the background work that used to be a
 per-process singleton is now coordinated through the database: startup
-bootstrap and the scheduled sweep are each taken under a lease in a
-`job_leases` table, so exactly one instance runs each and the others move on.
+bootstrap, the scheduled sweep, and tangle detection are each taken under a
+lease in a `job_leases` table, so exactly one instance runs each and the
+others move on.
+
+**Tangle detection is a scheduled job, and the board is one tick behind it.**
+Detecting knots in the blocking graph, and closing out placed tangles that are
+no longer cyclic, both used to run inline on every board request. They now run
+once a minute on a leased ticker instead, which keeps a system-wide
+reconciliation write off the busiest read path and makes it single-writer
+across instances. The visible consequence is a bounded staleness window: a
+knot's board indicator, and the suggestion engine's exclusion of knotted
+tasks, are each up to a minute behind the live graph. Nothing is wrong inside
+that window, only briefly old, and it self-corrects on the next tick. The
+interval is a compile-time constant (`DETECTION_INTERVAL`), not a
+configuration knob.
 
 **Migrations serialize through the same lease.** On Postgres they would anyway
 — sqlx holds a per-database advisory lock across the whole run — but on SQLite

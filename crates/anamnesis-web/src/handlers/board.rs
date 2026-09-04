@@ -33,7 +33,7 @@ use minijinja::context;
 
 use anamnesis_app::{
     AppError, BoardItem, BoardItemKind, archive_done_tasks, drop_tangle, place_tangle, raise_task,
-    reposition_board_item, request_suggestion, resolve_frozen_tangles, run_tangle_detection,
+    reposition_board_item, request_suggestion,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{Blockage, ColumnId, OfferItem, Outcome, ProjectId, Tangle, TangleId, TaskId};
@@ -263,10 +263,15 @@ async fn view_board_impl(
     error: Option<&str>,
     status: StatusCode,
 ) -> Result<Response, WebError> {
-    refresh_tangles(state).await?;
-
-    // Read after resolution: a tangle that just closed may have moved into
-    // the `is_done` column, and the view must reflect that.
+    // Tangle state is read, never computed, here. Detection and the
+    // resolution of frozen tangles used to run inline at the top of this
+    // function -- a system-wide reconciliation *write* on the hottest read
+    // path in the application. Both now run on `crate::tangles`'s leased
+    // ticker, so what the board renders is at most
+    // `crate::tangles::DETECTION_INTERVAL` behind the live blocking graph.
+    // That module's doc comment covers exactly what a user can notice inside
+    // that window (a knot's indicator, and the suggestion engine's
+    // tangled-task exclusion, each up to one tick late).
     let columns = state.board.columns_with_items().await?;
 
     // The entry column — where a suggestion, once accepted, lands — is the
@@ -286,43 +291,6 @@ async fn view_board_impl(
         return render_columns_fragment(state, user, &columns, status).await;
     }
     render_board_page(state, user, &columns, suggestion.as_ref(), error, status).await
-}
-
-/// Brings tangle state up to date before the board reads it — both the
-/// "quiet indicator" and the suggestion engine's tangled-task exclusion
-/// depend on it being current.
-///
-/// Detection is a pure reconciliation pass, cheap to re-run per view at this
-/// phase's scale; a scheduled job is a natural later home for it. Frozen
-/// (placed) tangles are untouched by detection — see `run_tangle_detection`'s
-/// own doc comment — so `resolve_frozen_tangles` is the separate pass that
-/// closes one out once its frozen task set is no longer cyclic in the live
-/// graph.
-async fn refresh_tangles(state: &AppState) -> Result<(), WebError> {
-    run_tangle_detection(
-        state.relationships.as_ref(),
-        state.tangles.as_ref(),
-        state.id_gen.as_ref(),
-        state.clock.as_ref(),
-    )
-    .await?;
-
-    let done_column = state
-        .board
-        .columns_with_items()
-        .await?
-        .into_iter()
-        .find(|bc| bc.column.is_done)
-        .map(|bc| bc.column.id);
-    resolve_frozen_tangles(
-        state.relationships.as_ref(),
-        state.tangles.as_ref(),
-        state.board.as_ref(),
-        state.clock.as_ref(),
-        done_column,
-    )
-    .await?;
-    Ok(())
 }
 
 /// The `HX-Request` half of [`view_board_impl`]: just the columns, with no

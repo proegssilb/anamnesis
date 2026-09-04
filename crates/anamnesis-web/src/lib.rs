@@ -17,4 +17,5 @@ pub mod session;
 pub mod state;
 pub mod static_files;
 pub mod sweep;
+pub mod tangles;
 pub mod templates;
