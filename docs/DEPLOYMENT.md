@@ -27,8 +27,8 @@ database itself, at startup, before it binds its socket.
 | Outbound HTTPS to the identity provider | A system `tzdata` |
 | A TLS-terminating reverse proxy | `DATABASE_URL` at *build* time |
 
-The state directory holds file attachments (`ANAMNESIS_BLOB_ROOT`) and, if you
-use SQLite, the database file — *two* files, in fact: the data one you
+The state directory holds file attachments (unless `ANAMNESIS_BLOB_ROOT`
+points at an object store — §12) and, if you use SQLite, the database file — *two* files, in fact: the data one you
 configure, and a `-leases` sibling the app derives from it (§3). Both live
 under `/var/lib/anamnesis` in every example here.
 
@@ -58,11 +58,22 @@ degraded run — including inside a container.
 | Variable | Default | Notes |
 |---|---|---|
 | `ANAMNESIS_BIND_ADDR` | `127.0.0.1:8080` | Use `0.0.0.0:8080` in a container |
-| `ANAMNESIS_BLOB_ROOT` | `./blobs` | Set it explicitly; the container image already does |
+| `ANAMNESIS_BLOB_ROOT` | `./blobs` | A directory path, or an `s3://bucket/prefix` URL — see §12 |
+| `ANAMNESIS_S3_ACCESS_KEY_ID` | unset | **Required** when `ANAMNESIS_BLOB_ROOT` is an `s3://` URL |
+| `ANAMNESIS_S3_SECRET_ACCESS_KEY` | unset | **Required** when `ANAMNESIS_BLOB_ROOT` is an `s3://` URL |
+| `ANAMNESIS_S3_ENDPOINT` | AWS's own | e.g. `https://garage.example.com:3900` — always set it for Garage or MinIO |
+| `ANAMNESIS_S3_REGION` | `us-east-1` | Must match what the server was configured with; it is signed over |
 | `ANAMNESIS_MAX_BODY_BYTES` | `41943040` (40 MiB) | Whole-request limit — see §5 |
 | `ANAMNESIS_TLS_CA_BUNDLE` | unset | PEM bundle of extra roots for the IdP — see §6 |
 | `ANAMNESIS_OIDC_SCOPES` | `openid profile email` | |
 | `RUST_LOG` | `info` | |
+
+The four `ANAMNESIS_S3_*` variables are read **only** when
+`ANAMNESIS_BLOB_ROOT` starts with `s3://`; on a filesystem root they are
+ignored rather than rejected, so moving a deployment back to local disk does
+not mean unsetting them all. When the root *is* an `s3://` URL, the two
+credential variables are required and a missing one fails startup by name,
+like any other required variable.
 
 ### Three rules that bite
 
@@ -422,16 +433,55 @@ migration, not for the process (§13).
 | SQLite, one process | nothing to coordinate | Supported |
 | SQLite, N processes, **one machine** | the database file | Supported |
 | Postgres, N processes, **one machine** | the database | Supported |
-| Postgres, N processes, **N machines** | the database | **Not yet** — see below |
+| Postgres, N processes, **N machines** | the database and an object store | Supported — see below |
 | SQLite, N machines | — | No, and not planned |
 
-**What still pins every instance to one machine: attachments.** Blobs live on
-a local filesystem under `ANAMNESIS_BLOB_ROOT`. Instances on one machine share
-that directory and are fine. Instances on separate machines each see only the
-blobs they themselves wrote, so roughly half of all downloads 404 — the same
-failure this section used to describe, now the *only* one left. An object-store
-backend is the intended fix; until it ships, every instance must share one
-filesystem.
+**Attachments decide whether instances can span machines.**
+`ANAMNESIS_BLOB_ROOT` picks the backend from its own scheme, the same way
+`ANAMNESIS_DATABASE_URL` picks a database driver:
+
+| `ANAMNESIS_BLOB_ROOT` | Backend | Instances may span machines |
+|---|---|---|
+| `/var/lib/anamnesis/blobs` | Local filesystem | No |
+| `s3://bucket/prefix` | S3-compatible object store | Yes |
+
+A **filesystem** root is right for one machine, whether that is one process or
+several — they share the directory and are fine. Instances on *separate*
+machines each see only the blobs they themselves wrote, so roughly half of all
+downloads 404. Writes are atomic (written to a temporary name in the same
+directory, then renamed), so an instance killed mid-upload leaves no truncated
+blob for another instance to serve as whole; it can leave a stray `.tmp-…`
+file, which is inert.
+
+An **object store** is what lifts that restriction. It is the last piece of
+shared state that was not already in the database, so with Postgres and an
+`s3://` root there is nothing left pinning instances to one host. Point it at
+whatever you run — this was written against [Garage](https://garagehq.deuxfleurs.fr/),
+and MinIO and S3 itself work the same way:
+
+```sh
+ANAMNESIS_BLOB_ROOT=s3://anamnesis/blobs
+ANAMNESIS_S3_ENDPOINT=https://garage.example.com:3900
+ANAMNESIS_S3_REGION=garage
+ANAMNESIS_S3_ACCESS_KEY_ID=GK…
+ANAMNESIS_S3_SECRET_ACCESS_KEY=…
+```
+
+Four things worth knowing before you switch:
+
+- **The bucket must already exist.** Anamnesis never creates it, and nothing
+  is contacted at startup — S3 has no connection to open, so a wrong endpoint,
+  a wrong credential or a missing bucket first surfaces on an attachment
+  upload, not on boot.
+- **Nothing migrates existing attachments.** Blobs already on disk stay on
+  disk; copy the blob root's contents under the URL's prefix before switching,
+  or those downloads 404.
+- **Requests are path-style** (`{endpoint}/{bucket}/{key}`), which is what
+  self-hosted endpoints expect and what AWS still accepts. A virtual-hosted
+  endpoint is not configurable.
+- **Memory is unchanged.** Attachments are still read and written whole, so
+  §5's *limit × concurrent uploads* ceiling applies exactly as before — an
+  object store buys shared storage, not streaming.
 
 **Every instance needs an identical `ANAMNESIS_SESSION_SECRET`.** Sessions are
 signed cookies with no server-side state, so nothing needs sharing and no
@@ -464,13 +514,15 @@ at startup against the copy compiled into the binary.
 No manifests are provided. These are the constraints a working manifest has to
 satisfy:
 
-- **`replicas: 1` with `strategy: Recreate` and an RWO PVC.** No longer for a
-  coordination reason — §12's leases make concurrent instances safe — but for
-  the blob root: it is a plain filesystem, an RWO PVC binds to a single node,
-  and a second replica cannot mount it. On an RWO PVC `RollingUpdate` stalls
-  waiting for a volume rather than corrupting anything, but it does not give
-  you a zero-downtime upgrade either. Lifting this needs a shared blob store
-  (§12), not a manifest change.
+- **Replicas depend on the blob root, not on coordination.** §12's leases make
+  concurrent instances safe either way. With a filesystem blob root on an RWO
+  PVC, the volume binds to a single node and a second replica cannot mount it,
+  so that manifest needs `replicas: 1` with `strategy: Recreate` —
+  `RollingUpdate` stalls waiting for a volume rather than corrupting anything,
+  but it is not a zero-downtime upgrade either. With Postgres and an `s3://`
+  blob root there is no PVC and no such limit: run `replicas: N` with
+  `RollingUpdate`, and size the `startupProbe` for a migration wait (§12), not
+  just for process start.
 - **Probes:** `/healthz` for startup, liveness and readiness. Give the
   `startupProbe` a generous budget — first boot runs migrations.
 - **`terminationGracePeriodSeconds`** works as intended; the app handles

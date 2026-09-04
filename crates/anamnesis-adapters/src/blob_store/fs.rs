@@ -93,9 +93,7 @@ impl BlobStore for FsBlobStore {
                 .await
                 .map_err(|e| RepoError::from_source("failed to create blob parent directory", e))?;
         }
-        tokio::fs::write(&path, bytes)
-            .await
-            .map_err(|e| RepoError::from_source("failed to write blob", e))
+        write_atomically(&path, bytes).await
     }
 
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, RepoError> {
@@ -117,6 +115,63 @@ impl BlobStore for FsBlobStore {
     }
 }
 
+/// Writes `bytes` to `path` by publishing it under its final name only once
+/// it is complete: the bytes go to a uniquely named temporary file in the
+/// *same directory* (so the `rename` is within one filesystem, and therefore
+/// atomic), are flushed to disk, and only then take the real name.
+///
+/// A plain write is not good enough the moment more than one process shares
+/// a blob root — which is exactly what a same-machine multi-instance
+/// deployment does (`docs/DEPLOYMENT.md` §12). A writer interrupted partway
+/// through, on a slow or remote filesystem, leaves a file that exists and is
+/// readable but is short, and `get` has no way to tell that from a whole
+/// blob: it would serve the truncated bytes as though they were the
+/// attachment. With this, a reader sees either no file or the complete one.
+///
+/// A crash between the two steps leaves a `.tmp-*` file behind. That is the
+/// deliberate trade — a stray temporary is inert and collectable, a
+/// truncated blob is served — and it is what the blob GC sweep this plan
+/// leaves a slot for would remove.
+async fn write_atomically(path: &Path, bytes: Vec<u8>) -> Result<(), RepoError> {
+    // `resolve` only ever returns the canonicalised root with at least one
+    // component pushed onto it, so there is always a parent; this stays an
+    // error rather than an `expect` so the invariant cannot become a panic.
+    let parent = path
+        .parent()
+        .ok_or_else(|| RepoError::new(format!("blob path {path:?} has no parent directory")))?;
+    let tmp = parent.join(format!(".tmp-{}", uuid::Uuid::new_v4()));
+
+    let published = match write_and_sync(&tmp, bytes).await {
+        Ok(()) => tokio::fs::rename(&tmp, path)
+            .await
+            .map_err(|e| RepoError::from_source("failed to publish blob", e)),
+        Err(e) => Err(e),
+    };
+    if published.is_err() {
+        // Best effort: the error being returned is the interesting one, and
+        // a leftover temporary is harmless either way.
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    published
+}
+
+/// Creates `path`, writes `bytes`, and flushes them to the device before
+/// returning — so that a `rename` afterwards cannot publish a name whose
+/// contents never reached disk.
+async fn write_and_sync(path: &Path, bytes: Vec<u8>) -> Result<(), RepoError> {
+    use tokio::io::AsyncWriteExt as _;
+
+    let mut file = tokio::fs::File::create(path)
+        .await
+        .map_err(|e| RepoError::from_source("failed to create temporary blob", e))?;
+    file.write_all(&bytes)
+        .await
+        .map_err(|e| RepoError::from_source("failed to write blob", e))?;
+    file.sync_all()
+        .await
+        .map_err(|e| RepoError::from_source("failed to flush blob", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +187,40 @@ mod tests {
             .unwrap();
         let got = store.get("photos/a.png").await.unwrap();
         assert_eq!(got, Some(b"hello".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn put_leaves_no_temporary_file_behind() {
+        // The temporary is an implementation detail of `put`'s atomicity: a
+        // successful write must leave the root holding the blob and nothing
+        // else, or every write would litter a shared blob root.
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsBlobStore::new(dir.path()).await.unwrap();
+        store.put("a", b"x".to_vec(), "text/plain").await.unwrap();
+
+        let mut names = Vec::new();
+        let mut entries = tokio::fs::read_dir(dir.path()).await.unwrap();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        assert_eq!(names, vec!["a".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn put_over_an_existing_key_replaces_it_whole() {
+        // Publication is a rename, which must overwrite rather than fail --
+        // and must not leave the two writes interleaved.
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsBlobStore::new(dir.path()).await.unwrap();
+        store
+            .put("a", b"the original bytes".to_vec(), "text/plain")
+            .await
+            .unwrap();
+        store
+            .put("a", b"shorter".to_vec(), "text/plain")
+            .await
+            .unwrap();
+        assert_eq!(store.get("a").await.unwrap(), Some(b"shorter".to_vec()));
     }
 
     #[tokio::test]
