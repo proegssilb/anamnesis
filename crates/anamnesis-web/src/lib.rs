@@ -10,6 +10,7 @@ pub mod bootstrap;
 pub mod config;
 pub mod error;
 pub mod handlers;
+pub mod health;
 pub mod hx;
 pub mod routes;
 pub mod session;

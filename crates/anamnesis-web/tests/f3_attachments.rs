@@ -108,31 +108,71 @@ async fn a_file_round_trips_through_upload_and_download() {
     assert_eq!(&body[..], b"roof needs work");
 }
 
+/// The regression guard for the request body limit. axum's own
+/// `DefaultBodyLimit` is 2 MiB, so before `routes::build_router` set an
+/// explicit one this upload was rejected with a 413 by the middleware, before
+/// `add_file_attachment_handler` ever ran. Anything that silently drops that
+/// layer brings the 2 MiB ceiling back.
 #[tokio::test]
-async fn an_oversized_file_is_rejected() {
+async fn a_file_larger_than_axums_default_body_limit_is_accepted() {
     let app = TestApp::new(true).await;
     let task_path = setup_task(&app).await;
 
-    // One byte over the 10 MiB limit
-    // (`crate::handlers::tasks::MAX_ATTACHMENT_BYTES`).
-    let huge = vec![0u8; 10 * 1024 * 1024 + 1];
+    let payload = vec![0u8; 4 * 1024 * 1024];
     let upload = app
         .post_multipart(
             &format!("{task_path}/attachments/file"),
             &[("csrf_token", support::DEV_CSRF_TOKEN)],
-            ("file", "huge.bin", &huge, "application/octet-stream"),
+            ("file", "survey.bin", &payload, "application/octet-stream"),
             None,
         )
         .await;
+
+    assert_eq!(
+        upload.status(),
+        StatusCode::SEE_OTHER,
+        "a 4 MiB upload is over axum's 2 MiB default but under the app's limit"
+    );
+    let task_body = body_text(app.get(&task_path, None).await).await;
     assert!(
-        upload.status().is_client_error(),
-        "an oversized upload must be rejected, got {}",
-        upload.status()
+        task_body.contains("survey.bin"),
+        "the uploaded filename must appear on the task page: {task_body}"
+    );
+}
+
+/// `ANAMNESIS_MAX_BODY_BYTES` is the *only* ceiling on an upload — there is
+/// no separate per-attachment cap — so this is the whole of the size-limit
+/// contract.
+///
+/// It is enforced by a layer *below* the `Multipart` extractor, so the handler
+/// only ever sees a generic `MultipartError` for it. Reporting that as a 400
+/// would tell an uploader their file was malformed when it was merely too big
+/// — the one thing they could actually have acted on.
+#[tokio::test]
+async fn an_upload_over_the_router_body_limit_is_too_large_not_malformed() {
+    let app = TestApp::with_max_body_bytes(true, 64 * 1024).await;
+    let task_path = setup_task(&app).await;
+
+    let payload = vec![0u8; 128 * 1024];
+    let upload = app
+        .post_multipart(
+            &format!("{task_path}/attachments/file"),
+            &[("csrf_token", support::DEV_CSRF_TOKEN)],
+            ("file", "survey.bin", &payload, "application/octet-stream"),
+            None,
+        )
+        .await;
+
+    assert_eq!(
+        upload.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "too big and malformed are different problems: an oversized upload must \
+         say so rather than claim the request could not be parsed"
     );
 
     // Nothing was stored.
     let task_body = body_text(app.get(&task_path, None).await).await;
-    assert!(!task_body.contains("huge.bin"));
+    assert!(!task_body.contains("survey.bin"));
 }
 
 #[tokio::test]

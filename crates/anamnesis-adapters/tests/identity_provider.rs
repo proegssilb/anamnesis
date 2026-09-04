@@ -120,15 +120,74 @@ impl MockProvider {
 }
 
 async fn discover(provider: &MockProvider) -> OidcIdentityProvider {
+    discover_with_ca_bundle(provider, None)
+        .await
+        .expect("discovery against the mock provider should succeed")
+}
+
+/// As [`discover`], but with an explicit `ANAMNESIS_TLS_CA_BUNDLE` path and
+/// the error surfaced rather than unwrapped.
+async fn discover_with_ca_bundle(
+    provider: &MockProvider,
+    tls_ca_bundle: Option<&str>,
+) -> Result<OidcIdentityProvider, IdentityError> {
     OidcIdentityProvider::discover(
         &provider.issuer_url(),
         CLIENT_ID.to_string(),
         Some("test-client-secret".to_string()),
         "https://anamnesis.example/auth/callback".to_string(),
         vec!["openid".to_string(), "profile".to_string()],
+        tls_ca_bundle,
     )
     .await
-    .expect("discovery against the mock provider should succeed")
+}
+
+/// Discovers with `bundle` as the CA bundle path, asserts it failed, and
+/// hands back the error message. `map(|_| ())` is only there because
+/// `OidcIdentityProvider` has no `Debug` for `expect_err` to print.
+async fn ca_bundle_error(provider: &MockProvider, bundle: &std::path::Path) -> String {
+    discover_with_ca_bundle(provider, Some(bundle.to_str().unwrap()))
+        .await
+        .map(|_| ())
+        .expect_err("an unusable CA bundle should fail discovery")
+        .to_string()
+}
+
+/// A CA bundle that cannot be read is a startup failure naming the path, not
+/// a silent fall-back to the built-in roots — which would turn a
+/// misconfiguration into an unexplained TLS handshake failure later.
+#[tokio::test]
+async fn an_unreadable_ca_bundle_fails_naming_the_path() {
+    let provider = MockProvider::start().await;
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let missing = dir.path().join("no-such-ca.crt");
+
+    let message = ca_bundle_error(&provider, &missing).await;
+
+    assert!(
+        message.contains("no-such-ca.crt"),
+        "the error should name the bundle path, got: {message}"
+    );
+}
+
+/// The same contract for a file that exists but holds no certificates. This
+/// is the case that needs an explicit check: `Certificate::from_pem_bundle`
+/// reads a file with no PEM blocks as an *empty* bundle, not an error, so
+/// without one a bundle pointed at the wrong file would add no trust anchors
+/// and say nothing about it.
+#[tokio::test]
+async fn a_ca_bundle_with_no_certificates_fails_naming_the_path() {
+    let provider = MockProvider::start().await;
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let bundle = dir.path().join("garbage-ca.crt");
+    std::fs::write(&bundle, b"this is not a PEM certificate").expect("write the bundle");
+
+    let message = ca_bundle_error(&provider, &bundle).await;
+
+    assert!(
+        message.contains("garbage-ca.crt"),
+        "the error should name the bundle path, got: {message}"
+    );
 }
 
 #[tokio::test]

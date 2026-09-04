@@ -75,6 +75,7 @@ dependencies = [
  "axum-extra",
  "http-body-util",
  "minijinja",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_urlencoded",

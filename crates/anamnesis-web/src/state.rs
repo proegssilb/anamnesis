@@ -85,6 +85,11 @@ pub struct AppState {
     /// Whether the session cookie gets the `Secure` attribute — true when
     /// `ANAMNESIS_BASE_URL` is `https://`.
     pub secure_cookies: bool,
+    /// The largest request body the router will accept, from
+    /// `ANAMNESIS_MAX_BODY_BYTES`. Carried here rather than passed to
+    /// [`crate::routes::build_router`] as a second argument so it reaches the
+    /// router the same way `secure_cookies` and `dev_auth_bypass` already do.
+    pub max_body_bytes: usize,
     /// The runtime-editable knobs `docs/DOMAIN.md` §3 assigns to a
     /// `Settings` entity: the active-project limit, the suggestion engine's
     /// tunables, and the sweep schedule. A live port, not a cached snapshot

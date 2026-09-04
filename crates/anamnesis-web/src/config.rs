@@ -42,6 +42,24 @@ pub struct Config {
     /// unlike every `require`d field above — it defaults rather than failing
     /// startup when unset, exactly like `ANAMNESIS_BIND_ADDR`.
     pub blob_root: String,
+    /// An optional PEM bundle of extra certificate authorities to trust when
+    /// talking to the OIDC provider, *in addition to* the public roots
+    /// compiled in via `webpki-roots`.
+    ///
+    /// Nothing in this process reads the system trust store, so
+    /// `SSL_CERT_FILE` and `/etc/ssl/certs` have no effect — an internally
+    /// issued IdP certificate is unreachable without this. Postgres needs no
+    /// equivalent: `sqlx` already accepts `?sslrootcert=` in the connection
+    /// URL and honours `PGSSLROOTCERT`.
+    pub tls_ca_bundle: Option<String>,
+    /// The largest request body the server will accept, in bytes.
+    ///
+    /// This is a whole-request cap covering attachment uploads, so any proxy
+    /// in front of Anamnesis must allow at least as much or its limit becomes
+    /// the real one. Defaults to [`DEFAULT_MAX_BODY_BYTES`] rather than
+    /// axum's own 2 MiB, which is far too small for the file attachments
+    /// `docs/DOMAIN.md` §3 describes.
+    pub max_body_bytes: usize,
 }
 
 /// A credential that must stay a `String` because the API consuming it takes
@@ -92,6 +110,8 @@ impl std::fmt::Debug for Config {
             .field("timezone", &self.timezone)
             .field("bootstrap_admin", &self.bootstrap_admin)
             .field("blob_root", &self.blob_root)
+            .field("tls_ca_bundle", &self.tls_ca_bundle)
+            .field("max_body_bytes", &self.max_body_bytes)
             .finish()
     }
 }
@@ -99,6 +119,12 @@ impl std::fmt::Debug for Config {
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
 const DEFAULT_OIDC_SCOPES: &str = "openid profile email";
 const DEFAULT_BLOB_ROOT: &str = "./data/blobs";
+/// 40 MiB. Chosen as a deliberate ceiling for file attachments rather than
+/// inherited from axum's 2 MiB `DefaultBodyLimit`, which rejects most real
+/// documents. Raising it raises peak memory too: an upload is read fully
+/// into a `Vec<u8>` (`Multipart::bytes`, then `BlobStore::put`), so the
+/// worst case is roughly this figure times the number of concurrent uploads.
+const DEFAULT_MAX_BODY_BYTES: usize = 40 * 1024 * 1024;
 /// The floor `axum_extra`'s `Key::from` accepts without panicking. Enforced
 /// on `ANAMNESIS_SESSION_SECRET` so a short secret is a named configuration
 /// error at startup rather than a panic deep in cookie signing.
@@ -140,6 +166,8 @@ impl Config {
         let timezone = require(&get, "ANAMNESIS_TIMEZONE")?;
         let bootstrap_admin = require(&get, "ANAMNESIS_BOOTSTRAP_ADMIN")?;
         let blob_root = get("ANAMNESIS_BLOB_ROOT").unwrap_or_else(|| DEFAULT_BLOB_ROOT.to_string());
+        let tls_ca_bundle = get("ANAMNESIS_TLS_CA_BUNDLE").filter(|v| !v.is_empty());
+        let max_body_bytes = resolve_max_body_bytes(&get)?;
 
         Ok(Config {
             database_url,
@@ -154,7 +182,21 @@ impl Config {
             timezone,
             bootstrap_admin,
             blob_root,
+            tls_ca_bundle,
+            max_body_bytes,
         })
+    }
+
+    /// Just the listen address, resolved from the environment without
+    /// requiring any of the other variables.
+    ///
+    /// The `--health-check` probe (`crate::health`) needs to know which port
+    /// to talk to and nothing else — it is a bare HTTP GET against an
+    /// already-running server. Requiring a database URL and an OIDC client
+    /// secret before it could run would make a container's `HEALTHCHECK`
+    /// report unhealthy for reasons unrelated to the server's health.
+    pub fn bind_addr_from_env() -> Result<SocketAddr, ConfigError> {
+        resolve_bind_addr(&|key| std::env::var(key).ok())
     }
 
     /// Whether [`Config::base_url`] is an `https://` URL — decides whether
@@ -205,6 +247,28 @@ fn resolve_cookie_key(get: &impl Fn(&str) -> Option<String>) -> Result<Key, Conf
         });
     }
     Ok(Key::from(secret.as_bytes()))
+}
+
+/// `ANAMNESIS_MAX_BODY_BYTES`, defaulting to [`DEFAULT_MAX_BODY_BYTES`].
+///
+/// A plain byte count, not a human-readable size like `40MB`: every other
+/// variable here is a plain value, and a size-string parser would be a new
+/// dependency and a new class of malformed input for the sake of one knob.
+/// Zero is rejected rather than accepted as "unlimited" — a limit of nothing
+/// would reject every request, which is never what someone setting it meant.
+fn resolve_max_body_bytes(get: &impl Fn(&str) -> Option<String>) -> Result<usize, ConfigError> {
+    let Some(raw) = get("ANAMNESIS_MAX_BODY_BYTES").filter(|v| !v.is_empty()) else {
+        return Ok(DEFAULT_MAX_BODY_BYTES);
+    };
+    let invalid = |reason: String| ConfigError::Invalid {
+        name: "ANAMNESIS_MAX_BODY_BYTES",
+        reason,
+    };
+    match raw.trim().parse::<usize>() {
+        Ok(0) => Err(invalid("must be greater than zero".to_string())),
+        Ok(bytes) => Ok(bytes),
+        Err(e) => Err(invalid(format!("expected a byte count: {e}"))),
+    }
 }
 
 /// `ANAMNESIS_OIDC_SCOPES`, whitespace-split, defaulting to
@@ -444,6 +508,64 @@ mod tests {
         pairs.push(("ANAMNESIS_BLOB_ROOT", "/var/lib/anamnesis/blobs"));
         let cfg = Config::from_source(env(&pairs)).unwrap();
         assert_eq!(cfg.blob_root, "/var/lib/anamnesis/blobs");
+    }
+
+    #[test]
+    fn tls_ca_bundle_defaults_to_none() {
+        let cfg = Config::from_source(env(&full_valid_env())).unwrap();
+        assert_eq!(cfg.tls_ca_bundle, None);
+    }
+
+    #[test]
+    fn tls_ca_bundle_is_overridable() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_TLS_CA_BUNDLE", "/etc/anamnesis/ca.crt"));
+        let cfg = Config::from_source(env(&pairs)).unwrap();
+        assert_eq!(cfg.tls_ca_bundle.as_deref(), Some("/etc/anamnesis/ca.crt"));
+    }
+
+    #[test]
+    fn max_body_bytes_defaults_to_40_mib() {
+        let cfg = Config::from_source(env(&full_valid_env())).unwrap();
+        assert_eq!(cfg.max_body_bytes, 40 * 1024 * 1024);
+    }
+
+    #[test]
+    fn max_body_bytes_is_overridable() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_MAX_BODY_BYTES", "1048576"));
+        let cfg = Config::from_source(env(&pairs)).unwrap();
+        assert_eq!(cfg.max_body_bytes, 1024 * 1024);
+    }
+
+    #[test]
+    fn non_numeric_max_body_bytes_is_rejected_by_name() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_MAX_BODY_BYTES", "40MB"));
+        let err = Config::from_source(env(&pairs)).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "ANAMNESIS_MAX_BODY_BYTES",
+                ..
+            }
+        ));
+    }
+
+    /// Zero is the one numerically valid value that cannot mean what whoever
+    /// set it intended: a body limit of nothing rejects every request.
+    #[test]
+    fn zero_max_body_bytes_is_rejected_by_name() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_MAX_BODY_BYTES", "0"));
+        let err = Config::from_source(env(&pairs)).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::Invalid {
+                name: "ANAMNESIS_MAX_BODY_BYTES",
+                reason: "must be greater than zero".to_string(),
+            }
+        );
     }
 
     #[test]
