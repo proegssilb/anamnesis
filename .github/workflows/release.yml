@@ -72,7 +72,7 @@ jobs:
           digest='${{ steps.build.outputs.digest }}'
           touch "/tmp/digests/${digest#sha256:}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: digests-${{ strategy.job-index }}
           path: /tmp/digests/*
@@ -85,7 +85,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
           pattern: digests-*
@@ -150,7 +150,7 @@ jobs:
           sha256sum "dist/anamnesis-web-${{ matrix.arch }}-unknown-linux-gnu" \
             > "dist/anamnesis-web-${{ matrix.arch }}-unknown-linux-gnu.sha256"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.arch }}
           path: dist/*
@@ -161,7 +161,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: binaries-*
