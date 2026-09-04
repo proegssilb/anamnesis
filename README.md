@@ -77,7 +77,8 @@ empty).
 This is the fast path for running Anamnesis locally with no external
 identity provider — every request is authenticated as a fixed local user.
 **Never do this in a real deployment**; see the OIDC section below for real
-auth.
+auth, and [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the container,
+systemd, and Proxmox install paths in full.
 
 The exact sequence below (fresh SQLite file, dev bypass, `cargo run`, then
 driving the app through a full area → project → task → tangle → suggestion
