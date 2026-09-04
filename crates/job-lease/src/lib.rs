@@ -72,7 +72,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sqlx::migrate::{Migrate, MigrateError, Migrator};
+use sqlx::migrate::{AppliedMigration, Migrate, MigrateError, Migration, Migrator};
 use sqlx::{PgPool, SqlitePool};
 
 /// This crate's own migrations table, kept separate from the default
@@ -249,9 +249,7 @@ fn ttl_seconds(ttl: Duration) -> i64 {
 /// [`SqlLease::postgres`] can just call `run`.)
 ///
 /// Moving the read inside the transaction that does the write is what closes
-/// the gap. `BEGIN IMMEDIATE` is required for that: a plain `BEGIN` is
-/// deferred and would not take SQLite's write lock until the first write,
-/// which is already too late.
+/// the gap — see [`apply_one_migration`], which is where that happens.
 ///
 /// **Per migration, not one transaction around the whole run.** Both are
 /// correct, but a single outer transaction would hold the write lock for the
@@ -261,35 +259,58 @@ fn ttl_seconds(ttl: Duration) -> i64 {
 /// lock is held for one migration's own work and released in between, which is
 /// the floor that migration inherently costs rather than a ceiling this
 /// function imposes.
-///
-/// The two checks `Migrator::run` would have made are kept deliberately: a
-/// dirty version aborts, and an already-applied migration whose checksum no
-/// longer matches the file raises [`MigrateError::VersionMismatch`] rather
-/// than being silently skipped.
 async fn migrate_sqlite(pool: &SqlitePool, migrator: &Migrator) -> Result<(), LeaseError> {
-    for migration in migrator.iter() {
-        if migration.migration_type.is_down_migration() {
-            continue;
-        }
-        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-        let conn = &mut *tx;
-        conn.ensure_migrations_table(MIGRATIONS_TABLE).await?;
-        if let Some(version) = conn.dirty_version(MIGRATIONS_TABLE).await? {
-            return Err(MigrateError::Dirty(version).into());
-        }
-        let applied = conn.list_applied_migrations(MIGRATIONS_TABLE).await?;
-        match applied.iter().find(|a| a.version == migration.version) {
-            Some(a) if a.checksum != migration.checksum => {
-                return Err(MigrateError::VersionMismatch(migration.version).into());
-            }
-            Some(_) => {}
-            None => {
-                conn.apply(MIGRATIONS_TABLE, migration).await?;
-            }
-        }
-        tx.commit().await?;
+    let pending = migrator
+        .iter()
+        .filter(|m| !m.migration_type.is_down_migration());
+    for migration in pending {
+        apply_one_migration(pool, migration).await?;
     }
     Ok(())
+}
+
+/// Applies `migration` if it is not already recorded, inside a single
+/// `BEGIN IMMEDIATE` transaction.
+///
+/// `BEGIN IMMEDIATE` is what makes the check-then-act atomic: it takes
+/// SQLite's write lock up front, so the applied-version list is read under the
+/// same lock that the `apply` will write beneath. A plain `BEGIN` is deferred
+/// and would not take the lock until the first write, which is already too
+/// late.
+///
+/// A dirty version aborts the run — one of the two checks `Migrator::run`
+/// would have made, kept deliberately.
+async fn apply_one_migration(pool: &SqlitePool, migration: &Migration) -> Result<(), LeaseError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let conn = &mut *tx;
+    conn.ensure_migrations_table(MIGRATIONS_TABLE).await?;
+    if let Some(version) = conn.dirty_version(MIGRATIONS_TABLE).await? {
+        return Err(MigrateError::Dirty(version).into());
+    }
+    let applied = conn.list_applied_migrations(MIGRATIONS_TABLE).await?;
+    if !is_already_applied(&applied, migration)? {
+        conn.apply(MIGRATIONS_TABLE, migration).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Whether `migration` is already recorded in `applied`.
+///
+/// The second check `Migrator::run` would have made: a recorded migration
+/// whose checksum no longer matches the file raises
+/// [`MigrateError::VersionMismatch`] rather than being silently skipped.
+fn is_already_applied(
+    applied: &[AppliedMigration],
+    migration: &Migration,
+) -> Result<bool, LeaseError> {
+    match applied.iter().find(|a| a.version == migration.version) {
+        Some(a) if a.checksum != migration.checksum => {
+            Err(MigrateError::VersionMismatch(migration.version).into())
+        }
+        Some(_) => Ok(true),
+        None => Ok(false),
+    }
 }
 
 mod sqlite_impl {
