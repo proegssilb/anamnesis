@@ -42,19 +42,18 @@ impl OidcIdentityProvider {
     /// Discovers `issuer_url` (`GET {issuer}/.well-known/openid-configuration`
     /// plus its JWKS) and builds a provider ready to drive the Authorization
     /// Code + PKCE flow.
+    ///
+    /// `tls_ca_bundle` optionally names a PEM file of extra certificate
+    /// authorities to trust — see [`build_http_client`].
     pub async fn discover(
         issuer_url: &str,
         client_id: String,
         client_secret: Option<String>,
         redirect_url: String,
         scopes: Vec<String>,
+        tls_ca_bundle: Option<&str>,
     ) -> Result<Self, IdentityError> {
-        let http_client = openidconnect::reqwest::ClientBuilder::new()
-            // Following redirects on discovery/token requests opens an SSRF
-            // hole; the browser is what follows the *authorize* redirect.
-            .redirect(openidconnect::reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| IdentityError::from_source("failed to build OIDC HTTP client", e))?;
+        let http_client = build_http_client(tls_ca_bundle).await?;
 
         let issuer = IssuerUrl::new(issuer_url.to_string()).map_err(|e| {
             IdentityError::from_source(format!("invalid issuer URL {issuer_url:?}"), e)
@@ -79,6 +78,57 @@ impl OidcIdentityProvider {
             scopes: scopes.into_iter().map(Scope::new).collect(),
         })
     }
+}
+
+/// Builds the HTTP client every OIDC request goes through, optionally
+/// trusting extra certificate authorities from the PEM bundle at
+/// `tls_ca_bundle`.
+///
+/// `reqwest` here is compiled against `webpki-roots` — a *bundled* copy of the
+/// public root store — and reads nothing from the system trust store, so
+/// neither `SSL_CERT_FILE` nor `/etc/ssl/certs` can make an internally issued
+/// identity provider reachable. This parameter is the only way to trust one.
+/// The roots it adds are *additional*: the public store keeps working, so a
+/// deployment mixing an internal IdP with public endpoints needs no second
+/// configuration.
+///
+/// Every failure names the path. A trust anchor that was silently skipped
+/// would surface later as an unexplained TLS handshake failure against the
+/// issuer, which is a much harder thing to diagnose than a startup error.
+async fn build_http_client(
+    tls_ca_bundle: Option<&str>,
+) -> Result<openidconnect::reqwest::Client, IdentityError> {
+    let mut builder = openidconnect::reqwest::ClientBuilder::new()
+        // Following redirects on discovery/token requests opens an SSRF
+        // hole; the browser is what follows the *authorize* redirect.
+        .redirect(openidconnect::reqwest::redirect::Policy::none());
+
+    if let Some(path) = tls_ca_bundle {
+        let pem = tokio::fs::read(path).await.map_err(|e| {
+            IdentityError::from_source(format!("failed to read the TLS CA bundle {path:?}"), e)
+        })?;
+        let certificates =
+            openidconnect::reqwest::Certificate::from_pem_bundle(&pem).map_err(|e| {
+                IdentityError::from_source(format!("failed to parse the TLS CA bundle {path:?}"), e)
+            })?;
+        // `from_pem_bundle` treats a file with no PEM blocks in it as an
+        // empty bundle rather than an error, so a path pointing at the wrong
+        // file (or at a DER certificate) would otherwise succeed here and add
+        // no trust anchors at all -- precisely the silent failure this
+        // function exists to avoid.
+        if certificates.is_empty() {
+            return Err(IdentityError::new(format!(
+                "the TLS CA bundle {path:?} contains no PEM certificates"
+            )));
+        }
+        for certificate in certificates {
+            builder = builder.add_root_certificate(certificate);
+        }
+    }
+
+    builder
+        .build()
+        .map_err(|e| IdentityError::from_source("failed to build OIDC HTTP client", e))
 }
 
 #[async_trait]

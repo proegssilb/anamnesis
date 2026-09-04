@@ -9,6 +9,7 @@
 //! `Router::merge` requires every side to already share the same state type.
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 
 use crate::handlers::{
@@ -33,6 +34,8 @@ use crate::state::AppState;
 use crate::static_files;
 
 pub fn build_router(state: AppState) -> Router {
+    // Read before `state` is moved into `with_state`.
+    let max_body_bytes = state.max_body_bytes;
     Router::new()
         .merge(area_routes())
         .merge(project_routes())
@@ -40,6 +43,10 @@ pub fn build_router(state: AppState) -> Router {
         .merge(board_routes())
         .merge(admin_routes())
         .merge(static_routes())
+        // Replaces axum's own 2 MiB `DefaultBodyLimit`, which rejects most
+        // real file attachments (`docs/DOMAIN.md` §3) long before
+        // `add_file_attachment_handler` ever runs.
+        .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state)
 }
 

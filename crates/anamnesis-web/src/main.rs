@@ -10,6 +10,7 @@
 //! every failure exits through [`fail`] rather than repeating an
 //! `eprintln!` + `std::process::exit` pair.
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -22,11 +23,18 @@ use anamnesis_adapters::{
 use anamnesis_app::{Clock, IdentityProvider, TimezoneResolver};
 use anamnesis_web::config::Config;
 use anamnesis_web::state::AppState;
-use anamnesis_web::{bootstrap, routes, session, sweep, templates};
+use anamnesis_web::{bootstrap, health, routes, session, sweep, templates};
 
 #[tokio::main]
 async fn main() {
     init_tracing();
+
+    // Before anything else: the container image's HEALTHCHECK re-runs this
+    // same binary (`distroless/cc` has neither a shell nor `curl`), and a
+    // health probe must not need the full configuration a real startup does.
+    if std::env::args().nth(1).as_deref() == Some("--health-check") {
+        run_health_check().await;
+    }
 
     let config =
         Config::from_env().unwrap_or_else(|err| fail(format!("configuration error: {err}")));
@@ -61,6 +69,22 @@ async fn main() {
     // module doc comment) -- `abort()` returns immediately rather than
     // waiting for its next wake-up, so it never delays process exit.
     ticker_handle.abort();
+}
+
+/// Probes an already-running server and exits 0 (healthy) or 1 (not),
+/// which is the whole contract a container `HEALTHCHECK` cares about.
+///
+/// Reads only `ANAMNESIS_BIND_ADDR`: demanding a database URL and an OIDC
+/// client secret before the probe could run would make the health check fail
+/// for reasons that have nothing to do with the server's health.
+async fn run_health_check() -> ! {
+    let addr = Config::bind_addr_from_env()
+        .unwrap_or_else(|err| fail(format!("configuration error: {err}")));
+    if health::check_health(addr).await {
+        std::process::exit(0)
+    }
+    tracing::error!(addr = %addr, "health check failed");
+    std::process::exit(1)
 }
 
 fn init_tracing() {
@@ -134,6 +158,7 @@ async fn resolve_identity(config: &Config) -> Option<Arc<dyn IdentityProvider>> 
             .map(|secret| secret.expose().to_string()),
         format!("{}/auth/callback", config.base_url.trim_end_matches('/')),
         config.oidc_scopes.clone(),
+        config.tls_ca_bundle.as_deref(),
     )
     .await
     .unwrap_or_else(|err| {
@@ -190,25 +215,70 @@ fn build_state(
         dev_auth_bypass: config.dev_auth_bypass,
         dev_csrf_token: session::generate_csrf_token(),
         secure_cookies: config.base_url_is_https(),
+        max_body_bytes: config.max_body_bytes,
         settings: store,
         timezone_name: config.timezone.clone(),
     }
 }
 
-/// Binds `addr` and serves until SIGINT, draining in-flight requests.
+/// Binds `addr` and serves until SIGINT or SIGTERM, draining in-flight
+/// requests.
 async fn serve(app: Router, addr: SocketAddr) {
+    // Installed before the socket is bound, so a signal arriving while the
+    // listener is coming up is caught rather than killing the process.
+    let shutdown = shutdown_signal();
+
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|err| fail(format!("failed to bind {addr}: {err}")));
     tracing::info!(addr = %addr, "anamnesis listening");
 
-    let shutdown = async {
-        let _ = tokio::signal::ctrl_c().await;
-        tracing::info!("shutdown signal received, draining in-flight requests");
-    };
-
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
         .await
         .expect("server encountered a fatal error");
+}
+
+/// Installs the shutdown-signal handlers and returns a future resolving once
+/// the first of them fires.
+///
+/// SIGINT alone is not enough. Podman, Docker, Kubernetes and systemd all
+/// stop a service with **SIGTERM**, whose default disposition kills the
+/// process outright: every in-flight request is dropped, and the supervisor
+/// then waits out its whole grace period for a process that is already gone.
+///
+/// Deliberately **not** `async`: the handlers are registered when this is
+/// *called*, during startup, rather than the first time the returned future
+/// is polled. Otherwise a signal arriving in the gap between binding the
+/// socket and axum's first poll of the shutdown future would still be fatal.
+#[cfg(unix)]
+fn shutdown_signal() -> impl Future<Output = ()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut terminate = signal(SignalKind::terminate())
+        .unwrap_or_else(|err| fail(format!("failed to install the SIGTERM handler: {err}")));
+
+    async move {
+        let signal = tokio::select! {
+            _ = tokio::signal::ctrl_c() => "SIGINT",
+            _ = terminate.recv() => "SIGTERM",
+        };
+        tracing::info!(
+            signal,
+            "shutdown signal received, draining in-flight requests"
+        );
+    }
+}
+
+/// The non-Unix fallback: there is no SIGTERM to select over, so Ctrl-C is
+/// the only stop signal there is.
+#[cfg(not(unix))]
+fn shutdown_signal() -> impl Future<Output = ()> {
+    async {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!(
+            signal = "SIGINT",
+            "shutdown signal received, draining in-flight requests"
+        );
+    }
 }

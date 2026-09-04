@@ -32,6 +32,11 @@ pub const TEST_SESSION_SECRET: &str =
 /// need to scrape it out of rendered HTML to build a valid form submission.
 pub const DEV_CSRF_TOKEN: &str = "test-dev-csrf-token";
 
+/// The router-wide body limit every test app gets unless it asks for
+/// another — the same 40 MiB `config::DEFAULT_MAX_BODY_BYTES` a deployment
+/// gets when `ANAMNESIS_MAX_BODY_BYTES` is unset.
+pub const TEST_MAX_BODY_BYTES: usize = 40 * 1024 * 1024;
+
 /// The dev-bypass user's id — `anamnesis_web::auth::DEV_USER_ID`, duplicated
 /// here as a plain string constant so tests need not depend on that private
 /// module path.
@@ -59,6 +64,17 @@ impl TestApp {
     /// instead of the dev-bypass user — for tests that need a distinct,
     /// real-OIDC-style admin identity.
     pub async fn with_bootstrap_admin(dev_auth_bypass: bool, bootstrap_admin: &str) -> Self {
+        Self::build(dev_auth_bypass, bootstrap_admin, TEST_MAX_BODY_BYTES).await
+    }
+
+    /// As [`TestApp::new`], but with a router-wide body limit other than the
+    /// default — so a test can cross that ceiling without allocating a
+    /// 40 MiB request to do it.
+    pub async fn with_max_body_bytes(dev_auth_bypass: bool, max_body_bytes: usize) -> Self {
+        Self::build(dev_auth_bypass, DEV_USER_ID, max_body_bytes).await
+    }
+
+    async fn build(dev_auth_bypass: bool, bootstrap_admin: &str, max_body_bytes: usize) -> Self {
         assert!(
             TEST_SESSION_SECRET.len() >= 64,
             "test session secret must meet the same floor as production"
@@ -84,7 +100,13 @@ impl TestApp {
             .await
             .expect("create temp blob store");
 
-        let state = test_state(store.clone(), blobs, key.clone(), dev_auth_bypass);
+        let state = test_state(
+            store.clone(),
+            blobs,
+            key.clone(),
+            dev_auth_bypass,
+            max_body_bytes,
+        );
         let router = routes::build_router(state);
         Self {
             router,
@@ -236,6 +258,7 @@ fn test_state(
     blobs: FsBlobStore,
     cookie_key: Key,
     dev_auth_bypass: bool,
+    max_body_bytes: usize,
 ) -> AppState {
     AppState {
         areas: store.clone(),
@@ -260,6 +283,7 @@ fn test_state(
         dev_auth_bypass,
         dev_csrf_token: DEV_CSRF_TOKEN.to_string(),
         secure_cookies: false,
+        max_body_bytes,
         settings: store,
         timezone_name: "UTC".to_string(),
     }

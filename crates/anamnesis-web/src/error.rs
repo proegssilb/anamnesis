@@ -22,6 +22,12 @@ pub enum WebError {
     /// A request could not even be parsed (e.g. a malformed id in the path,
     /// or a `status` field naming no known `ProjectStatus`).
     BadRequest(String),
+    /// A request body exceeded the router-wide `ANAMNESIS_MAX_BODY_BYTES`
+    /// ceiling. Distinct from [`WebError::BadRequest`] because "too big" and
+    /// "malformed" are different problems with different fixes: one is
+    /// answered by uploading a smaller file or raising the limit, the other
+    /// by fixing the client.
+    PayloadTooLarge(String),
     /// A template failed to render. Always a bug (a missing context
     /// variable, a broken template), never something a request caused — but
     /// it still has to become *some* response rather than a panic.
@@ -101,6 +107,7 @@ impl WebError {
                 )
             }
             WebError::BadRequest(message) => (StatusCode::BAD_REQUEST, message.clone()),
+            WebError::PayloadTooLarge(message) => (StatusCode::PAYLOAD_TOO_LARGE, message.clone()),
             WebError::Template(message) => {
                 tracing::error!(error = %message, "template render failed");
                 (

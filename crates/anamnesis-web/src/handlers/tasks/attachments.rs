@@ -1,5 +1,7 @@
 use axum::Form;
+use axum::extract::multipart::MultipartError;
 use axum::extract::{Multipart, Path, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 
 use anamnesis_app::{
@@ -51,12 +53,6 @@ async fn add_link_attachment_impl(
     Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response())
 }
 
-/// The largest file a single attachment upload may carry — 10 MiB. Chosen as
-/// a sensible default for a self-hosted single-user/small-team app storing
-/// attachments on local disk; nothing in `docs/DOMAIN.md` names a specific
-/// figure.
-const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
-
 /// Uploads a file and attaches it to a task, through
 /// `anamnesis_app::add_file_attachment` and the configured `BlobStore`
 /// (`docs/DOMAIN.md` §3: "Files need a new `BlobStore` port"). A
@@ -97,6 +93,23 @@ fn filename_is_safe(name: &str) -> bool {
         && !name.contains('\0')
 }
 
+/// Translates a multipart read failure into the right `WebError`.
+///
+/// The router-wide `ANAMNESIS_MAX_BODY_BYTES` limit
+/// (`crate::routes::build_router`) is enforced by a layer *underneath* this
+/// extractor, so exceeding it arrives here as an ordinary `MultipartError`.
+/// Reporting that as a 400 would tell an uploader their file was malformed
+/// when it was merely too big, so `status()` -- which axum sets to 413 for
+/// exactly that case -- decides which it was.
+fn multipart_error(err: MultipartError) -> WebError {
+    if err.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        return WebError::PayloadTooLarge(
+            "that upload is larger than this server accepts".to_string(),
+        );
+    }
+    WebError::BadRequest(format!("malformed upload: {err}"))
+}
+
 /// One parsed `multipart/form-data` upload's fields, before any validation —
 /// [`add_file_attachment_impl`] owns deciding whether these are acceptable.
 struct ParsedUpload {
@@ -106,46 +119,32 @@ struct ParsedUpload {
     bytes: Option<Vec<u8>>,
 }
 
-/// Reads every field out of the upload, enforcing only [`MAX_ATTACHMENT_BYTES`]
-/// (checked per-field as bytes arrive, rather than after buffering the whole
-/// upload). Split out of [`add_file_attachment_impl`] so the field-by-field
-/// parsing loop reads as one step, separate from validating and acting on
-/// the result.
+/// Reads every field out of the upload. Split out of
+/// [`add_file_attachment_impl`] so the field-by-field parsing loop reads as
+/// one step, separate from validating and acting on the result.
+///
+/// There is deliberately no per-file size cap here. Upload size is bounded by
+/// the router-wide `ANAMNESIS_MAX_BODY_BYTES` layer alone, so operators have
+/// exactly one number to set. A second, narrower cap only earns its keep once
+/// attachments can live somewhere other than the local filesystem and the two
+/// limits would genuinely mean different things.
 async fn parse_upload_fields(mut multipart: Multipart) -> Result<ParsedUpload, WebError> {
     let mut csrf_token: Option<String> = None;
     let mut filename: Option<String> = None;
     let mut mime: String = "application/octet-stream".to_string();
     let mut bytes: Option<Vec<u8>> = None;
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| WebError::BadRequest(format!("malformed upload: {e}")))?
-    {
+    while let Some(field) = multipart.next_field().await.map_err(multipart_error)? {
         match field.name().unwrap_or_default() {
             "csrf_token" => {
-                csrf_token = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| WebError::BadRequest(e.to_string()))?,
-                );
+                csrf_token = Some(field.text().await.map_err(multipart_error)?);
             }
             "file" => {
                 filename = field.file_name().map(str::to_string);
                 if let Some(ct) = field.content_type() {
                     mime = ct.to_string();
                 }
-                let data = field
-                    .bytes()
-                    .await
-                    .map_err(|e| WebError::BadRequest(e.to_string()))?;
-                if data.len() > MAX_ATTACHMENT_BYTES {
-                    return Err(WebError::BadRequest(format!(
-                        "that file is too large — the limit is {} MiB",
-                        MAX_ATTACHMENT_BYTES / (1024 * 1024)
-                    )));
-                }
+                let data = field.bytes().await.map_err(multipart_error)?;
                 bytes = Some(data.to_vec());
             }
             _ => {}

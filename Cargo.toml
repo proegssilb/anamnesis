@@ -4,3 +4,8 @@ members = ["crates/anamnesis-core", "crates/anamnesis-app", "crates/anamnesis-ad
 
 [workspace.package]
 edition = "2024"
+
+[profile.release]
+# Debug symbols are a large fraction of the binary and are of no use in a
+# container image or a release artifact; a backtrace still names functions.
+strip = true
