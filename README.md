@@ -259,12 +259,13 @@ Stated plainly rather than discovered the hard way:
   `Never`) exists purely to drive the archive sweep's schedule; nothing lets
   a *task itself* recur. `docs/DOMAIN.md` §6 names this as a deliberate,
   reusable-later type, not an oversight.
-- **No scheduled archive sweep actually runs.** `next_run` and
-  `sweep_done` are pure, fully tested functions, and the manual **Archive
-  all** button on the board calls `sweep_done` directly and works — but no
-  background ticker calls `next_run` on any timer. Until one is wired into
-  `anamnesis-web`'s startup, archiving completed work is a manual action
-  only, regardless of what a project's configured recurrence would imply.
+- **Nothing is archived on a schedule until an admin sets one.** The
+  background sweep ticker is wired into `anamnesis-web`'s startup and runs,
+  but a fresh install's `sweep_recurrence` is `Never` — guessing an owner's
+  archive day would be worse than leaving it unset — so the manual **Archive
+  all** button is the only archiver until someone chooses a recurrence on
+  `/settings`. Once one is set, the ticker fires within a day of it coming
+  due, not at the stroke of local midnight.
 - **No web UI to grant roles to anyone but the bootstrap admin.**
   `ANAMNESIS_BOOTSTRAP_ADMIN` gets System Admin on first boot (idempotently,
   every boot); after that, adding another user as an Area/Project
@@ -273,16 +274,11 @@ Stated plainly rather than discovered the hard way:
   `set_project_role`) that nothing in `anamnesis-web` currently calls.
   Practically, today, this is a single-admin system unless someone edits
   the database directly.
-- **`Settings` (active project limit, suggestion cooldown, high-bounce
-  threshold, sweep recurrence) aren't editable at runtime.** They're
-  compiled-in constants in `crates/anamnesis-web/src/settings.rs`, not a
-  real read from the `settings` table the schema already has — there is no
-  `SettingsRepository` port yet.
-- **A resolved tangle sitting in the Done column is never cleared by
-  "Archive all."** `sweep_done` only knows about `Task`s (a `Tangle` has no
-  `archived_at` to sweep), so a resolved tangle card accumulates in Done
-  permanently once you've untangled it — there's no route to delete or
-  archive a `Tangle` row at all.
+- **A tangle can be resolved and archived, but never deleted.** The sweep
+  and **Archive all** both clear a *resolved* tangle out of a Done column
+  (`sweep_done_tangles`), so they no longer accumulate there — but an
+  unresolved tangle you simply don't want has no route to remove it; the
+  only way out is to break the cycle it names.
 - **No real-time updates.** No websockets, no server push — a page refresh
   is the update mechanism. This one's by design, not a gap: see
   `docs/DOMAIN.md` §8.

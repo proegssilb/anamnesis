@@ -1,6 +1,14 @@
 [workspace]
 resolver = "3"
-members = ["crates/anamnesis-core", "crates/anamnesis-app", "crates/anamnesis-adapters", "crates/anamnesis-web"]
+# `job-lease` carries no `anamnesis-` prefix on purpose: it is not a hexagonal
+# layer of this application, but a generic crate that happens to live here.
+members = [
+    "crates/anamnesis-core",
+    "crates/anamnesis-app",
+    "crates/anamnesis-adapters",
+    "crates/anamnesis-web",
+    "crates/job-lease",
+]
 
 [workspace.package]
 edition = "2024"

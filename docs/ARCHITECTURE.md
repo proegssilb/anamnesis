@@ -250,11 +250,15 @@ The **scheduled sweep ticker** (`anamnesis-web::sweep`, `docs/DOMAIN.md`
 of its own** — worth naming here precisely because of that absence. It is
 a background `tokio` task, spawned exactly once (from `main.rs`, never from
 `routes::build_router`/`AppState` construction/`bootstrap::run`, so no
-integration test can ever cause one to spawn) that wakes on a fixed
-interval, asks the pure, unit-tested `anamnesis_web::sweep::is_due` whether
-a sweep is due against `SettingsRepository`-sourced state, and — if so —
-calls the exact same `anamnesis_app::archive_done_tasks` the manual
-"Archive all" button calls, then stamps `SettingsRepository::record_sweep`.
+integration test can ever cause one to spawn) that wakes, asks the pure,
+unit-tested `anamnesis_web::sweep::is_due` whether a sweep is due against
+`SettingsRepository`-sourced state, and — if so — takes the `archive_sweep`
+lease and calls the exact same `anamnesis_app::archive_done_tasks` the
+manual "Archive all" button calls, then stamps
+`SettingsRepository::record_sweep`. Its interval is not fixed: each pass
+picks its own next wake from what that pass resolved, so an ordinary tick
+sleeps a day and one that left a due sweep unaccounted for — it failed, or
+another instance held the lease — re-checks in minutes.
 It needs no port of its own because it is pure orchestration over ports
 that already exist (`BoardQuery`, `TaskRepository`, `TangleRepository`,
 `SearchIndex`, `Clock`, `SettingsRepository`); the "port" here, such as it

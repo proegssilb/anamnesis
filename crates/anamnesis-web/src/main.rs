@@ -20,7 +20,7 @@ use tracing_subscriber::EnvFilter;
 use anamnesis_adapters::{
     FsBlobStore, OidcIdentityProvider, SqlStore, SystemClock, TzTimezoneResolver, UuidIdGen,
 };
-use anamnesis_app::{Clock, IdentityProvider, TimezoneResolver};
+use anamnesis_app::{Clock, IdentityProvider, JobLease, TimezoneResolver};
 use anamnesis_web::config::Config;
 use anamnesis_web::state::AppState;
 use anamnesis_web::{bootstrap, health, routes, session, sweep, templates};
@@ -49,6 +49,7 @@ async fn main() {
 
     validate_timezone(&config.timezone);
     let store = open_store(&config).await;
+    let leases = open_job_lease(&store).await;
     let identity = resolve_identity(&config).await;
     let blobs = open_blob_store(&config).await;
     let state = build_state(&config, store, blobs, identity);
@@ -59,7 +60,7 @@ async fn main() {
     // (which builds a `Router` directly via `routes::build_router`, per
     // `tests/support`) can ever cause it to spawn. See `sweep`'s module doc
     // comment for the full reasoning.
-    let ticker_handle = sweep::spawn_ticker(state.clone());
+    let ticker_handle = sweep::spawn_ticker(state.clone(), leases);
 
     serve(routes::build_router(state), config.bind_addr).await;
 
@@ -131,6 +132,21 @@ async fn open_store(config: &Config) -> Arc<SqlStore> {
     .await
     .unwrap_or_else(|err| fail(format!("failed to bootstrap the database: {err}")));
     Arc::new(store)
+}
+
+/// The lease store the sweep ticker coordinates against. On SQLite this is a
+/// second file beside the data one, not another table in it — `SqlStore`'s
+/// `lease_database_url` says why.
+///
+/// Opened here rather than inside [`AppState`] because no handler needs it:
+/// the ticker is the only part of a running server that has to agree with
+/// other instances about who does what.
+async fn open_job_lease(store: &SqlStore) -> Arc<dyn JobLease> {
+    let leases = store
+        .job_lease()
+        .await
+        .unwrap_or_else(|err| fail(format!("failed to open the job-lease store: {err}")));
+    Arc::new(leases)
 }
 
 /// Discovers the configured OIDC provider, or `None` when there is nothing to

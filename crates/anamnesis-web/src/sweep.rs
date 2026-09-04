@@ -24,6 +24,15 @@
 //! after — see [`spawn_ticker`]), rather than being silently skipped until
 //! the *next* cycle.
 //!
+//! **The loop never assumes it will wake again soon.** Its ordinary interval
+//! is [`POLL_INTERVAL`], a whole day, which is only defensible because a tick
+//! that leaves a due sweep unaccounted for — one that failed, or that found
+//! another instance already holding the lease — says so ([`Tick`]) and gets
+//! the much shorter [`RETRY_INTERVAL`]. Nothing recovers by being retried
+//! implicitly on "the next ordinary wake". This is a property to preserve if
+//! the loop grows another outcome: every new one has to answer "does this
+//! leave work undone?" before it can pick an interval.
+//!
 //! **Graceful shutdown.** [`spawn_ticker`] returns a `JoinHandle` the
 //! caller (`main.rs`) aborts, rather than awaits, once the server itself
 //! has finished shutting down. `abort()` returns immediately — the ticker
@@ -35,16 +44,83 @@
 
 use anamnesis_core::policy::Role;
 use anamnesis_core::{Recurrence, Timestamp, next_run};
+use std::sync::Arc;
 use std::time::Duration;
 
-use anamnesis_app::{AppError, TimezoneResolver, archive_done_tasks};
+use anamnesis_app::{AppError, JobLease, TimezoneResolver, archive_done_tasks};
 
 use crate::state::AppState;
 
-/// How often the ticker wakes to check due-ness. Small deliberately — "a
-/// small interval, a minute or so" — not a busy loop, but frequent enough
-/// that a due sweep fires within a minute of becoming due.
-pub const TICK_INTERVAL: Duration = Duration::from_secs(60);
+/// How long the ticker sleeps after a tick that settled the question — see
+/// [`Tick::Settled`].
+///
+/// A day, because the thing being polled for changes at most daily.
+/// `Recurrence`'s finest granularity is a weekday or a day of the month
+/// (`docs/DOMAIN.md` §6), so a sweep becomes due at some local midnight and
+/// stays due until it runs; asking more often than once a day cannot make it
+/// fire on an earlier *date*, only at an earlier hour of the right one. And
+/// because `next_run` anchors on fixed calendar dates rather than on the last
+/// tick, a sweep that fires late does not push the following one late — the
+/// lateness does not accumulate (`docs/DOMAIN.md`: the schedule "is
+/// independent of how often the ticker happened to ask").
+///
+/// This is only the *upper* bound on going back to sleep. A tick that did not
+/// settle the question sleeps [`RETRY_INTERVAL`] instead, and startup checks
+/// before sleeping at all — so neither a failure nor a restart has to wait
+/// out a day.
+pub const POLL_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// How long the ticker sleeps after a tick that left a due sweep unaccounted
+/// for: either it failed outright, or another instance had claimed it and
+/// this one has no way to know that instance succeeded.
+///
+/// One minute past [`SWEEP_LEASE_TTL`], so that by the time the re-check
+/// happens a lease held by an instance that has since died has certainly
+/// lapsed and can be claimed. This is what lets [`POLL_INTERVAL`] be a whole
+/// day: nothing in the loop assumes a failed or skipped tick will be picked
+/// up by "the next ordinary wake, which is soon".
+const RETRY_INTERVAL: Duration = Duration::from_secs(SWEEP_LEASE_TTL.as_secs() + 60);
+
+/// The lease name the scheduled sweep coordinates on.
+pub const SWEEP_JOB: &str = "archive_sweep";
+
+/// How long the sweep lease is held for.
+///
+/// The ticker releases it the moment the sweep finishes, so this number only
+/// ever bounds a *crash*: long enough that a slow sweep over a large board
+/// is not overtaken by another instance, short enough that an instance killed
+/// mid-sweep does not block the next scheduled one for long.
+///
+/// Never renewed, though `JobLease` supports it. A sweep's runtime is bounded
+/// by how much is sitting in the Done column, so one generous TTL covers the
+/// worst case that a heartbeat would — and if an overlong sweep were overtaken
+/// anyway, the second instance reloads each task and re-asks `sweep_done`, so
+/// it skips whatever the first already archived. Revisit if that runtime ever
+/// becomes genuinely unbounded; the fix then is a heartbeat, not a bigger
+/// number.
+const SWEEP_LEASE_TTL: Duration = Duration::from_secs(300);
+
+/// What one [`tick_once`] resolved — which is the whole of what decides when
+/// the ticker next wakes.
+///
+/// The ticker deliberately does not have a single interval any more. "When
+/// should I look again?" has two genuinely different answers depending on
+/// whether this tick left anything hanging, and collapsing them into one
+/// number is what would force that number to be small.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tick {
+    /// The schedule is satisfied: either nothing was due, or a sweep was due
+    /// and this instance ran it and stamped `last_swept_at`. Nothing further
+    /// can happen until the next scheduled occurrence, which is at soonest
+    /// the next local midnight.
+    Settled,
+    /// A sweep was due and this instance did not run it, because another
+    /// instance held the lease. That instance has very probably finished it —
+    /// but "very probably" is not a thing to encode as a day of silence, and
+    /// an instance that died mid-sweep leaves nothing else to notice. Ask
+    /// again shortly instead.
+    Deferred,
+}
 
 /// Whether a sweep is due right now, given the configured `recurrence`,
 /// when the last sweep actually ran (`None` if never), the current instant,
@@ -84,11 +160,17 @@ pub fn is_due(
 }
 
 /// One pass of the ticker: loads current settings, decides due-ness via
-/// [`is_due`], and — if due — runs the sweep (`anamnesis_app::archive_done_tasks`,
-/// the same operation the manual "Archive all" button calls) and stamps
-/// `last_swept_at` via `SettingsRepository::record_sweep` so the sweep does
-/// not immediately re-fire on the ticker's very next wake.
-async fn tick_once(state: &AppState) -> Result<(), AppError> {
+/// [`is_due`], claims the [`SWEEP_JOB`] lease, and — if it gets the lease —
+/// runs the sweep.
+///
+/// The lease goes *inside* the due branch rather than around the whole tick,
+/// so instances that agree there is nothing to do never touch the lease table
+/// at all. [`is_due`] itself stays untouched: it is pure and correct, and the
+/// race was never in it. It reads `last_swept_at`, which every instance reads
+/// and only the sweeping instance writes, so with N instances running all N
+/// see the same sweep become due at the same moment — the lease is what makes
+/// exactly one of them act on it.
+async fn tick_once(state: &AppState, leases: &dyn JobLease, owner: &str) -> Result<Tick, AppError> {
     let settings = state.settings.load().await?;
     let now = state.clock.now();
     if !is_due(
@@ -98,9 +180,42 @@ async fn tick_once(state: &AppState) -> Result<(), AppError> {
         state.timezone.as_ref(),
         &state.timezone_name,
     )? {
-        return Ok(());
+        return Ok(Tick::Settled);
     }
 
+    if !leases
+        .try_acquire(SWEEP_JOB, owner, now, SWEEP_LEASE_TTL)
+        .await?
+    {
+        tracing::debug!("sweep ticker: a sweep is due, but another instance is running it");
+        return Ok(Tick::Deferred);
+    }
+
+    let outcome = run_sweep(state, now).await;
+
+    // Released as soon as the sweep finishes rather than held for the whole
+    // TTL: `record_sweep` has already moved `last_swept_at`, so no instance
+    // will find this sweep due again anyway, and an early release means a
+    // genuinely *later* sweep is never blocked by this one's stale claim.
+    // Best-effort on purpose — a failed release costs the rest of the TTL,
+    // which is not worth failing an otherwise successful sweep over.
+    if let Err(err) = leases.release(SWEEP_JOB, owner).await {
+        tracing::warn!(
+            error = %err,
+            "sweep ticker: could not release the sweep lease; it will expire on its own"
+        );
+    }
+    outcome.map(|()| Tick::Settled)
+}
+
+/// The sweep itself: `anamnesis_app::archive_done_tasks` (the same operation
+/// the manual "Archive all" button calls), then a `last_swept_at` stamp via
+/// `SettingsRepository::record_sweep` so it does not immediately re-fire on
+/// the ticker's very next wake.
+///
+/// The lease decides *who* sweeps; `record_sweep` records *that* one
+/// happened. They answer different questions, so both stay.
+async fn run_sweep(state: &AppState, now: Timestamp) -> Result<(), AppError> {
     let archived = archive_done_tasks(
         state.board.as_ref(),
         state.tasks.as_ref(),
@@ -126,18 +241,39 @@ async fn tick_once(state: &AppState) -> Result<(), AppError> {
 /// Spawns the background ticker as a detached `tokio` task and returns its
 /// `JoinHandle`. The loop checks due-ness *before* its first sleep (not
 /// after), so a catch-up sweep runs promptly on startup rather than waiting
-/// a full [`TICK_INTERVAL`] — see the module doc comment's "Catch-up on
+/// a full [`POLL_INTERVAL`] — see the module doc comment's "Catch-up on
 /// startup" section.
+///
+/// Each pass chooses its own sleep from what the tick actually resolved
+/// ([`Tick`]), which is the whole reason [`POLL_INTERVAL`] can be a day: a
+/// tick that failed, or that found a sweep due and left it to another
+/// instance, is the one case where the loop's next wake is load-bearing, and
+/// that case gets [`RETRY_INTERVAL`] instead. The long interval therefore
+/// costs nothing but the hour of the day a sweep lands on.
 ///
 /// See the module doc comment's "Kept out of the test harness" section for
 /// why this function has exactly one call site in the whole workspace.
-pub fn spawn_ticker(state: AppState) -> tokio::task::JoinHandle<()> {
+///
+/// `leases` is a parameter rather than an `AppState` field because no
+/// *handler* needs it — the ticker is the only thing in a running server that
+/// coordinates with other instances, and `AppState` is defined as what a
+/// handler needs.
+pub fn spawn_ticker(state: AppState, leases: Arc<dyn JobLease>) -> tokio::task::JoinHandle<()> {
+    // One identity for the whole life of the process. It has to be stable
+    // across ticks: the lease's owner is what lets this instance renew and
+    // release its own claim instead of contending with itself.
+    let owner = state.id_gen.next().to_string();
     tokio::spawn(async move {
         loop {
-            if let Err(err) = tick_once(&state).await {
-                tracing::error!(error = %err, "sweep ticker: failed to check or run a scheduled sweep");
-            }
-            tokio::time::sleep(TICK_INTERVAL).await;
+            let next = match tick_once(&state, leases.as_ref(), &owner).await {
+                Ok(Tick::Settled) => POLL_INTERVAL,
+                Ok(Tick::Deferred) => RETRY_INTERVAL,
+                Err(err) => {
+                    tracing::error!(error = %err, "sweep ticker: failed to check or run a scheduled sweep");
+                    RETRY_INTERVAL
+                }
+            };
+            tokio::time::sleep(next).await;
         }
     })
 }

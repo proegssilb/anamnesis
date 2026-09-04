@@ -22,5 +22,5 @@ pub use blob_store::FsBlobStore;
 pub use clock::SystemClock;
 pub use id_gen::UuidIdGen;
 pub use identity::OidcIdentityProvider;
-pub use sql::SqlStore;
+pub use sql::{SqlJobLease, SqlStore};
 pub use timezone::TzTimezoneResolver;

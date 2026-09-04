@@ -28,8 +28,9 @@ database itself, at startup, before it binds its socket.
 | A TLS-terminating reverse proxy | `DATABASE_URL` at *build* time |
 
 The state directory holds file attachments (`ANAMNESIS_BLOB_ROOT`) and, if you
-use SQLite, the database file. Both live under `/var/lib/anamnesis` in every
-example here.
+use SQLite, the database file — *two* files, in fact: the data one you
+configure, and a `-leases` sibling the app derives from it (§3). Both live
+under `/var/lib/anamnesis` in every example here.
 
 ---
 
@@ -124,6 +125,30 @@ Two syntax traps:
   the single most commonly mistyped value in this document.
 - **`?mode=rwc`** is what lets SQLite create the file on first boot. Without
   it, a fresh install fails on a database that does not exist yet.
+
+**SQLite uses a second file for coordination.** Alongside the database you
+configure, the app opens a sibling with `-leases` before the extension —
+`/var/lib/anamnesis/anamnesis-leases.db` for the URL above — carrying the same
+query string, and creates it on first boot. It holds only the `job_leases`
+table (§12): who is currently migrating or sweeping, and until when.
+
+It is a separate *file* rather than a table because SQLite's write lock covers
+a whole database. A lease living in the data file could not be renewed while a
+migration held that file's lock, which is exactly when renewing matters.
+Postgres has no such problem — its row locks are per row — so there the leases
+are simply another table in the one database.
+
+Two operational consequences:
+
+- **Mount the directory, not the file.** A bind mount of a single database
+  file leaves the app unable to create its sibling next to it. Mount
+  `/var/lib/anamnesis` and let both files live inside — which is what §7's and
+  §8's examples already do.
+- **It is disposable, but not while anything is running.** The file holds no
+  user data and never needs backing up or restoring; a fresh one is created on
+  next boot. Deleting it out from under live instances, though, deletes the
+  agreement they are relying on, and two of them can then migrate or sweep at
+  once. Stop the service first.
 
 For Postgres over TLS with a private CA, put the CA in the URL —
 `?sslmode=verify-full&sslrootcert=/etc/anamnesis/ca.crt` — or set
@@ -306,6 +331,15 @@ sqlite3 /var/lib/anamnesis/anamnesis.db "VACUUM INTO '/backup/anamnesis.db'"
 tar -czf /backup/blobs.tar.gz -C /var/lib/anamnesis blobs
 ```
 
+The database runs in WAL mode, so the state directory also holds `-wal` and
+`-shm` files next to it. That is another reason `cp` is wrong — it captures a
+database whose most recent commits are still sitting in a file it did not copy.
+`VACUUM INTO` writes one consistent file that needs neither sidecar.
+
+The `-leases` sibling (§3) is deliberately absent from that command. It holds
+coordination state, not data — who is sweeping right now — which is meaningless
+by the time you restore. A restore recreates it empty.
+
 For Postgres, `pg_dump` alongside the same blob archive.
 
 Restore is the reverse, with the service stopped: put the database back, put
@@ -332,12 +366,53 @@ restoring the backup from step 1.
 
 ## 12. Operational constraints
 
-**Anamnesis runs as a single instance.** This is a property of the
-application, not of any platform. File attachments are stored on the local
-filesystem, and the scheduled-sweep ticker is a per-process singleton that
-races other processes on a single row. Two replicas split attachments between
-them — half the downloads 404 — and duplicate sweeps, **even against a shared
-Postgres**. Do not scale it horizontally. Vertical scaling is fine.
+**Anamnesis can run as several instances sharing one machine.** The request
+path holds no server-side state, and the background work that used to be a
+per-process singleton is now coordinated through the database: startup
+bootstrap and the scheduled sweep are each taken under a lease in a
+`job_leases` table, so exactly one instance runs each and the others move on.
+
+**Migrations serialize through the same lease.** On Postgres they would anyway
+— sqlx holds a per-database advisory lock across the whole run — but on SQLite
+sqlx takes no lock at all, and the busy timeout does not stand in for one: its
+migrator reads which migrations have been applied *outside* any transaction and
+then applies them inside one, so two instances can both read "none applied" and
+both try. The loser fails with `SQLITE_ERROR` (`table areas already exists`),
+not `SQLITE_BUSY`, and no timeout retries that. So an instance takes the
+`migrations` lease before migrating, renewing it every 10s against a 30s
+expiry, and any instance that cannot get it waits — with no deadline, since a
+migration takes as long as it takes — logging every 30s while it does.
+
+That wait is the one startup case that can visibly exceed a health check's
+patience: on an upgrade with real schema work, the second instance's socket
+does not bind until the first has finished. Size `startupProbe` budgets for the
+migration, not for the process (§13).
+
+| Topology | Coordinates through | |
+|---|---|---|
+| SQLite, one process | nothing to coordinate | Supported |
+| SQLite, N processes, **one machine** | the database file | Supported |
+| Postgres, N processes, **one machine** | the database | Supported |
+| Postgres, N processes, **N machines** | the database | **Not yet** — see below |
+| SQLite, N machines | — | No, and not planned |
+
+**What still pins every instance to one machine: attachments.** Blobs live on
+a local filesystem under `ANAMNESIS_BLOB_ROOT`. Instances on one machine share
+that directory and are fine. Instances on separate machines each see only the
+blobs they themselves wrote, so roughly half of all downloads 404 — the same
+failure this section used to describe, now the *only* one left. An object-store
+backend is the intended fix; until it ships, every instance must share one
+filesystem.
+
+**Every instance needs an identical `ANAMNESIS_SESSION_SECRET`.** Sessions are
+signed cookies with no server-side state, so nothing needs sharing and no
+sticky sessions are required — but a cookie signed by one instance has to
+verify at the next, and a differing secret logs a user out on whichever
+requests land elsewhere (§2).
+
+**Distributed SQLite is not supported and is not a planned direction.** What
+SQLite instances coordinate *through* is the file; N machines with N files
+have nothing in common to coordinate through. Use Postgres.
 
 **`/healthz` is both liveness and readiness.** Migrations, bootstrap, and OIDC
 discovery all complete *before* the socket binds, so "accepting connections"
@@ -357,13 +432,16 @@ at startup against the copy compiled into the binary.
 
 ## 13. Kubernetes
 
-No manifests are provided — Anamnesis is a single-instance app, which is most
-of what a chart would otherwise abstract. These are the constraints a working
-manifest has to satisfy:
+No manifests are provided. These are the constraints a working manifest has to
+satisfy:
 
-- **`replicas: 1` with `strategy: Recreate` and an RWO PVC**, for the
-  single-instance reason in §12. `RollingUpdate` would briefly run two
-  replicas, which is the failure mode above.
+- **`replicas: 1` with `strategy: Recreate` and an RWO PVC.** No longer for a
+  coordination reason — §12's leases make concurrent instances safe — but for
+  the blob root: it is a plain filesystem, an RWO PVC binds to a single node,
+  and a second replica cannot mount it. On an RWO PVC `RollingUpdate` stalls
+  waiting for a volume rather than corrupting anything, but it does not give
+  you a zero-downtime upgrade either. Lifting this needs a shared blob store
+  (§12), not a manifest change.
 - **Probes:** `/healthz` for startup, liveness and readiness. Give the
   `startupProbe` a generous budget — first boot runs migrations.
 - **`terminationGracePeriodSeconds`** works as intended; the app handles
