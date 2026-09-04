@@ -5,13 +5,14 @@
 //! running over the whole system's blocking graph, so there is no "which
 //! project is this action scoped to" for a role check to apply against.
 //!
-//! **Called from a scheduled job, not from a handler.** `anamnesis_web`'s
-//! `tangles` ticker runs [`run_tangle_detection`] and
-//! [`resolve_frozen_tangles`] on a timer under a job lease, the same way its
-//! sweep ticker runs `crate::use_cases::archive_done_tasks`. Both are
-//! system-wide reconciliation *writes*, so neither belongs on a read path —
-//! and the lease is what keeps them single-writer once more than one instance
-//! is running.
+//! **Driven by graph changes, not by reads.** Both [`run_tangle_detection`]
+//! and [`resolve_frozen_tangles`] are system-wide reconciliation *writes*, so
+//! neither belongs on a read path. `anamnesis_web`'s `tangles` module runs
+//! them under a job lease from the two events that can change their answer —
+//! creating and deleting a `blocks` edge — with a slow backstop timer behind
+//! that for the cases where the event path failed. The lease is what keeps
+//! them single-writer once more than one instance is running, and what lets a
+//! second concurrent mutation wait for the first rather than lose its update.
 
 use anamnesis_core::policy::Role;
 use anamnesis_core::{self as core, ColumnId, Reconciliation, Tangle, TangleId};

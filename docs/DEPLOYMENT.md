@@ -370,20 +370,36 @@ restoring the backup from step 1.
 path holds no server-side state, and the background work that used to be a
 per-process singleton is now coordinated through the database: startup
 bootstrap, the scheduled sweep, and tangle detection are each taken under a
-lease in a `job_leases` table, so exactly one instance runs each and the
-others move on.
+lease in a `job_leases` table, so exactly one instance runs each. What the
+others do when they lose depends on the job: the sweep moves on, bootstrap and
+tangle detection wait their turn (see below, and "Migrations serialize through
+the same lease").
 
-**Tangle detection is a scheduled job, and the board is one tick behind it.**
-Detecting knots in the blocking graph, and closing out placed tangles that are
-no longer cyclic, both used to run inline on every board request. They now run
-once a minute on a leased ticker instead, which keeps a system-wide
-reconciliation write off the busiest read path and makes it single-writer
-across instances. The visible consequence is a bounded staleness window: a
-knot's board indicator, and the suggestion engine's exclusion of knotted
-tasks, are each up to a minute behind the live graph. Nothing is wrong inside
-that window, only briefly old, and it self-corrects on the next tick. The
-interval is a compile-time constant (`DETECTION_INTERVAL`), not a
-configuration knob.
+**Tangle detection runs on the instance that changed the graph, under a
+lease.** Detecting knots in the blocking graph, and closing out placed tangles
+that are no longer cyclic, both used to run inline on every board request —
+a system-wide reconciliation write on the busiest read path, and, across
+instances, N concurrent passes racing each other's inserts. They are now
+driven by the only two events that can change their answer: creating and
+deleting a `blocks` edge. The instance serving that request runs the pass
+itself, before responding, so the board a user is redirected to already
+reflects the change. No viewer pays for a pass, and the board stays
+immediately consistent.
+
+The lease makes those passes single-writer. An instance that cannot get it
+*waits* for it (up to 5s) rather than skipping, which is what stops a
+concurrent edit from being lost: a pass that starts after its own commit
+cannot fail to see it. So a `blocks` edit can queue briefly behind another
+one; nothing else can.
+
+A backstop ticker runs the same pass every 15 minutes, and that one skips
+rather than waits. It exists only to repair what the event path missed — a
+process killed between the commit and the pass, a lease left behind by a
+crashed instance, a pass that failed against a database that has since
+recovered. A pass recomputes its whole answer from the graph, so it is a
+complete repair and leaves nothing partial behind. Both intervals are
+compile-time constants (`BACKSTOP_INTERVAL`, `LEASE_WAIT`), not configuration
+knobs.
 
 **Migrations serialize through the same lease.** On Postgres they would anyway
 — sqlx holds a per-database advisory lock across the whole run — but on SQLite

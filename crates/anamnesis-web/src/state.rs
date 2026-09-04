@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use anamnesis_app::{
     AreaRepository, AttachmentRepository, BlobStore, BoardQuery, Clock, CommentRepository, IdGen,
-    IdentityProvider, MembershipQuery, MembershipRepository, ProjectRepository,
+    IdentityProvider, JobLease, MembershipQuery, MembershipRepository, ProjectRepository,
     RelationshipRepository, SearchIndex, SearchQuery, SettingsRepository, TangleRepository,
     TaskRepository, TimezoneResolver,
 };
@@ -64,6 +64,15 @@ pub struct AppState {
     pub timezone: Arc<dyn TimezoneResolver>,
     pub clock: Arc<dyn Clock>,
     pub id_gen: Arc<dyn IdGen>,
+    /// Cross-instance mutual exclusion for the jobs that reconcile
+    /// system-wide derived state: the archive sweep, and tangle detection.
+    ///
+    /// In `AppState` — rather than passed only to the tickers that `main.rs`
+    /// spawns — because tangle detection is *event-driven*: the handler that
+    /// creates or deletes a `blocks` edge runs the pass itself, and so needs
+    /// the same lease the backstop ticker coordinates on. See
+    /// `crate::tangles`' module doc comment.
+    pub leases: Arc<dyn JobLease>,
     /// `None` only when dev-auth-bypass is on and no OIDC provider was
     /// configured — the login/callback routes short-circuit before ever
     /// touching this, but the field stays optional rather than lying with a

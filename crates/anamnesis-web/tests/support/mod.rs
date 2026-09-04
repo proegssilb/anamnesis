@@ -45,7 +45,7 @@ pub const DEV_USER_ID: &str = "dev-user";
 pub struct TestApp {
     router: Router,
     /// The same `AppState` the router was built from, kept so a test can
-    /// drive the background work the router no longer does — see
+    /// reach the app's ports and jobs directly, bypassing HTTP — see
     /// [`TestApp::refresh_tangles`].
     pub state: AppState,
     pub key: Key,
@@ -110,7 +110,8 @@ impl TestApp {
             key.clone(),
             dev_auth_bypass,
             max_body_bytes,
-        );
+        )
+        .await;
         let router = routes::build_router(state.clone());
         Self {
             router,
@@ -138,15 +139,18 @@ impl TestApp {
     }
 
     /// Runs one tangle-detection pass — detection plus the resolution of
-    /// frozen tangles — exactly as `anamnesis_web::tangles`'s ticker does
-    /// once it holds the job lease.
+    /// frozen tangles — exactly as `anamnesis_web::tangles` does once it
+    /// holds the job lease.
     ///
-    /// A board GET used to do this as a side effect. It no longer does: both
-    /// passes are system-wide reconciliation writes and now run on a schedule
-    /// instead of on the read path (see that module's doc comment). So a test
-    /// that needs tangle state to be current asks for it here, which drives
-    /// the real pass without a ticker ever being spawned — the structural
-    /// property that keeps background tasks out of this harness entirely.
+    /// Rarely needed. A board GET used to run detection as a side effect and
+    /// no longer does, but the replacement is event-driven: editing a
+    /// `blocks` edge through the real relationship routes runs a pass by
+    /// itself, so a test that sets its graph up that way needs nothing here.
+    /// This is for the cases that deliberately bypass those routes — writing
+    /// edges straight through the store to check that a read path really does
+    /// stay read-only. It drives the real pass without a background task ever
+    /// being spawned, the structural property that keeps them out of this
+    /// harness entirely.
     pub async fn refresh_tangles(&self) {
         anamnesis_web::tangles::refresh_tangles(&self.state)
             .await
@@ -274,13 +278,21 @@ impl TestApp {
 /// structs, so they are built here rather than passed in — as in the binary,
 /// they are not inputs, just the adapters this harness picks. `identity` is
 /// always `None`: no test talks to a real identity provider.
-fn test_state(
+///
+/// The job lease is opened from `store`'s own pool rather than passed in, as
+/// `bootstrap::run` does it, so no test can forget it — an `AppState` without
+/// one cannot run the tangle detection its relationship routes now drive.
+async fn test_state(
     store: Arc<SqlStore>,
     blobs: FsBlobStore,
     cookie_key: Key,
     dev_auth_bypass: bool,
     max_body_bytes: usize,
 ) -> AppState {
+    let leases = store
+        .job_lease()
+        .await
+        .expect("open the temp database's job-lease store");
     AppState {
         areas: store.clone(),
         projects: store.clone(),
@@ -298,6 +310,7 @@ fn test_state(
         timezone: Arc::new(TzTimezoneResolver::new()),
         clock: Arc::new(SystemClock),
         id_gen: Arc::new(UuidIdGen),
+        leases: Arc::new(leases),
         identity: None,
         templates: Arc::new(templates::build_environment()),
         cookie_key,
@@ -507,11 +520,42 @@ pub async fn setup_task_as_admin() -> (TestApp, String, String) {
     (app, task_path, stranger_cookie)
 }
 
+/// Makes `from` block `to` through the HTTP relationships route.
+///
+/// Going through the route rather than the store matters beyond realism: a
+/// `blocks` edit is what drives tangle detection (`anamnesis_web::tangles`),
+/// so this is also how a test gets detection to have run.
+pub async fn create_blocking_edge(
+    app: &TestApp,
+    from_task_path: &str,
+    to_task_path: &str,
+    csrf: &str,
+    cookie: Option<&str>,
+) {
+    let to_task_id = to_task_path.trim_start_matches("/tasks/").to_string();
+    let response = app
+        .post_form(
+            &format!("{from_task_path}/relationships"),
+            &[
+                ("csrf_token", csrf),
+                ("to_task_id", &to_task_id),
+                ("kind", "blocks"),
+            ],
+            cookie,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+}
+
 /// Makes `task_a` block `task_b` and `task_b` block `task_a` through the
 /// HTTP relationships route -- a knot, the shape `anamnesis_core::reconcile`
 /// detects and offers as a tangle. Shared by every test that needs a
 /// knotted pair to place and/or untangle (`tangle_board.rs`,
 /// `relationship_removal.rs`), which used to build this setup verbatim.
+///
+/// Detection has therefore already run by the time this returns -- the
+/// second edge closes the cycle, and the route that creates it re-derives
+/// the tangle set before responding.
 pub async fn knot_together(
     app: &TestApp,
     task_a_path: &str,
@@ -519,33 +563,8 @@ pub async fn knot_together(
     csrf: &str,
     cookie: Option<&str>,
 ) {
-    let task_b_id = task_b_path.trim_start_matches("/tasks/").to_string();
-    let task_a_id = task_a_path.trim_start_matches("/tasks/").to_string();
-
-    let block_ab = app
-        .post_form(
-            &format!("{task_a_path}/relationships"),
-            &[
-                ("csrf_token", csrf),
-                ("to_task_id", &task_b_id),
-                ("kind", "blocks"),
-            ],
-            cookie,
-        )
-        .await;
-    assert_eq!(block_ab.status(), StatusCode::SEE_OTHER);
-    let block_ba = app
-        .post_form(
-            &format!("{task_b_path}/relationships"),
-            &[
-                ("csrf_token", csrf),
-                ("to_task_id", &task_a_id),
-                ("kind", "blocks"),
-            ],
-            cookie,
-        )
-        .await;
-    assert_eq!(block_ba.status(), StatusCode::SEE_OTHER);
+    create_blocking_edge(app, task_a_path, task_b_path, csrf, cookie).await;
+    create_blocking_edge(app, task_b_path, task_a_path, csrf, cookie).await;
 }
 
 pub fn location_of(response: &Response<Body>) -> &str {

@@ -199,13 +199,13 @@ async fn linked_pair_authed(
     linked_pair_as(app, csrf_token, Some(cookie)).await
 }
 
-/// Runs a detection pass, asserts the knot is offered from the board's
-/// suggestion prompt, accepts it, and returns the now-placed, frozen tangle.
+/// Asserts the knot is offered from the board's suggestion prompt, accepts
+/// it, and returns the now-placed, frozen tangle.
 ///
-/// The pass is explicit because the board GET no longer runs one — detection
-/// lives on `anamnesis_web::tangles`'s scheduled ticker now.
+/// No explicit detection pass: the board GET no longer runs one, and does not
+/// need to — building the knot through the relationship route already did
+/// (`anamnesis_web::tangles`).
 async fn detect_and_accept_tangle(app: &TestApp, cookie: Option<&str>) -> anamnesis_core::Tangle {
-    app.refresh_tangles().await;
     let board_body = body_text(app.get("/board", cookie).await).await;
     assert!(
         board_body.contains("knotted together"),
@@ -266,18 +266,18 @@ async fn remove_blocking_edge(
     assert_eq!(remove.status(), StatusCode::SEE_OTHER);
 }
 
-/// Runs a second reconciliation pass and asserts the now-acyclic frozen
-/// tangle resolved and landed in the Done column.
+/// Asserts the now-acyclic frozen tangle resolved and landed in the Done
+/// column.
 ///
 /// This is the half of the pass that `resolve_frozen_tangles` does: detection
 /// never touches a frozen tangle, so closing a placed knot out once its
-/// frozen task set is no longer cyclic is what is being exercised here.
+/// frozen task set is no longer cyclic is what is being exercised here — and
+/// the delete route that removed the edge is what ran it.
 async fn assert_tangle_resolved_into_done(
     app: &TestApp,
     tangle_id: anamnesis_core::TangleId,
     cookie: Option<&str>,
 ) {
-    app.refresh_tangles().await;
     let after_body = body_text(app.get("/board", cookie).await).await;
 
     let resolved = anamnesis_app::TangleRepository::load(app.store.as_ref(), tangle_id)

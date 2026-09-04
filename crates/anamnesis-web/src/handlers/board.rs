@@ -266,12 +266,10 @@ async fn view_board_impl(
     // Tangle state is read, never computed, here. Detection and the
     // resolution of frozen tangles used to run inline at the top of this
     // function -- a system-wide reconciliation *write* on the hottest read
-    // path in the application. Both now run on `crate::tangles`'s leased
-    // ticker, so what the board renders is at most
-    // `crate::tangles::DETECTION_INTERVAL` behind the live blocking graph.
-    // That module's doc comment covers exactly what a user can notice inside
-    // that window (a knot's indicator, and the suggestion engine's
-    // tangled-task exclusion, each up to one tick late).
+    // path in the application. Both now run under a lease from the two events
+    // that can change their answer, creating and deleting a `blocks` edge, so
+    // what the board renders is still up to date the moment it is rendered
+    // without any viewer paying for the pass. See `crate::tangles`.
     let columns = state.board.columns_with_items().await?;
 
     // The entry column — where a suggestion, once accepted, lands — is the

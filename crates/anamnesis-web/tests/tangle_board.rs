@@ -8,16 +8,27 @@ mod support;
 use axum::http::StatusCode;
 
 use anamnesis_app::TangleRepository;
-use anamnesis_core::Tangle;
+use anamnesis_core::{Tangle, TaskId};
 use support::{TestApp, body_text};
 
-/// Creates an active project with two tasks that mutually block each other
-/// -- a knotted pair -- and returns their task paths.
-async fn setup_knotted_pair(app: &TestApp, cookie: Option<&str>) -> (String, String) {
+/// Creates an active project with two tasks and returns their task paths --
+/// not yet knotted.
+async fn setup_pair(app: &TestApp, cookie: Option<&str>) -> (String, String) {
     let (_, project_path) =
         support::new_active_project(app, "Home", "Kitchen remodel", cookie).await;
     let task_a_path = support::new_task(app, &project_path, "Design the layout", cookie).await;
     let task_b_path = support::new_task(app, &project_path, "Order the tile", cookie).await;
+    (task_a_path, task_b_path)
+}
+
+/// Creates an active project with two tasks that mutually block each other
+/// -- a knotted pair -- and returns their task paths.
+///
+/// The knot is built through the real relationship route, so detection has
+/// already run by the time this returns: `anamnesis_web::tangles` is driven
+/// by exactly this event.
+async fn setup_knotted_pair(app: &TestApp, cookie: Option<&str>) -> (String, String) {
+    let (task_a_path, task_b_path) = setup_pair(app, cookie).await;
     support::knot_together(
         app,
         &task_a_path,
@@ -29,16 +40,14 @@ async fn setup_knotted_pair(app: &TestApp, cookie: Option<&str>) -> (String, Str
     (task_a_path, task_b_path)
 }
 
-/// Runs a detection pass, then asserts the knotted pair is offered from the
-/// board's suggestion prompt in place of its individually-ineligible tasks,
-/// and returns the detected tangle.
+/// Asserts the knotted pair is offered from the board's suggestion prompt in
+/// place of its individually-ineligible tasks, and returns the detected
+/// tangle.
 ///
-/// The pass is explicit because the board GET no longer runs one: detection
-/// moved onto `anamnesis_web::tangles`'s scheduled ticker, so the board reads
-/// tangle state rather than computing it. This is the same call that ticker
-/// makes.
+/// No explicit detection pass: the board GET does not run one (that moved off
+/// the read path), and does not need to. Creating the `blocks` edges through
+/// the relationship route already ran it.
 async fn assert_board_offers_the_tangle(app: &TestApp, cookie: Option<&str>) -> Tangle {
-    app.refresh_tangles().await;
     let board_body = body_text(app.get("/board", cookie).await).await;
     assert!(
         board_body.contains("knotted together"),
@@ -123,31 +132,155 @@ async fn drop_and_assert_below_horizon(app: &TestApp, tangle: &Tangle, cookie: O
     );
 }
 
+fn task_id_of(task_path: &str) -> TaskId {
+    TaskId::new(task_path.trim_start_matches("/tasks/").parse().unwrap())
+}
+
+/// Writes one `blocks` edge straight through the store, deliberately
+/// bypassing the relationship route -- which is now the thing that triggers
+/// detection.
+async fn insert_blocks_edge_behind_the_routes(app: &TestApp, from: TaskId, to: TaskId) {
+    async fn project_of(app: &TestApp, task: TaskId) -> anamnesis_core::ProjectId {
+        anamnesis_app::TaskRepository::load(app.store.as_ref(), task)
+            .await
+            .unwrap()
+            .expect("the task exists")
+            .task
+            .project_id
+    }
+
+    let edge = anamnesis_core::create_relationship(
+        anamnesis_core::RelationshipId::new(app.state.id_gen.next()),
+        from,
+        project_of(app, from).await,
+        to,
+        project_of(app, to).await,
+        &anamnesis_core::builtin_blocks(),
+        app.state.clock.now(),
+    )
+    .expect("a blocks edge between two distinct tasks is valid");
+    anamnesis_app::RelationshipRepository::insert(app.store.as_ref(), &edge)
+        .await
+        .unwrap();
+}
+
 /// The behaviour change moving detection off the read path makes, pinned: a
 /// board GET is a pure *read* of tangle state and no longer computes it.
 ///
-/// The knot exists in the blocking graph the whole time; what differs is only
-/// whether anything has looked. If detection ever creeps back into a handler,
-/// this is what fails.
+/// The knot has to be built behind the relationship route to show this, since
+/// going through the route would detect it on the way in. That is not a
+/// contrivance to make the test pass -- it is the point. The knot exists in
+/// the blocking graph the whole time; what differs is only whether anything
+/// has looked. If detection ever creeps back into a handler, this is what
+/// fails.
 #[tokio::test]
 async fn viewing_the_board_does_not_run_tangle_detection() {
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None;
 
-    setup_knotted_pair(&app, cookie).await;
+    let (task_a_path, task_b_path) = setup_pair(&app, cookie).await;
+    let (task_a, task_b) = (task_id_of(&task_a_path), task_id_of(&task_b_path));
+    insert_blocks_edge_behind_the_routes(&app, task_a, task_b).await;
+    insert_blocks_edge_behind_the_routes(&app, task_b, task_a).await;
 
     let board_body = body_text(app.get("/board", cookie).await).await;
     assert!(
         app.store.list_active().await.unwrap().is_empty(),
-        "a board GET must not detect tangles -- that is the scheduled \
-         ticker's job: {board_body}"
+        "a board GET must not detect tangles -- only a mutation or the \
+         backstop does that: {board_body}"
     );
 
     app.refresh_tangles().await;
     assert_eq!(
         app.store.list_active().await.unwrap().len(),
         1,
-        "the very same knot must be detected once a scheduled pass runs"
+        "the very same knot must be detected once a pass runs"
+    );
+}
+
+/// The event path, pinned from the other side: closing the knot through the
+/// relationship route detects it there and then -- no board GET, no explicit
+/// pass, nothing waiting on a timer.
+///
+/// This is the immediate consistency that moving detection off the read path
+/// gave up and event-driving it gets back, so it is worth asserting without
+/// any HTTP read in between to blur where the work happened.
+#[tokio::test]
+async fn creating_the_blocking_edge_detects_the_tangle_immediately() {
+    let app = TestApp::new(true).await;
+    let cookie: Option<&str> = None;
+
+    let (task_a_path, task_b_path) = setup_pair(&app, cookie).await;
+
+    // Half a knot: A blocks B is not a cycle, so the first edit must detect
+    // nothing. Pinning this separately keeps the test honest about detecting
+    // a *tangle* rather than merely reacting to a write.
+    support::create_blocking_edge(
+        &app,
+        &task_a_path,
+        &task_b_path,
+        support::DEV_CSRF_TOKEN,
+        cookie,
+    )
+    .await;
+    assert!(
+        app.store.list_active().await.unwrap().is_empty(),
+        "one blocking edge is not a cycle and must not be a tangle"
+    );
+
+    support::create_blocking_edge(
+        &app,
+        &task_b_path,
+        &task_a_path,
+        support::DEV_CSRF_TOKEN,
+        cookie,
+    )
+    .await;
+    let active = app.store.list_active().await.unwrap();
+    assert_eq!(
+        active.len(),
+        1,
+        "closing the cycle through the relationship route must detect the \
+         tangle in that same request"
+    );
+    assert_eq!(active[0].task_ids.len(), 2);
+}
+
+/// The delete half of the event path: removing a `blocks` edge re-derives the
+/// tangle set in that same request too.
+///
+/// `relationship_removal.rs` covers what removal does to a *placed* tangle
+/// (`resolve_frozen_tangles` closes it into Done). This covers the simpler
+/// unfrozen case, and covers it specifically as an event: detection has to
+/// run on the delete route, not only the create one.
+#[tokio::test]
+async fn deleting_the_blocking_edge_resolves_the_tangle_immediately() {
+    let app = TestApp::new(true).await;
+    let cookie: Option<&str> = None;
+
+    let (task_a_path, _) = setup_knotted_pair(&app, cookie).await;
+    assert_eq!(app.store.list_active().await.unwrap().len(), 1);
+
+    let task_a = task_id_of(&task_a_path);
+    let edge = anamnesis_app::RelationshipRepository::list_for_task(app.store.as_ref(), task_a)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.kind_id == anamnesis_core::builtin_blocks().id && r.from_task_id == task_a)
+        .expect("the A-blocks-B edge must exist");
+    let removed = app
+        .post_form(
+            &format!("{task_a_path}/relationships/{}/delete", edge.id),
+            &[("csrf_token", support::DEV_CSRF_TOKEN)],
+            cookie,
+        )
+        .await;
+    assert_eq!(removed.status(), StatusCode::SEE_OTHER);
+
+    assert!(
+        app.store.list_active().await.unwrap().is_empty(),
+        "breaking the cycle through the delete route must resolve the tangle \
+         in that same request"
     );
 }
 
