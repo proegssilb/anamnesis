@@ -32,6 +32,20 @@ pub async fn create_relationship_handler(
     }
 }
 
+/// Re-derives the tangle set when the edge just created or deleted was a
+/// `blocks` edge, and does nothing otherwise.
+///
+/// `blocks` is the only kind tangle detection reads
+/// (`RelationshipRepository::list_blocking`), so a `relates_to` or
+/// `duplicates` edit cannot change the answer and must not pay for a pass —
+/// or, more to the point, must not queue behind one. See `crate::tangles`'
+/// module doc comment for why the mutating instance runs detection at all.
+async fn refresh_tangles_if_blocking(state: &AppState, kind_id: anamnesis_core::KindId) {
+    if kind_id == builtin_blocks().id {
+        crate::tangles::refresh_after_graph_change(state).await;
+    }
+}
+
 /// Maps the form's plain-string `kind` to the built-in relationship kind id
 /// it names — pure input parsing, kept separate from
 /// [`create_relationship_impl`]'s handling of the async `create_relationship`
@@ -81,23 +95,41 @@ async fn create_relationship_impl(
     )
     .await
     {
-        Ok(_) => Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response()),
-        Err(AppError::Rule(e)) => {
-            let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
-            render_task_page(
-                state,
-                user,
-                task_id,
-                &aggregate.task,
-                Some(&e.to_string()),
-                None,
-                None,
-                StatusCode::UNPROCESSABLE_ENTITY,
-            )
-            .await
+        Ok(_) => {
+            refresh_tangles_if_blocking(state, kind_id).await;
+            Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response())
         }
+        Err(AppError::Rule(e)) => rerender_with_rule_error(state, user, task_id, role, &e).await,
         Err(err) => Err(WebError::from(err)),
     }
+}
+
+/// The response to a relationship the domain refuses (a self-edge, a
+/// duplicate of one that already exists): the task page again, carrying the
+/// rule's own message, at 422.
+///
+/// The task has to be reloaded because the form submission arrived with
+/// nothing but ids — this is the page the user was already looking at, redrawn
+/// with the reason their submission did not take.
+async fn rerender_with_rule_error(
+    state: &AppState,
+    user: &CurrentUser,
+    task_id: TaskId,
+    role: Option<anamnesis_core::policy::Role>,
+    error: &anamnesis_core::DomainError,
+) -> Result<Response, WebError> {
+    let aggregate = view_task(state.tasks.as_ref(), role, task_id).await?;
+    render_task_page(
+        state,
+        user,
+        task_id,
+        &aggregate.task,
+        Some(&error.to_string()),
+        None,
+        None,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await
 }
 
 /// Deletes a relationship edge — reachable from either end's task page (the
@@ -154,6 +186,7 @@ async fn delete_relationship_impl(
     }
 
     delete_relationship(state.relationships.as_ref(), role, relationship_id).await?;
+    refresh_tangles_if_blocking(state, relationship.kind_id).await;
     Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response())
 }
 

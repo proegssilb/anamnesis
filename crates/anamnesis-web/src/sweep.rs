@@ -44,10 +44,9 @@
 
 use anamnesis_core::policy::Role;
 use anamnesis_core::{Recurrence, Timestamp, next_run};
-use std::sync::Arc;
 use std::time::Duration;
 
-use anamnesis_app::{AppError, JobLease, TimezoneResolver, archive_done_tasks};
+use anamnesis_app::{AppError, TimezoneResolver, archive_done_tasks};
 
 use crate::state::AppState;
 
@@ -170,7 +169,7 @@ pub fn is_due(
 /// and only the sweeping instance writes, so with N instances running all N
 /// see the same sweep become due at the same moment — the lease is what makes
 /// exactly one of them act on it.
-async fn tick_once(state: &AppState, leases: &dyn JobLease, owner: &str) -> Result<Tick, AppError> {
+async fn tick_once(state: &AppState, owner: &str) -> Result<Tick, AppError> {
     let settings = state.settings.load().await?;
     let now = state.clock.now();
     if !is_due(
@@ -183,7 +182,8 @@ async fn tick_once(state: &AppState, leases: &dyn JobLease, owner: &str) -> Resu
         return Ok(Tick::Settled);
     }
 
-    if !leases
+    if !state
+        .leases
         .try_acquire(SWEEP_JOB, owner, now, SWEEP_LEASE_TTL)
         .await?
     {
@@ -199,7 +199,7 @@ async fn tick_once(state: &AppState, leases: &dyn JobLease, owner: &str) -> Resu
     // genuinely *later* sweep is never blocked by this one's stale claim.
     // Best-effort on purpose — a failed release costs the rest of the TTL,
     // which is not worth failing an otherwise successful sweep over.
-    if let Err(err) = leases.release(SWEEP_JOB, owner).await {
+    if let Err(err) = state.leases.release(SWEEP_JOB, owner).await {
         tracing::warn!(
             error = %err,
             "sweep ticker: could not release the sweep lease; it will expire on its own"
@@ -254,18 +254,17 @@ async fn run_sweep(state: &AppState, now: Timestamp) -> Result<(), AppError> {
 /// See the module doc comment's "Kept out of the test harness" section for
 /// why this function has exactly one call site in the whole workspace.
 ///
-/// `leases` is a parameter rather than an `AppState` field because no
-/// *handler* needs it — the ticker is the only thing in a running server that
-/// coordinates with other instances, and `AppState` is defined as what a
-/// handler needs.
-pub fn spawn_ticker(state: AppState, leases: Arc<dyn JobLease>) -> tokio::task::JoinHandle<()> {
+/// The lease comes from `AppState` rather than a parameter: it stopped being
+/// ticker-only territory once tangle detection became event-driven and its
+/// handlers needed the same lease store (`crate::tangles`).
+pub fn spawn_ticker(state: AppState) -> tokio::task::JoinHandle<()> {
     // One identity for the whole life of the process. It has to be stable
     // across ticks: the lease's owner is what lets this instance renew and
     // release its own claim instead of contending with itself.
     let owner = state.id_gen.next().to_string();
     tokio::spawn(async move {
         loop {
-            let next = match tick_once(&state, leases.as_ref(), &owner).await {
+            let next = match tick_once(&state, &owner).await {
                 Ok(Tick::Settled) => POLL_INTERVAL,
                 Ok(Tick::Deferred) => RETRY_INTERVAL,
                 Err(err) => {

@@ -52,18 +52,20 @@ async fn main() {
     let leases = open_job_lease(&store).await;
     let identity = resolve_identity(&config).await;
     let blobs = open_blob_store(&config).await;
-    let state = build_state(&config, store, blobs, identity);
+    let state = build_state(&config, store, blobs, identity, leases);
 
-    // The two scheduled tickers: the archive sweep (`docs/DOMAIN.md` §6) and
-    // tangle detection. Both are deliberately started only here, in the
-    // binary -- never from `routes::build_router`, `AppState` construction,
-    // or `bootstrap::run` -- so no integration test (which builds a `Router`
-    // directly via `routes::build_router`, per `tests/support`) can ever
-    // cause one to spawn. See each module's doc comment for the full
-    // reasoning. They share one `JobLease` store and coordinate on distinct
-    // job names, so neither can block the other.
-    let sweep_handle = sweep::spawn_ticker(state.clone(), leases.clone());
-    let tangle_handle = tangles::spawn_ticker(state.clone(), leases);
+    // The two background tickers: the archive sweep (`docs/DOMAIN.md` §6) and
+    // the tangle-detection backstop. Both are deliberately started only here,
+    // in the binary -- never from `routes::build_router`, `AppState`
+    // construction, or `bootstrap::run` -- so no integration test (which
+    // builds a `Router` directly via `routes::build_router`, per
+    // `tests/support`) can ever cause one to spawn. See each module's doc
+    // comment for the full reasoning. They take the one `JobLease` store out
+    // of `state` and coordinate on distinct job names, so neither can block
+    // the other -- or the relationship handlers, which now hold that same
+    // lease around their own detection passes.
+    let sweep_handle = sweep::spawn_ticker(state.clone());
+    let tangle_handle = tangles::spawn_backstop(state.clone());
 
     serve(routes::build_router(state), config.bind_addr).await;
 
@@ -71,7 +73,7 @@ async fn main() {
     // A sweep either committed or it didn't, and `sweep_done` is idempotent,
     // so an abort mid-sweep is safe to resume on the next boot (see `sweep`'s
     // module doc comment); a detection pass recomputes its whole answer from
-    // the graph on the next tick, so an abort mid-pass leaves nothing partial
+    // the graph on the next run, so an abort mid-pass leaves nothing partial
     // behind either. `abort()` returns immediately rather than waiting for
     // the next wake-up, so neither delays process exit.
     sweep_handle.abort();
@@ -140,13 +142,14 @@ async fn open_store(config: &Config) -> Arc<SqlStore> {
     Arc::new(store)
 }
 
-/// The lease store both tickers coordinate against. On SQLite this is a
+/// The lease store every coordinated job runs against. On SQLite this is a
 /// second file beside the data one, not another table in it — `SqlStore`'s
 /// `lease_database_url` says why.
 ///
-/// Opened here rather than inside [`AppState`] because no handler needs it:
-/// the tickers are the only part of a running server that has to agree with
-/// other instances about who does what.
+/// One store, shared by three callers that agree only on distinct job names:
+/// the sweep ticker, the tangle-detection backstop, and — through
+/// [`AppState::leases`] — the relationship handlers that drive detection on
+/// the event path.
 async fn open_job_lease(store: &SqlStore) -> Arc<dyn JobLease> {
     let leases = store
         .job_lease()
@@ -213,6 +216,7 @@ fn build_state(
     store: Arc<SqlStore>,
     blobs: FsBlobStore,
     identity: Option<Arc<dyn IdentityProvider>>,
+    leases: Arc<dyn JobLease>,
 ) -> AppState {
     AppState {
         areas: store.clone(),
@@ -231,6 +235,7 @@ fn build_state(
         timezone: Arc::new(TzTimezoneResolver::new()),
         clock: Arc::new(SystemClock),
         id_gen: Arc::new(UuidIdGen),
+        leases,
         identity,
         templates: Arc::new(templates::build_environment()),
         cookie_key: config.cookie_key.clone(),
