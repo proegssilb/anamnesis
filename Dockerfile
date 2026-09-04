@@ -53,6 +53,15 @@ COPY --from=builder /build/target/release/anamnesis-web /usr/local/bin/anamnesis
 # as uid 65532 (distroless `nonroot`) cannot write into it.
 COPY --from=builder --chown=65532:65532 /state /var/lib/anamnesis
 
+# The `:nonroot` base tag already selects this uid, so this line changes no
+# behaviour today -- it removes the dependence on that tag being right. A base
+# image bumped to `:latest`, or repinned by digest to the wrong variant, would
+# otherwise silently start running as root, and nothing in this file would say
+# so. Spelling out the numeric uid also matches the `--chown` above and the
+# `runAsUser: 65532` that docs/DEPLOYMENT.md §13 tells Kubernetes operators to
+# set; a name would not, since the runtime has no way to resolve one.
+USER 65532:65532
+
 ENV ANAMNESIS_BLOB_ROOT=/var/lib/anamnesis/blobs
 WORKDIR /var/lib/anamnesis
 EXPOSE 8080
