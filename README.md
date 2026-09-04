@@ -24,11 +24,11 @@ Every task sits in exactly one of three places:
   costs nothing against your work-in-progress. Where most tasks live most
   of the time.
 - **Above, on the task board** — in a column (To-Do, Doing, Done by
-  default). The column *is* the status.
+  default). The column _is_ the status.
 - **Archived** — vanished from every view unless you explicitly search for
   it.
 
-There is deliberately no size/estimate field anywhere. Weight is *observed*
+There is deliberately no size/estimate field anywhere. Weight is _observed_
 from data already captured for other reasons — how big a checklist a task
 has, how stale it's gotten, and especially **bounce count**: how many times
 it's been raised above the horizon and dropped back down unfinished. A
@@ -150,7 +150,7 @@ provider, that's a bug.
 
 ### Worked example: Authentik
 
-[Authentik](https://goauthentik.io/) is *an* example provider, used while
+[Authentik](https://goauthentik.io/) is _an_ example provider, used while
 building this system because it was the reference deployment — not a
 requirement. Any OIDC-compliant provider (Keycloak, Zitadel, Okta, Auth0,
 Google Workspace, ...) works identically: register a confidential OAuth2/OIDC
@@ -257,7 +257,7 @@ Stated plainly rather than discovered the hard way:
   item" affordance from the parent's own view yet.
 - **No recurring tasks.** `Recurrence` (`EveryNWeeks` / `DayOfMonth` /
   `Never`) exists purely to drive the archive sweep's schedule; nothing lets
-  a *task itself* recur. `docs/DOMAIN.md` §6 names this as a deliberate,
+  a _task itself_ recur. `docs/DOMAIN.md` §6 names this as a deliberate,
   reusable-later type, not an oversight.
 - **Nothing is archived on a schedule until an admin sets one.** The
   background sweep ticker is wired into `anamnesis-web`'s startup and runs,
@@ -275,7 +275,7 @@ Stated plainly rather than discovered the hard way:
   Practically, today, this is a single-admin system unless someone edits
   the database directly.
 - **A tangle can be resolved and archived, but never deleted.** The sweep
-  and **Archive all** both clear a *resolved* tangle out of a Done column
+  and **Archive all** both clear a _resolved_ tangle out of a Done column
   (`sweep_done_tangles`), so they no longer accumulate there — but an
   unresolved tangle you simply don't want has no route to remove it; the
   only way out is to break the cycle it names.

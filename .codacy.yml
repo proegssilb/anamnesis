@@ -1,2 +1,34 @@
+---
+engines:
+  # TSQLLint lints Microsoft T-SQL. There is no T-SQL in this repository:
+  # every `.sql` file is a sqlx migration for PostgreSQL or SQLite. It runs on
+  # them anyway because Codacy maps it onto the generic `.sql` extension as
+  # well as `.tsql`, and every rule it fires is a SQL Server-only construct
+  # that would be a syntax error if we actually added it --
+  #
+  #   set-ansi, set-quoted-identifier   `SET ANSI_NULLS` / `SET
+  #                                     QUOTED_IDENTIFIER` are T-SQL
+  #                                     statements; neither engine parses them.
+  #   set-transaction-isolation-level   SQLite has no such statement, and
+  #                                     Postgres has no dirty reads, so it
+  #                                     silently promotes READ UNCOMMITTED to
+  #                                     READ COMMITTED. Wrong in a migration
+  #                                     either way.
+  #   data-compression                  `WITH (DATA_COMPRESSION = ...)` is a
+  #                                     SQL Server table option.
+  #   schema-qualify                    SQLite has no schemas. Postgres does,
+  #                                     but qualifying only `CREATE TABLE`
+  #                                     while every query in the crate stays
+  #                                     unqualified would break any deploy
+  #                                     using a non-default `search_path`.
+  #
+  # This is a dialect mismatch, not a set of findings to fix, and excluding it
+  # does not leave the migrations unlinted: SQLint is Codacy's PostgreSQL
+  # analyzer and still applies to them, as do PMD and Opengrep. (Codacy has no
+  # SQLite-specific analyzer, with or without this.) If SQL Server support is
+  # ever added, drop this and let TSQLLint run on those files.
+  tsqllint:
+    exclude_paths:
+      - "**"
 exclude_paths:
   - "CLAUDE.md"
