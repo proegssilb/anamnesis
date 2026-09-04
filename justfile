@@ -58,6 +58,23 @@ test-adapters:
 test-adapters-pg pg_url="postgres://anamnesis:anamnesis@localhost:5432/anamnesis_test":
     ANAMNESIS_TEST_PG_URL="{{pg_url}}" cargo test -p anamnesis-adapters --test sql_store_contract -- --ignored
 
+# anamnesis-adapters — BlobStore contract, S3 side (needs a running
+# S3-compatible server; the endpoint/credential defaults match MinIO's own,
+# e.g. `podman run -p 9000:9000 quay.io/minio/minio server /data`, and the
+# bucket in the URL must already exist).
+#
+# Also verified against Garage v1.0.1, which is what docs/DEPLOYMENT.md §12
+# targets. Garage takes more than one command to stand up — after starting it
+# you must `garage layout assign`/`apply`, `bucket create`, `key create`, and
+# `bucket allow` — and then needs its own settings passed in, since none of
+# the defaults below apply:
+#   ANAMNESIS_TEST_S3_ENDPOINT=http://localhost:3900
+#   ANAMNESIS_TEST_S3_REGION=garage            # signed over; a wrong value
+#   ANAMNESIS_TEST_S3_ACCESS_KEY_ID=GK…        # is an auth failure, not a
+#   ANAMNESIS_TEST_S3_SECRET_ACCESS_KEY=…      # routing one
+test-adapters-s3 s3_url="s3://anamnesis-test/blobs":
+    ANAMNESIS_TEST_S3_URL="{{s3_url}}" cargo test -p anamnesis-adapters --test blob_store_contract -- --ignored
+
 # anamnesis-web — HTTP integration tests via tower::ServiceExt::oneshot.
 test-web:
     cargo test -p anamnesis-web

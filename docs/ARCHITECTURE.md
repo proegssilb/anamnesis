@@ -269,7 +269,9 @@ One adapter, `anamnesis_adapters::SqlStore`, implements essentially the
 entire repository and query surface against one connection pool (SQLite or
 Postgres, chosen at connect time) — see `crates/anamnesis-web/src/main.rs`
 for exactly which port each concrete adapter fills at startup:
-`SqlStore` for everything above, `FsBlobStore` for `BlobStore`,
+`SqlStore` for everything above, `FsBlobStore` *or* `S3BlobStore` for
+`BlobStore` (chosen from `ANAMNESIS_BLOB_ROOT`'s scheme the same way the
+database driver is chosen from its URL),
 `TzTimezoneResolver` for `TimezoneResolver`, `SystemClock` for `Clock`,
 `UuidIdGen` for `IdGen`, `OidcIdentityProvider` for `IdentityProvider`
 (`None` when `ANAMNESIS_DEV_AUTH_BYPASS` is set).

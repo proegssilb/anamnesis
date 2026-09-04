@@ -36,12 +36,26 @@ pub struct Config {
     /// The subject (OIDC `sub`, or the dev-bypass user id) granted System
     /// Admin on first boot of an empty database — see `crate::bootstrap`.
     pub bootstrap_admin: String,
-    /// The local filesystem directory `anamnesis_adapters::FsBlobStore`
-    /// roots file attachments under (`docs/DOMAIN.md` §3). Not security- or
+    /// Where file attachments live (`docs/DOMAIN.md` §3): an `s3://bucket`
+    /// or `s3://bucket/prefix` URL selects
+    /// `anamnesis_adapters::S3BlobStore`, and anything else is a local
+    /// filesystem directory for `anamnesis_adapters::FsBlobStore` — the same
+    /// dispatch-on-scheme `ANAMNESIS_DATABASE_URL` gets. Not security- or
     /// correctness-sensitive the way `ANAMNESIS_SESSION_SECRET` is, so —
     /// unlike every `require`d field above — it defaults rather than failing
     /// startup when unset, exactly like `ANAMNESIS_BIND_ADDR`.
+    ///
+    /// The name is historical: it was a directory before it could also be a
+    /// bucket, and renaming the variable would break every existing
+    /// deployment for no gain.
     pub blob_root: String,
+    /// The object store's endpoint and credentials, resolved **only** when
+    /// [`Self::blob_root`] is an `s3://` URL and `None` otherwise. Every
+    /// filesystem deployment — which is every single-machine one — therefore
+    /// never has to set an `ANAMNESIS_S3_*` variable, and an `s3://` root
+    /// with no credentials fails at startup naming the missing one rather
+    /// than on the first upload.
+    pub s3: Option<S3Config>,
     /// An optional PEM bundle of extra certificate authorities to trust when
     /// talking to the OIDC provider, *in addition to* the public roots
     /// compiled in via `webpki-roots`.
@@ -60,6 +74,29 @@ pub struct Config {
     /// axum's own 2 MiB, which is far too small for the file attachments
     /// `docs/DOMAIN.md` §3 describes.
     pub max_body_bytes: usize,
+}
+
+/// What an `s3://` blob root needs to actually reach its bucket.
+///
+/// Every value is under this application's own `ANAMNESIS_S3_*` prefix
+/// rather than the ambient `AWS_*` names: configuration here is one
+/// validated-at-startup surface (`docs/DEPLOYMENT.md` §2), and a credential
+/// picked up from an inherited `AWS_ACCESS_KEY_ID` would be the one input
+/// this process could not name, check, or report on.
+///
+/// `#[derive(Debug)]` is safe here, unlike on [`Config`], only because
+/// [`Secret`] redacts itself.
+#[derive(Debug, Clone)]
+pub struct S3Config {
+    /// `ANAMNESIS_S3_ENDPOINT` — required for Garage or MinIO, and omitted
+    /// only when the bucket really is on AWS.
+    pub endpoint: Option<String>,
+    /// `ANAMNESIS_S3_REGION` — signed over even by servers that ignore it,
+    /// so it has to match what the server expects. Unset leaves the S3
+    /// client's own default.
+    pub region: Option<String>,
+    pub access_key_id: String,
+    pub secret_access_key: Secret,
 }
 
 /// A credential that must stay a `String` because the API consuming it takes
@@ -110,6 +147,7 @@ impl std::fmt::Debug for Config {
             .field("timezone", &self.timezone)
             .field("bootstrap_admin", &self.bootstrap_admin)
             .field("blob_root", &self.blob_root)
+            .field("s3", &self.s3)
             .field("tls_ca_bundle", &self.tls_ca_bundle)
             .field("max_body_bytes", &self.max_body_bytes)
             .finish()
@@ -166,6 +204,7 @@ impl Config {
         let timezone = require(&get, "ANAMNESIS_TIMEZONE")?;
         let bootstrap_admin = require(&get, "ANAMNESIS_BOOTSTRAP_ADMIN")?;
         let blob_root = get("ANAMNESIS_BLOB_ROOT").unwrap_or_else(|| DEFAULT_BLOB_ROOT.to_string());
+        let s3 = resolve_s3(&get, &blob_root)?;
         let tls_ca_bundle = get("ANAMNESIS_TLS_CA_BUNDLE").filter(|v| !v.is_empty());
         let max_body_bytes = resolve_max_body_bytes(&get)?;
 
@@ -182,6 +221,7 @@ impl Config {
             timezone,
             bootstrap_admin,
             blob_root,
+            s3,
             tls_ca_bundle,
             max_body_bytes,
         })
@@ -269,6 +309,31 @@ fn resolve_max_body_bytes(get: &impl Fn(&str) -> Option<String>) -> Result<usize
         Ok(bytes) => Ok(bytes),
         Err(e) => Err(invalid(format!("expected a byte count: {e}"))),
     }
+}
+
+/// The `ANAMNESIS_S3_*` family, but only when `blob_root` is an `s3://` URL
+/// — on a filesystem blob root there is nothing to configure and any of
+/// these that happen to be set are ignored.
+///
+/// The two credentials are `require`d, so an object-store deployment cannot
+/// get as far as binding a socket and then fail its first upload with a
+/// permissions error that looks like the bucket's fault. Endpoint and region
+/// stay optional: unset means "AWS's own", which is exactly right when the
+/// bucket really is on AWS and obviously wrong (and immediately visible) when
+/// it is not.
+fn resolve_s3(
+    get: &impl Fn(&str) -> Option<String>,
+    blob_root: &str,
+) -> Result<Option<S3Config>, ConfigError> {
+    if !blob_root.starts_with("s3://") {
+        return Ok(None);
+    }
+    Ok(Some(S3Config {
+        endpoint: get("ANAMNESIS_S3_ENDPOINT").filter(|v| !v.is_empty()),
+        region: get("ANAMNESIS_S3_REGION").filter(|v| !v.is_empty()),
+        access_key_id: require(get, "ANAMNESIS_S3_ACCESS_KEY_ID")?,
+        secret_access_key: Secret::new(require(get, "ANAMNESIS_S3_SECRET_ACCESS_KEY")?),
+    }))
 }
 
 /// `ANAMNESIS_OIDC_SCOPES`, whitespace-split, defaulting to
@@ -508,6 +573,88 @@ mod tests {
         pairs.push(("ANAMNESIS_BLOB_ROOT", "/var/lib/anamnesis/blobs"));
         let cfg = Config::from_source(env(&pairs)).unwrap();
         assert_eq!(cfg.blob_root, "/var/lib/anamnesis/blobs");
+    }
+
+    /// The env pairs an `s3://` blob root additionally needs.
+    fn s3_env() -> Vec<(&'static str, &'static str)> {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_BLOB_ROOT", "s3://anamnesis/blobs"));
+        pairs.push(("ANAMNESIS_S3_ACCESS_KEY_ID", "GK31c2f218a2e44f485b94239e"));
+        pairs.push(("ANAMNESIS_S3_SECRET_ACCESS_KEY", S3_CANARY));
+        pairs
+    }
+
+    const S3_CANARY: &str = "canary-s3-secret-access-key";
+
+    #[test]
+    fn a_filesystem_blob_root_needs_no_s3_settings() {
+        let cfg = Config::from_source(env(&full_valid_env())).unwrap();
+        assert!(cfg.s3.is_none());
+    }
+
+    #[test]
+    fn stray_s3_settings_are_ignored_on_a_filesystem_blob_root() {
+        // Not an error: an operator moving a deployment back to local disk
+        // should not have to unset every variable to boot.
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_S3_ENDPOINT", "https://garage.example.com:3900"));
+        let cfg = Config::from_source(env(&pairs)).unwrap();
+        assert!(cfg.s3.is_none());
+    }
+
+    #[test]
+    fn an_s3_blob_root_resolves_its_endpoint_and_credentials() {
+        let mut pairs = s3_env();
+        pairs.push(("ANAMNESIS_S3_ENDPOINT", "https://garage.example.com:3900"));
+        pairs.push(("ANAMNESIS_S3_REGION", "garage"));
+
+        let cfg = Config::from_source(env(&pairs)).unwrap();
+        let s3 = cfg.s3.expect("an s3:// blob root resolves S3 settings");
+        assert_eq!(cfg.blob_root, "s3://anamnesis/blobs");
+        assert_eq!(
+            s3.endpoint.as_deref(),
+            Some("https://garage.example.com:3900")
+        );
+        assert_eq!(s3.region.as_deref(), Some("garage"));
+        assert_eq!(s3.access_key_id, "GK31c2f218a2e44f485b94239e");
+        assert_eq!(s3.secret_access_key.expose(), S3_CANARY);
+    }
+
+    #[test]
+    fn an_s3_blob_root_leaves_endpoint_and_region_unset_when_they_are() {
+        let cfg = Config::from_source(env(&s3_env())).unwrap();
+        let s3 = cfg.s3.unwrap();
+        assert_eq!(s3.endpoint, None);
+        assert_eq!(s3.region, None);
+    }
+
+    #[test]
+    fn an_s3_blob_root_without_credentials_names_the_missing_variable() {
+        let mut pairs = s3_env();
+        pairs.retain(|(k, _)| *k != "ANAMNESIS_S3_ACCESS_KEY_ID");
+        let err = Config::from_source(env(&pairs)).unwrap_err();
+        assert_eq!(err, ConfigError::Missing("ANAMNESIS_S3_ACCESS_KEY_ID"));
+
+        let mut pairs = s3_env();
+        pairs.retain(|(k, _)| *k != "ANAMNESIS_S3_SECRET_ACCESS_KEY");
+        let err = Config::from_source(env(&pairs)).unwrap_err();
+        assert_eq!(err, ConfigError::Missing("ANAMNESIS_S3_SECRET_ACCESS_KEY"));
+    }
+
+    #[test]
+    fn debug_does_not_render_the_s3_secret_key() {
+        let cfg = Config::from_source(env(&s3_env())).unwrap();
+        let rendered = format!("{cfg:?}");
+        assert!(
+            !rendered.contains(S3_CANARY),
+            "the S3 secret key must never reach a Debug rendering: {rendered}"
+        );
+        // The non-secret half of the credential still prints, which is what
+        // makes a misconfigured key debuggable at all.
+        assert!(
+            rendered.contains("GK31c2f218a2e44f485b94239e"),
+            "{rendered}"
+        );
     }
 
     #[test]

@@ -18,9 +18,10 @@ use axum::Router;
 use tracing_subscriber::EnvFilter;
 
 use anamnesis_adapters::{
-    FsBlobStore, OidcIdentityProvider, SqlStore, SystemClock, TzTimezoneResolver, UuidIdGen,
+    FsBlobStore, OidcIdentityProvider, S3BlobStore, S3Settings, SqlStore, SystemClock,
+    TzTimezoneResolver, UuidIdGen,
 };
-use anamnesis_app::{Clock, IdentityProvider, JobLease, TimezoneResolver};
+use anamnesis_app::{BlobStore, Clock, IdentityProvider, JobLease, TimezoneResolver};
 use anamnesis_web::config::Config;
 use anamnesis_web::state::AppState;
 use anamnesis_web::{bootstrap, health, routes, session, sweep, tangles, templates};
@@ -194,15 +195,42 @@ async fn resolve_identity(config: &Config) -> Option<Arc<dyn IdentityProvider>> 
     Some(Arc::new(provider))
 }
 
-async fn open_blob_store(config: &Config) -> FsBlobStore {
-    FsBlobStore::new(&config.blob_root)
-        .await
-        .unwrap_or_else(|err| {
-            fail(format!(
-                "failed to prepare the blob store root {:?}: {err}",
-                config.blob_root
-            ))
-        })
+/// Opens the blob store named by `ANAMNESIS_BLOB_ROOT`, picking the backend
+/// from the value's scheme exactly as [`open_store`] picks a database driver
+/// from `ANAMNESIS_DATABASE_URL`: an `s3://bucket/prefix` URL is an object
+/// store, and anything else is a filesystem path.
+async fn open_blob_store(config: &Config) -> Arc<dyn BlobStore> {
+    let Some(s3) = &config.s3 else {
+        let store = FsBlobStore::new(&config.blob_root)
+            .await
+            .unwrap_or_else(|err| {
+                fail(format!(
+                    "failed to prepare the blob store root {:?}: {err}",
+                    config.blob_root
+                ))
+            });
+        return Arc::new(store);
+    };
+
+    // `Config` only populates `s3` for an `s3://` root, and it fails at
+    // startup if the credentials for one are missing -- so by here the URL
+    // and the settings are known to agree.
+    let settings = S3Settings {
+        endpoint: s3.endpoint.clone(),
+        region: s3.region.clone(),
+        access_key_id: s3.access_key_id.clone(),
+        secret_access_key: s3.secret_access_key.expose().to_string(),
+    };
+    let store = S3BlobStore::new(&config.blob_root, settings).unwrap_or_else(|err| {
+        fail(format!(
+            "failed to open the blob store at {:?}: {err}",
+            config.blob_root
+        ))
+    });
+    // Nothing has been contacted yet: unlike the database, an S3 endpoint has
+    // no connection to open, so a wrong endpoint or credential first shows up
+    // on an attachment upload rather than here.
+    Arc::new(store)
 }
 
 /// Assembles the shared application state.
@@ -214,7 +242,7 @@ async fn open_blob_store(config: &Config) -> FsBlobStore {
 fn build_state(
     config: &Config,
     store: Arc<SqlStore>,
-    blobs: FsBlobStore,
+    blobs: Arc<dyn BlobStore>,
     identity: Option<Arc<dyn IdentityProvider>>,
     leases: Arc<dyn JobLease>,
 ) -> AppState {
@@ -226,7 +254,7 @@ fn build_state(
         tangles: store.clone(),
         comments: store.clone(),
         attachments: store.clone(),
-        blobs: Arc::new(blobs),
+        blobs,
         board: store.clone(),
         search: store.clone(),
         search_index: store.clone(),

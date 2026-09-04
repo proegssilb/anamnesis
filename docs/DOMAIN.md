@@ -154,7 +154,8 @@ Number stores a scaled integer (value + scale) for the same reason.
 
 `Attachment: id, task_id, kind: Link { url } | File { blob_key, filename, mime, size }`
 
-Files need a new `BlobStore` port (local filesystem first, S3-shaped later).
+Files need a new `BlobStore` port (local filesystem or an S3-compatible
+object store, chosen per deployment).
 
 ### Tangle
 A knot of mutually-blocking tasks, detected by the system.

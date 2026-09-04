@@ -9,10 +9,12 @@
 services:
   anamnesis:
     environment:
-      # Overrides compose.yaml's SQLite URL. The volume stays mounted: file
-      # attachment bytes live on disk under ANAMNESIS_BLOB_ROOT regardless of
-      # which database backs the metadata, so it must be backed up alongside
-      # the database either way.
+      # Overrides compose.yaml's SQLite URL. The volume stays mounted: with
+      # this stack's default ANAMNESIS_BLOB_ROOT, file attachment bytes live
+      # on disk regardless of which database backs the metadata, so it must be
+      # backed up alongside the database either way. (Point ANAMNESIS_BLOB_ROOT
+      # at an s3:// URL instead and the volume is only the SQLite file's home,
+      # which this override no longer uses — see docs/DEPLOYMENT.md §12.)
       ANAMNESIS_DATABASE_URL: postgres://anamnesis:anamnesis@postgres:5432/anamnesis
     depends_on:
       postgres:

@@ -5,9 +5,10 @@
 //! - [`SqlStore`] — every Phase E port that talks to the relational schema:
 //!   the per-entity repositories, `BoardQuery`, `SearchQuery`/`SearchIndex`,
 //!   and `MembershipQuery` (`crate::sql`).
-//! - [`FsBlobStore`] (local filesystem attachments) and
-//!   [`TzTimezoneResolver`] (a real IANA tzdb lookup) stand alone since
-//!   neither touches the SQL schema.
+//! - [`FsBlobStore`] and [`S3BlobStore`] (attachment bytes on a local
+//!   filesystem, or in an S3-compatible object store — `crate::blob_store`
+//!   explains which is for what) and [`TzTimezoneResolver`] (a real IANA
+//!   tzdb lookup) stand alone since none of them touches the SQL schema.
 //! - `SystemClock`, `UuidIdGen`, and `OidcIdentityProvider` are the
 //!   remaining shared infrastructure: a clock, an id generator, and OIDC.
 
@@ -18,7 +19,7 @@ mod identity;
 mod sql;
 mod timezone;
 
-pub use blob_store::FsBlobStore;
+pub use blob_store::{FsBlobStore, S3BlobStore, S3Settings};
 pub use clock::SystemClock;
 pub use id_gen::UuidIdGen;
 pub use identity::OidcIdentityProvider;
