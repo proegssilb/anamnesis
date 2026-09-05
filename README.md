@@ -8,10 +8,9 @@ _ἀνάμνησις_ — recollection; the recovery of knowledge you already ha
 Anamnesis is a personal task tracker built on one premise: **tasks that
 aren't currently relevant shouldn't be deleted and shouldn't nag.** Dump a
 task in, trust the system to resurface it at the right moment, and stop
-carrying it in your head. It's designed for someone whose attention is
-interrupted — losing your scroll position, losing your place in a flow,
-coming back after three weeks — all normal, none of it treated as an error
-state.
+carrying it in your head. It's designed for someone whose memory and
+attention are scarce resources, but still needs to manage more things
+than they can keep track of.
 
 See `docs/DOMAIN.md` for the full design and its reasoning, and
 `docs/CONTEXT.md` for the product framing and its provenance.
@@ -52,25 +51,23 @@ see the knot actually close.
 
 ### The suggestion engine
 
-The soul of the product, and a pure, deterministic function of `(now, a
-random seed, board state, candidate tasks, the blocking graph, settings)` —
-no hidden clock reads, no hidden randomness, which is also exactly what
-makes it heavily tested (see `docs/DOMAIN.md` §5 and the `cucumber` features
-under `crates/anamnesis-app/features/`).
+Unlike other project management and todo list tools, you never _have_ to
+look at the full list of tasks in order to keep work moving. Instead, when
+space is detected on the board, a suggestion engine tries to surface a
+couple of tasks you could use to fill that space. Feel like picking one up?
+Drag it onto the board. Not ready for any of them yet? No worries; ignore or
+dismiss each suggestion. More suggestions will surface eventually.
 
-It fills open work-in-progress slots with up to three offers — two sampled
-from a recency-weighted distribution ("next up"), one from a
-staleness-weighted distribution over the older half of the backlog
-("forgotten") — using weighted sampling, not a top-N ranking, so that a task
-which has simply never been touched still has a real chance of surfacing
-instead of waiting behind whatever's already most-recent forever. And it
-follows one rule above all: **when the board is already full, it says
-nothing at all.** No banner, no nudge. A full board means you're already
-carrying what you agreed to carry; the app has nothing useful to add. It
-only speaks up when there's room and nothing to fill it with — and then it
-explains, concretely, why (nothing's active, everything's blocked,
-everything's tangled, everything's on cooldown, or the backlog is simply
-empty).
+When the board is full, the board shows you only what you're tracking. No 
+suggestions, no nudges from the suggestion engine, no idle commentary, just
+the work you're already tracking.
+
+The engine provides up to three offers — two sampled from a recency-weighted 
+distribution ("next up"), one from a staleness-weighted distribution over the
+older half of the backlog ("forgotten") — using weighted sampling, not a top-N
+ranking, so that a task which was last touched 6 months ago still has a real 
+chance of surfacing instead of waiting behind whatever's already most-recent 
+or truly oldest.
 
 ## Quickstart (SQLite + dev auth bypass)
 
@@ -266,14 +263,6 @@ Stated plainly rather than discovered the hard way:
   all** button is the only archiver until someone chooses a recurrence on
   `/settings`. Once one is set, the ticker fires within a day of it coming
   due, not at the stroke of local midnight.
-- **No web UI to grant roles to anyone but the bootstrap admin.**
-  `ANAMNESIS_BOOTSTRAP_ADMIN` gets System Admin on first boot (idempotently,
-  every boot); after that, adding another user as an Area/Project
-  Admin or Member has no HTTP route at all — it exists only as inherent,
-  untested-from-the-UI seams on `SqlStore` (`set_area_role`,
-  `set_project_role`) that nothing in `anamnesis-web` currently calls.
-  Practically, today, this is a single-admin system unless someone edits
-  the database directly.
 - **A tangle can be resolved and archived, but never deleted.** The sweep
   and **Archive all** both clear a _resolved_ tangle out of a Done column
   (`sweep_done_tangles`), so they no longer accumulate there — but an
