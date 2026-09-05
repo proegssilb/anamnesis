@@ -184,6 +184,47 @@ give Anamnesis the issuer URL and credentials.
 4. `cargo run --bin anamnesis-web`, then visit `/login` — you'll be
    redirected to your provider, and back to `/auth/callback` on success.
 
+### Optional: roles from provider groups
+
+By default every role is granted to one user at a time, which means knowing
+each person's `sub` before you can onboard them. If your provider already
+models access as groups, Anamnesis can read them and let a group hold a role
+— System Admin, or a role on one area or project — exactly as a user can.
+
+This is off unless you set `ANAMNESIS_OIDC_GROUPS_CLAIM`. With it unset,
+nothing reads groups, nothing is stored, and the group half of the admin UI
+never appears.
+
+```sh
+# Which claim carries group names. Authentik, Keycloak and Okta all use
+# "groups"; nothing here is provider-specific.
+export ANAMNESIS_OIDC_GROUPS_CLAIM="groups"
+# The group-shaped ANAMNESIS_BOOTSTRAP_ADMIN: solves the same first-user
+# problem, and like it, is re-applied on every boot. Optional, and rejected
+# at startup without ANAMNESIS_OIDC_GROUPS_CLAIM.
+export ANAMNESIS_OIDC_ADMIN_GROUP="anamnesis-admins"
+```
+
+Groups are not a standard OIDC claim, so Anamnesis reads them from the
+provider's `/userinfo` endpoint — the provider has to actually put them
+there. In Authentik that means adding the built-in **groups** scope mapping
+to the provider's Scopes in step 1, and requesting it:
+
+```sh
+export ANAMNESIS_OIDC_SCOPES="openid profile email groups"
+```
+
+Everything past that first admin group is managed from the UI, no redeploy
+needed: `/users` maps groups to System Admin, and each area's and project's
+settings panel maps groups to a role there. A user gets the strongest role
+they hold either directly or through any of their groups — a group grant is
+a fourth independent grant, never an override, and never a demotion.
+
+Two timing rules are worth knowing: a user's **group membership** is re-read
+at each login (there is no refresh token, so leaving a group in the provider
+takes effect at their next login), while a **mapping** you change in the UI
+takes effect immediately, for everyone.
+
 ## Running the tests
 
 Each layer of `docs/ARCHITECTURE.md`'s hexagon has its own test tool,

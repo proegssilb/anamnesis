@@ -24,6 +24,21 @@
 //! Column seeding is symmetric: seed only when `BoardQuery::
 //! columns_with_items` reports zero columns.
 //!
+//! **`ANAMNESIS_OIDC_ADMIN_GROUP` is seeded the same way**, and is here for
+//! exactly the same reason: a deployment that authorizes through OIDC groups
+//! still has to get its *first* admin group mapped, and every route that
+//! could create the mapping is already System-Admin-only. Seeding it here
+//! keeps request-time resolution reading the database alone — the env var is
+//! a seeding lever, never consulted on the request path, so further admin
+//! groups are granted and revoked entirely through the admin UI.
+//!
+//! Its idempotency is per named group, not a one-shot latch, matching
+//! `ANAMNESIS_BOOTSTRAP_ADMIN` exactly (see
+//! `a_different_bootstrap_admin_on_a_second_boot_grants_that_admin_too`).
+//! The consequence is worth stating plainly: a seeded admin group revoked in
+//! the UI **comes back on the next boot** unless the environment variable is
+//! removed too.
+//!
 //! **Column defaults.** `docs/DOMAIN.md` §3 names the three default columns
 //! (To-Do WIP-limited, Doing, Done) but not a WIP limit number, and columns
 //! are not one of the runtime-editable `Settings` fields (`docs/DOMAIN.md`
@@ -43,7 +58,8 @@ use std::time::Duration;
 
 use anamnesis_adapters::{SqlStore, SystemClock};
 use anamnesis_app::{
-    BoardQuery, Clock, IdGen, JobLease, MembershipQuery, MembershipRepository, RepoError, Settings,
+    BoardQuery, Clock, GroupMembershipQuery, GroupMembershipRepository, IdGen, JobLease,
+    MembershipQuery, MembershipRepository, RepoError, Settings,
 };
 use anamnesis_core::{ColumnId, UserId, create_column};
 
@@ -89,13 +105,14 @@ pub async fn run(
     store: &SqlStore,
     ids: &dyn IdGen,
     bootstrap_admin: &str,
+    admin_group: Option<&str>,
     timezone: &str,
 ) -> Result<(), RepoError> {
     let leases = store.job_lease().await?;
     let owner = ids.next().to_string();
     acquire_lease(&leases, &owner).await?;
 
-    let outcome = seed(store, ids, bootstrap_admin, timezone).await;
+    let outcome = seed(store, ids, bootstrap_admin, admin_group, timezone).await;
 
     if let Err(err) = leases.release(BOOTSTRAP_JOB, &owner).await {
         tracing::warn!(
@@ -137,15 +154,17 @@ async fn acquire_lease(leases: &dyn JobLease, owner: &str) -> Result<(), RepoErr
 }
 
 /// Grants `bootstrap_admin` System Admin if nobody by that name already
-/// holds it, seeds the three default board columns if none exist yet, and
-/// seeds a default [`Settings`] row if none exists yet (`timezone` is
-/// stored on that row only because the schema's `timezone` column is
-/// `NOT NULL` — it is not read back by any port; see
-/// `anamnesis_app::settings`'s module doc comment).
+/// holds it, maps `admin_group` to System Admin if it is not mapped already,
+/// seeds the three default board columns if none exist yet, and seeds a
+/// default [`Settings`] row if none exists yet (`timezone` is stored on that
+/// row only because the schema's `timezone` column is `NOT NULL` — it is not
+/// read back by any port; see `anamnesis_app::settings`'s module doc
+/// comment).
 async fn seed(
     store: &SqlStore,
     ids: &dyn IdGen,
     bootstrap_admin: &str,
+    admin_group: Option<&str>,
     timezone: &str,
 ) -> Result<(), RepoError> {
     let admin = UserId::new(bootstrap_admin);
@@ -154,6 +173,19 @@ async fn seed(
         tracing::info!(
             user = %admin,
             "bootstrap: granted System Admin (ANAMNESIS_BOOTSTRAP_ADMIN)"
+        );
+    }
+
+    // `list_admin_groups` rather than a "does this one group hold it" query:
+    // the port has no such method, and there is no reason to add one for a
+    // list that is a handful of rows and is already read by the admin UI.
+    if let Some(group) = admin_group
+        && !store.list_admin_groups().await?.iter().any(|g| g == group)
+    {
+        store.grant_admin_group(group).await?;
+        tracing::info!(
+            group,
+            "bootstrap: mapped group to System Admin (ANAMNESIS_OIDC_ADMIN_GROUP)"
         );
     }
 
@@ -205,7 +237,7 @@ mod tests {
         let (store, _dir) = temp_store().await;
         let ids = UuidIdGen;
 
-        run(&store, &ids, "alice", "UTC").await.unwrap();
+        run(&store, &ids, "alice", None, "UTC").await.unwrap();
 
         assert!(store.is_system_admin(&UserId::new("alice")).await.unwrap());
         let columns = store.columns_with_items().await.unwrap();
@@ -227,8 +259,8 @@ mod tests {
         let (store, _dir) = temp_store().await;
         let ids = UuidIdGen;
 
-        run(&store, &ids, "alice", "UTC").await.unwrap();
-        run(&store, &ids, "alice", "UTC").await.unwrap();
+        run(&store, &ids, "alice", None, "UTC").await.unwrap();
+        run(&store, &ids, "alice", None, "UTC").await.unwrap();
 
         let columns = store.columns_with_items().await.unwrap();
         assert_eq!(
@@ -251,13 +283,74 @@ mod tests {
         let (store, _dir) = temp_store().await;
         let ids = UuidIdGen;
 
-        run(&store, &ids, "alice", "UTC").await.unwrap();
-        run(&store, &ids, "bob", "UTC").await.unwrap();
+        run(&store, &ids, "alice", None, "UTC").await.unwrap();
+        run(&store, &ids, "bob", None, "UTC").await.unwrap();
 
         assert!(store.is_system_admin(&UserId::new("alice")).await.unwrap());
         assert!(store.is_system_admin(&UserId::new("bob")).await.unwrap());
         let columns = store.columns_with_items().await.unwrap();
         assert_eq!(columns.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn no_configured_admin_group_maps_no_group() {
+        // The default deployment: `ANAMNESIS_OIDC_ADMIN_GROUP` unset, so the
+        // whole group dimension stays inert.
+        let (store, _dir) = temp_store().await;
+
+        run(&store, &UuidIdGen, "alice", None, "UTC").await.unwrap();
+
+        assert!(store.list_admin_groups().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_configured_admin_group_is_mapped_once_and_survives_a_second_boot() {
+        let (store, _dir) = temp_store().await;
+        let group = Some("anamnesis-admins");
+
+        run(&store, &UuidIdGen, "alice", group, "UTC")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.list_admin_groups().await.unwrap(),
+            vec!["anamnesis-admins".to_string()]
+        );
+
+        // The second boot must find it already mapped and do nothing, rather
+        // than fail or double up.
+        run(&store, &UuidIdGen, "alice", group, "UTC")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.list_admin_groups().await.unwrap(),
+            vec!["anamnesis-admins".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_revoked_admin_group_comes_back_on_the_next_boot() {
+        // Per named group, not a one-shot latch -- the same semantics
+        // `a_different_bootstrap_admin_on_a_second_boot_grants_that_admin_too`
+        // pins for `ANAMNESIS_BOOTSTRAP_ADMIN`. Asserted rather than merely
+        // documented because it is the behaviour that will surprise someone
+        // revoking the seeded group in the UI: `docs/DEPLOYMENT.md` says to
+        // unset the variable too.
+        let (store, _dir) = temp_store().await;
+        let group = Some("anamnesis-admins");
+
+        run(&store, &UuidIdGen, "alice", group, "UTC")
+            .await
+            .unwrap();
+        store.revoke_admin_group("anamnesis-admins").await.unwrap();
+        assert!(store.list_admin_groups().await.unwrap().is_empty());
+
+        run(&store, &UuidIdGen, "alice", group, "UTC")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.list_admin_groups().await.unwrap(),
+            vec!["anamnesis-admins".to_string()]
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -292,7 +385,7 @@ mod tests {
             instances.push(tokio::spawn(async move {
                 let store = SqlStore::connect(&db_url).await.expect("connect");
                 barrier.wait().await;
-                run(&store, &UuidIdGen, "alice", "UTC").await
+                run(&store, &UuidIdGen, "alice", None, "UTC").await
             }));
         }
         for instance in instances {
@@ -320,7 +413,7 @@ mod tests {
         let (store, _dir) = temp_store().await;
         let ids = UuidIdGen;
 
-        run(&store, &ids, "alice", "UTC").await.unwrap();
+        run(&store, &ids, "alice", None, "UTC").await.unwrap();
         let settings = SettingsRepository::load(&store).await.unwrap();
         assert_eq!(settings, Settings::default());
 
@@ -332,7 +425,7 @@ mod tests {
         SettingsRepository::update(&store, &edited).await.unwrap();
 
         // ...and a second boot must not reset it back to the default.
-        run(&store, &ids, "alice", "UTC").await.unwrap();
+        run(&store, &ids, "alice", None, "UTC").await.unwrap();
         let settings = SettingsRepository::load(&store).await.unwrap();
         assert_eq!(settings.active_project_limit, 42);
     }

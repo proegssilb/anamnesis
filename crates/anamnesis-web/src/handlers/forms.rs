@@ -97,6 +97,62 @@ pub struct RevokeSystemAdminForm {
     pub user_id: String,
 }
 
+/// Maps an OIDC group to a role on an Area
+/// (`crate::handlers::group_membership`) — the [`GrantAreaRoleForm`] sibling
+/// for the group dimension. `role` is parsed by the very same
+/// `crate::handlers::membership::parse_grantable_role`, so `"system_admin"`
+/// is just as unspellable here.
+#[derive(Debug, Deserialize)]
+pub struct GrantAreaGroupRoleForm {
+    pub csrf_token: String,
+    pub group: String,
+    pub role: String,
+}
+
+/// Unmaps a group from an Area entirely.
+#[derive(Debug, Deserialize)]
+pub struct RevokeAreaGroupRoleForm {
+    pub csrf_token: String,
+    pub group: String,
+}
+
+/// Maps an OIDC group to a role on a Project — the
+/// [`GrantAreaGroupRoleForm`] sibling.
+#[derive(Debug, Deserialize)]
+pub struct GrantProjectGroupRoleForm {
+    pub csrf_token: String,
+    pub group: String,
+    pub role: String,
+}
+
+/// Unmaps a group from a Project entirely.
+#[derive(Debug, Deserialize)]
+pub struct RevokeProjectGroupRoleForm {
+    pub csrf_token: String,
+    pub group: String,
+}
+
+/// Maps an OIDC group to System Admin — the [`GrantSystemAdminForm`]
+/// counterpart for groups, posted from the same System-Admin-only `/users`
+/// page.
+#[derive(Debug, Deserialize)]
+pub struct GrantAdminGroupForm {
+    pub csrf_token: String,
+    pub group: String,
+}
+
+/// Unmaps a group from System Admin.
+///
+/// Unlike [`RevokeSystemAdminForm`] this can never be refused for emptying
+/// the admin ranks: a group mapping is not evidence that any user holds
+/// admin, so there is no last-admin question to ask of it — see
+/// `anamnesis_app::GroupMembershipRepository::revoke_admin_group`.
+#[derive(Debug, Deserialize)]
+pub struct RevokeAdminGroupForm {
+    pub csrf_token: String,
+    pub group: String,
+}
+
 /// Defines a new custom field on a project (`docs/DOMAIN.md` §3) — the
 /// owner's motivating house-hunting example (price, viewing date, ...) needs
 /// this to be reachable from the UI at all, not just by hand-writing SQL.

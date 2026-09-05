@@ -22,6 +22,7 @@ mod area;
 mod attachment;
 mod board_query;
 mod comment;
+mod group_membership;
 mod lease;
 mod membership;
 mod project;

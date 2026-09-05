@@ -24,8 +24,9 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
 
 use anamnesis_app::{
-    AppError, grant_area_role, grant_project_role, grant_system_admin, list_system_admins,
-    revoke_area_role, revoke_project_role, revoke_system_admin,
+    AppError, grant_area_role, grant_project_role, grant_system_admin, list_admin_groups,
+    list_known_groups, list_system_admins, revoke_area_role, revoke_project_role,
+    revoke_system_admin,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{AreaId, ProjectId, UserId};
@@ -61,7 +62,7 @@ pub(super) fn format_role(role: Role) -> &'static str {
 /// `grant_project_role`'s independent refusal (see that module's doc
 /// comment) — even a hand-crafted POST with `role=system_admin` never
 /// reaches the use case carrying that value.
-fn parse_grantable_role(raw: &str) -> Result<Role, WebError> {
+pub(super) fn parse_grantable_role(raw: &str) -> Result<Role, WebError> {
     match raw {
         "member" => Ok(Role::Member),
         "project_admin" => Ok(Role::ProjectAdmin),
@@ -234,6 +235,27 @@ pub async fn view_users_handler(State(state): State<AppState>, user: CurrentUser
     }
 }
 
+/// Everything `/users` lists: the System Admins themselves, the groups
+/// mapped to System Admin, and every group name the deployment has ever
+/// seen (the picker behind the group input). One value rather than three
+/// more parameters, for the same reason
+/// [`crate::handlers::group_membership::AccessPanel`] is one — they are read
+/// under one gate, rendered as one page, and never used apart.
+struct UsersPage {
+    admins: Vec<UserId>,
+    admin_groups: Vec<String>,
+    known_groups: Vec<String>,
+}
+
+impl UsersPage {
+    /// Whether to render the admin-groups half of the page. Derived from
+    /// data, not configuration — see
+    /// `crate::handlers::group_membership`'s module doc comment.
+    fn show_groups(&self) -> bool {
+        !self.known_groups.is_empty()
+    }
+}
+
 async fn view_users_impl(
     state: &AppState,
     user: &CurrentUser,
@@ -242,8 +264,12 @@ async fn view_users_impl(
 ) -> Result<Response, WebError> {
     let admin = access::is_system_admin(state, &user.user_id).await?;
     let role = admin.then_some(Role::SystemAdmin);
-    let admins = list_system_admins(state.membership.as_ref(), role).await?;
-    render_users_page(state, user, &admins, error, status)
+    let page = UsersPage {
+        admins: list_system_admins(state.membership.as_ref(), role).await?,
+        admin_groups: list_admin_groups(state.group_membership.as_ref(), role).await?,
+        known_groups: list_known_groups(state.group_membership.as_ref(), role).await?,
+    };
+    render_users_page(state, user, &page, error, status)
 }
 
 pub async fn grant_system_admin_handler(
@@ -319,11 +345,11 @@ async fn revoke_system_admin_impl(
 fn render_users_page(
     state: &AppState,
     user: &CurrentUser,
-    admins: &[UserId],
+    page: &UsersPage,
     error: Option<&str>,
     status: StatusCode,
 ) -> Result<Response, WebError> {
-    let admin_names: Vec<String> = admins.iter().map(|u| u.to_string()).collect();
+    let admin_names: Vec<String> = page.admins.iter().map(|u| u.to_string()).collect();
     let tmpl = state
         .templates
         .get_template("users.html")
@@ -331,6 +357,9 @@ fn render_users_page(
     let body = tmpl
         .render(context! {
             admins => admin_names,
+            admin_groups => page.admin_groups,
+            known_groups => page.known_groups,
+            show_groups => page.show_groups(),
             csrf_token => user.csrf_token,
             current_user => user.display_name,
             is_system_admin => true,

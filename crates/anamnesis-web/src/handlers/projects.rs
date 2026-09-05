@@ -11,10 +11,8 @@ use minijinja::context;
 use serde::Deserialize;
 
 use anamnesis_app::{
-    AppError, archive_project, create_task, list_all_projects, list_project_members,
-    unarchive_project, view_project,
+    AppError, archive_project, create_task, list_all_projects, unarchive_project, view_project,
 };
-use anamnesis_core::UserId;
 use anamnesis_core::policy::Role;
 use anamnesis_core::{Area, Project, ProjectId, ProjectStatus, TaskId};
 
@@ -28,30 +26,16 @@ use super::access;
 use super::field_form;
 use super::format::format_field_kind;
 use super::forms::{AddFieldDefinitionForm, CreateTaskForm, CsrfOnlyForm};
-use super::membership::format_role;
+use super::group_membership::{self, AccessPanel};
 use super::tasks::{
     RaiseOutcome, WIP_LIMIT_MESSAGE, drop_task_with_bounce_accounting, raise_task_to_column,
     role_for_task,
 };
 
-/// The Project's "members" section, fetched only when `can_manage` — the
-/// [`crate::handlers::areas::area_members_for_display`] sibling.
-async fn project_members_for_display(
-    state: &AppState,
-    role: Option<Role>,
-    project_id: ProjectId,
-    can_manage: bool,
-) -> Result<Vec<(UserId, Role)>, WebError> {
-    if !can_manage {
-        return Ok(Vec::new());
-    }
-    Ok(list_project_members(state.membership.as_ref(), role, project_id).await?)
-}
-
-/// Rebuilds the project page from scratch: the four reads
-/// [`render_project_page`] needs (aggregate, tasks, `can_manage`, members).
-/// Shared by every mutation handler that must re-render the page to show an
-/// `error` after a failed write, rather than redirect to a fresh `GET`.
+/// Rebuilds the project page from scratch: the three reads
+/// [`render_project_page`] needs (aggregate, tasks, access panel). Shared by
+/// every mutation handler that must re-render the page to show an `error`
+/// after a failed write, rather than redirect to a fresh `GET`.
 async fn render_project_page_reloaded(
     state: &AppState,
     user: &CurrentUser,
@@ -63,10 +47,8 @@ async fn render_project_page_reloaded(
     let aggregate = view_project(state.projects.as_ref(), role, project_id).await?;
     let tasks = state.tasks.list_by_project(project_id).await?;
     let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
-    let members = project_members_for_display(state, role, project_id, can_manage).await?;
-    render_project_page(
-        state, user, &aggregate, &tasks, &members, can_manage, error, status,
-    )
+    let panel = group_membership::project_panel(state, role, project_id, can_manage).await?;
+    render_project_page(state, user, &aggregate, &tasks, &panel, error, status)
 }
 
 pub async fn view_project_handler(
@@ -423,14 +405,12 @@ async fn add_field_definition_impl(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_project_page(
     state: &AppState,
     user: &CurrentUser,
     aggregate: &anamnesis_app::ProjectAggregate,
     tasks: &[anamnesis_core::Task],
-    members: &[(UserId, Role)],
-    can_manage: bool,
+    panel: &AccessPanel,
     error: Option<&str>,
     status: StatusCode,
 ) -> Result<Response, WebError> {
@@ -451,10 +431,7 @@ fn render_project_page(
             }
         })
         .collect();
-    let members: Vec<_> = members
-        .iter()
-        .map(|(user, role)| context! { user_id => user.to_string(), role => format_role(*role) })
-        .collect();
+    let (members, groups) = panel.member_and_group_context();
 
     let tmpl = state
         .templates
@@ -467,7 +444,10 @@ fn render_project_page(
             board_sections => board_sections,
             fields => fields,
             members => members,
-            can_manage => can_manage,
+            groups => groups,
+            known_groups => panel.known_groups,
+            show_groups => panel.show_groups(),
+            can_manage => panel.can_manage,
             csrf_token => user.csrf_token,
             current_user => user.display_name,
             error => error,

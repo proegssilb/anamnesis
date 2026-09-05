@@ -14,10 +14,10 @@ use std::time::Duration;
 use anamnesis_adapters::SqlStore;
 use anamnesis_app::{
     AreaRepository, Attachment, AttachmentId, AttachmentKind, AttachmentRepository, BoardQuery,
-    Comment, CommentId, CommentRepository, JobLease, MembershipQuery, MembershipRepository,
-    ProjectAggregate, ProjectRepository, RelationshipRepository, SearchHit, SearchIndex,
-    SearchQuery, Settings, SettingsRepository, TangleRepository, TaskAggregate, TaskRepository,
-    TaskUpdateError,
+    Comment, CommentId, CommentRepository, GroupMembershipQuery, GroupMembershipRepository,
+    JobLease, MembershipQuery, MembershipRepository, ProjectAggregate, ProjectRepository,
+    RelationshipRepository, SearchHit, SearchIndex, SearchQuery, Settings, SettingsRepository,
+    TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
@@ -130,6 +130,7 @@ async fn contract(store: &SqlStore) {
     comment_contract(store, &task_a).await;
     attachment_contract(store, &task_a).await;
     membership_contract(store).await;
+    group_membership_contract(store).await;
     search_contract(store).await;
     settings_contract(store).await;
     job_lease_contract(store).await;
@@ -1366,6 +1367,216 @@ async fn admin_and_stranger_revocation_contract(
     MembershipRepository::revoke_project_role(store, stranger, project_id)
         .await
         .unwrap();
+}
+
+// --- Group membership: the optional second grant source, from OIDC groups ---
+
+/// The group dimension of authorization: what a login records, what a
+/// mapping turns that into, and the fact that changing a mapping takes
+/// effect immediately rather than at the affected user's next login.
+async fn group_membership_contract(store: &SqlStore) {
+    // Unique per run: the contract runs twice against one Postgres database
+    // (once per `contract` invocation) and shares tables with every other
+    // contract in this file.
+    let suffix = Uuid::new_v4();
+    let insider = UserId::new(format!("group-insider-{suffix}"));
+    let outsider = UserId::new(format!("group-outsider-{suffix}"));
+    let admins = format!("anamnesis-admins-{suffix}");
+    let readers = format!("readers-{suffix}");
+
+    let (a, p) = seed_area_and_project(store, 21, ProjectStatus::Pending).await;
+
+    store
+        .replace_user_groups(&insider, &[admins.clone(), readers.clone()])
+        .await
+        .unwrap();
+    store
+        .replace_user_groups(&outsider, std::slice::from_ref(&readers))
+        .await
+        .unwrap();
+
+    user_groups_replace_contract(store, &outsider, &readers, &suffix).await;
+    admin_group_contract(store, &insider, &outsider, &admins).await;
+    scoped_group_role_contract(store, &insider, &admins, &readers, a.id, p.id).await;
+}
+
+/// `replace_user_groups` replaces the user's rows wholesale rather than
+/// accumulating them, so leaving a group at the identity provider is
+/// reflected on the next login. Other users' rows are untouched.
+async fn user_groups_replace_contract(
+    store: &SqlStore,
+    outsider: &UserId,
+    readers: &str,
+    suffix: &Uuid,
+) {
+    let moved_to = format!("moved-{suffix}");
+    store
+        .replace_user_groups(outsider, std::slice::from_ref(&moved_to))
+        .await
+        .unwrap();
+
+    let known = store.list_known_groups().await.unwrap();
+    assert!(
+        known.contains(&moved_to),
+        "the new group should be recorded, got: {known:?}"
+    );
+    assert!(
+        known.contains(&readers.to_string()),
+        "the insider is still in {readers}, so it must survive the outsider's replacement"
+    );
+
+    // Put the outsider back where the rest of the contract expects them.
+    store
+        .replace_user_groups(outsider, &[readers.to_string()])
+        .await
+        .unwrap();
+}
+
+/// A group mapped to System Admin confers it on everyone in that group, and
+/// unmapping it takes that away immediately — with no new login, which is
+/// the whole reason group membership lives in the database rather than in
+/// the session cookie.
+async fn admin_group_contract(store: &SqlStore, insider: &UserId, outsider: &UserId, admins: &str) {
+    assert!(
+        !store.is_system_admin_via_group(insider).await.unwrap(),
+        "membership in an unmapped group grants nothing"
+    );
+
+    store.grant_admin_group(admins).await.unwrap();
+    assert!(store.is_system_admin_via_group(insider).await.unwrap());
+    assert!(!store.is_system_admin_via_group(outsider).await.unwrap());
+    assert!(
+        store
+            .list_admin_groups()
+            .await
+            .unwrap()
+            .contains(&admins.to_string())
+    );
+
+    // Granting twice is idempotent, as `grant_system_admin` is per user.
+    store.grant_admin_group(admins).await.unwrap();
+
+    store.revoke_admin_group(admins).await.unwrap();
+    assert!(
+        !store.is_system_admin_via_group(insider).await.unwrap(),
+        "unmapping the group must deny immediately, without a new login"
+    );
+    assert!(
+        !store
+            .list_admin_groups()
+            .await
+            .unwrap()
+            .contains(&admins.to_string())
+    );
+}
+
+/// Area- and project-scoped group mappings, including the strongest-wins
+/// rule when a user reaches one scope through several mapped groups.
+async fn scoped_group_role_contract(
+    store: &SqlStore,
+    insider: &UserId,
+    admins: &str,
+    readers: &str,
+    area_id: anamnesis_core::AreaId,
+    project_id: ProjectId,
+) {
+    assert_eq!(store.area_group_role(insider, area_id).await.unwrap(), None);
+
+    store
+        .set_area_group_role(readers, area_id, Role::Member)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.area_group_role(insider, area_id).await.unwrap(),
+        Some(Role::Member)
+    );
+
+    // The insider is in both groups: the stronger mapping wins.
+    store
+        .set_area_group_role(admins, area_id, Role::ProjectAdmin)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.area_group_role(insider, area_id).await.unwrap(),
+        Some(Role::ProjectAdmin)
+    );
+    assert_eq!(
+        store.list_area_groups(area_id).await.unwrap().len(),
+        2,
+        "both mappings should be listed"
+    );
+
+    // An upsert changes the existing mapping rather than adding a second.
+    store
+        .set_area_group_role(admins, area_id, Role::Member)
+        .await
+        .unwrap();
+    assert_eq!(store.list_area_groups(area_id).await.unwrap().len(), 2);
+    assert_eq!(
+        store.area_group_role(insider, area_id).await.unwrap(),
+        Some(Role::Member)
+    );
+
+    project_group_role_contract(store, insider, readers, area_id, project_id).await;
+
+    store
+        .revoke_area_group_role(readers, area_id)
+        .await
+        .unwrap();
+    store.revoke_area_group_role(admins, area_id).await.unwrap();
+    assert_eq!(store.area_group_role(insider, area_id).await.unwrap(), None);
+    assert!(store.list_area_groups(area_id).await.unwrap().is_empty());
+}
+
+/// A project-scoped mapping, and the composed `effective_role` inheriting
+/// the area mapping when the project itself has none.
+async fn project_group_role_contract(
+    store: &SqlStore,
+    insider: &UserId,
+    readers: &str,
+    area_id: anamnesis_core::AreaId,
+    project_id: ProjectId,
+) {
+    assert_eq!(
+        store.project_group_role(insider, project_id).await.unwrap(),
+        None
+    );
+    assert_eq!(
+        GroupMembershipQuery::effective_role(store, insider, project_id, area_id)
+            .await
+            .unwrap(),
+        Some(Role::Member),
+        "with no project mapping, the area mapping is inherited"
+    );
+
+    store
+        .set_project_group_role(readers, project_id, Role::ProjectAdmin)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.project_group_role(insider, project_id).await.unwrap(),
+        Some(Role::ProjectAdmin)
+    );
+    assert_eq!(
+        store.list_project_groups(project_id).await.unwrap(),
+        vec![(readers.to_string(), Role::ProjectAdmin)]
+    );
+
+    store
+        .revoke_project_group_role(readers, project_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.project_group_role(insider, project_id).await.unwrap(),
+        None
+    );
+    assert!(
+        store
+            .list_project_groups(project_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 // --- Search: SearchIndex (write) + SearchQuery (read), across kinds ---
