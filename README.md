@@ -271,7 +271,3 @@ Stated plainly rather than discovered the hard way:
 - **No real-time updates.** No websockets, no server push — a page refresh
   is the update mechanism. This one's by design, not a gap: see
   `docs/DOMAIN.md` §8.
-- **`docs/CONTEXT.md` is still a stub.** The project owner's accumulated
-  context lives in Claude Chat memories that have not been transcribed into
-  this repository yet; the file says so explicitly and will be superseded
-  once they land.
