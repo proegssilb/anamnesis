@@ -12,7 +12,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 
-use anamnesis_app::{Clock, IdGen, IdentityError, IdentityProvider, LoginCallback, LoginRedirect};
+use anamnesis_app::{
+    AuthenticatedIdentity, Clock, IdGen, IdentityError, IdentityProvider, LoginCallback,
+    LoginRedirect,
+};
 use anamnesis_core::{Timestamp, UserId};
 use uuid::Uuid;
 
@@ -66,7 +69,7 @@ impl IdGen for SequentialIdGen {
 /// An `IdentityProvider` double: `begin_login` always returns the same
 /// canned redirect; `complete_login` succeeds only when the callback's state
 /// and PKCE verifier match what `begin_login` handed out, returning a fixed
-/// user id on success.
+/// user id (and its string form as the display name) on success.
 #[derive(Debug)]
 pub struct StubIdentityProvider {
     user: UserId,
@@ -93,7 +96,10 @@ impl IdentityProvider for StubIdentityProvider {
         Ok(Self::canned_redirect())
     }
 
-    async fn complete_login(&self, callback: LoginCallback) -> Result<UserId, IdentityError> {
+    async fn complete_login(
+        &self,
+        callback: LoginCallback,
+    ) -> Result<AuthenticatedIdentity, IdentityError> {
         let redirect = Self::canned_redirect();
         if callback.state != callback.expected_state
             || callback.expected_state != redirect.csrf_state
@@ -102,6 +108,9 @@ impl IdentityProvider for StubIdentityProvider {
         {
             return Err(IdentityError::new("callback did not match issued state"));
         }
-        Ok(self.user.clone())
+        Ok(AuthenticatedIdentity {
+            display_name: self.user.to_string(),
+            user_id: self.user.clone(),
+        })
     }
 }

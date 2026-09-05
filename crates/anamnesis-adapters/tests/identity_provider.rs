@@ -13,10 +13,11 @@ use openidconnect::core::{
 };
 use openidconnect::{
     AccessToken, Audience, AuthUrl, EmptyAdditionalClaims, EmptyAdditionalProviderMetadata,
-    EmptyExtraTokenFields, IssuerUrl, JsonWebKeySetUrl, Nonce, PrivateSigningKey, ResponseTypes,
-    StandardClaims, SubjectIdentifier, TokenUrl,
+    EmptyExtraTokenFields, EndUserUsername, IssuerUrl, JsonWebKeySetUrl, Nonce, PrivateSigningKey,
+    ResponseTypes, StandardClaims, SubjectIdentifier, TokenUrl, UserInfoUrl,
 };
 use rsa::pkcs1::EncodeRsaPrivateKey;
+use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -54,7 +55,8 @@ impl MockProvider {
             vec![CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256],
             EmptyAdditionalProviderMetadata {},
         )
-        .set_token_endpoint(Some(TokenUrl::new(format!("{issuer}/token")).unwrap()));
+        .set_token_endpoint(Some(TokenUrl::new(format!("{issuer}/token")).unwrap()))
+        .set_userinfo_endpoint(Some(UserInfoUrl::new(format!("{issuer}/userinfo")).unwrap()));
 
         Mock::given(method("GET"))
             .and(path("/.well-known/openid-configuration"))
@@ -84,13 +86,25 @@ impl MockProvider {
     /// `nonce`. Kept separate from `start` because the nonce is only known
     /// after `begin_login` has generated one.
     async fn respond_to_token_exchange_with_nonce(&self, nonce: &Nonce) {
+        self.respond_to_token_exchange(nonce, None).await;
+    }
+
+    /// As [`Self::respond_to_token_exchange_with_nonce`], but also setting
+    /// the `preferred_username` standard claim on the signed ID token when
+    /// given one — for exercising the display-name default chain.
+    async fn respond_to_token_exchange(&self, nonce: &Nonce, preferred_username: Option<&str>) {
         let now = Utc::now();
+        let mut standard_claims = StandardClaims::new(SubjectIdentifier::new(SUBJECT.to_string()));
+        if let Some(name) = preferred_username {
+            standard_claims =
+                standard_claims.set_preferred_username(Some(EndUserUsername::new(name.to_string())));
+        }
         let claims = CoreIdTokenClaims::new(
             self.provider_metadata.issuer().clone(),
             vec![Audience::new(CLIENT_ID.to_string())],
             now + Duration::seconds(300),
             now,
-            StandardClaims::new(SubjectIdentifier::new(SUBJECT.to_string())),
+            standard_claims,
             EmptyAdditionalClaims {},
         )
         .set_nonce(Some(nonce.clone()));
@@ -117,6 +131,21 @@ impl MockProvider {
             .mount(&self.server)
             .await;
     }
+
+    /// Registers a `/userinfo` response carrying `sub` plus one extra custom
+    /// claim -- exercises the fallback path `resolve_claim` takes for a
+    /// configured claim name outside the recognized standard set.
+    async fn respond_to_userinfo(&self, claim_name: &str, claim_value: &str) {
+        let body = json!({
+            "sub": SUBJECT,
+            claim_name: claim_value,
+        });
+        Mock::given(method("GET"))
+            .and(path("/userinfo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .mount(&self.server)
+            .await;
+    }
 }
 
 async fn discover(provider: &MockProvider) -> OidcIdentityProvider {
@@ -131,6 +160,18 @@ async fn discover_with_ca_bundle(
     provider: &MockProvider,
     tls_ca_bundle: Option<&str>,
 ) -> Result<OidcIdentityProvider, IdentityError> {
+    discover_with_claims(provider, tls_ca_bundle, None, None).await
+}
+
+/// As [`discover`], but with explicitly configured user-id/display-name
+/// claim names -- for exercising the "explicitly configured" half of the
+/// resolve-or-error contract.
+async fn discover_with_claims(
+    provider: &MockProvider,
+    tls_ca_bundle: Option<&str>,
+    user_id_claim: Option<&str>,
+    display_name_claim: Option<&str>,
+) -> Result<OidcIdentityProvider, IdentityError> {
     OidcIdentityProvider::discover(
         &provider.issuer_url(),
         CLIENT_ID.to_string(),
@@ -138,6 +179,8 @@ async fn discover_with_ca_bundle(
         "https://anamnesis.example/auth/callback".to_string(),
         vec!["openid".to_string(), "profile".to_string()],
         tls_ca_bundle,
+        user_id_claim.map(str::to_string),
+        display_name_claim.map(str::to_string),
     )
     .await
 }
@@ -225,7 +268,7 @@ async fn complete_login_validates_the_id_token_and_returns_the_subject_as_user_i
         .respond_to_token_exchange_with_nonce(&Nonce::new(redirect.nonce.clone()))
         .await;
 
-    let user = identity
+    let identity_result = identity
         .complete_login(LoginCallback {
             code: "test-authorization-code".to_string(),
             state: redirect.csrf_state.clone(),
@@ -236,7 +279,7 @@ async fn complete_login_validates_the_id_token_and_returns_the_subject_as_user_i
         .await
         .expect("complete_login should validate the signed ID token");
 
-    assert_eq!(user.as_str(), SUBJECT);
+    assert_eq!(identity_result.user_id.as_str(), SUBJECT);
 }
 
 #[tokio::test]
@@ -290,4 +333,194 @@ async fn complete_login_rejects_a_token_signed_for_the_wrong_nonce() {
         .expect_err("a token signed for the wrong nonce must be rejected");
 
     let _ = err; // the message's exact wording is the openidconnect crate's; only rejection matters.
+}
+
+#[tokio::test]
+async fn unconfigured_display_name_falls_back_to_preferred_username_when_present() {
+    let provider = MockProvider::start().await;
+    let identity = discover(&provider).await;
+
+    let redirect = identity.begin_login().await.expect("begin_login");
+    provider
+        .respond_to_token_exchange(&Nonce::new(redirect.nonce.clone()), Some("alice.example"))
+        .await;
+
+    let identity_result = identity
+        .complete_login(LoginCallback {
+            code: "test-authorization-code".to_string(),
+            state: redirect.csrf_state.clone(),
+            expected_state: redirect.csrf_state.clone(),
+            pkce_verifier: redirect.pkce_verifier.clone(),
+            expected_nonce: redirect.nonce.clone(),
+        })
+        .await
+        .expect("complete_login should succeed");
+
+    assert_eq!(identity_result.display_name, "alice.example");
+}
+
+#[tokio::test]
+async fn unconfigured_display_name_falls_back_to_subject_when_preferred_username_absent() {
+    let provider = MockProvider::start().await;
+    let identity = discover(&provider).await;
+
+    let redirect = identity.begin_login().await.expect("begin_login");
+    provider
+        .respond_to_token_exchange_with_nonce(&Nonce::new(redirect.nonce.clone()))
+        .await;
+
+    let identity_result = identity
+        .complete_login(LoginCallback {
+            code: "test-authorization-code".to_string(),
+            state: redirect.csrf_state.clone(),
+            expected_state: redirect.csrf_state.clone(),
+            pkce_verifier: redirect.pkce_verifier.clone(),
+            expected_nonce: redirect.nonce.clone(),
+        })
+        .await
+        .expect("complete_login should succeed");
+
+    assert_eq!(identity_result.display_name, SUBJECT);
+}
+
+#[tokio::test]
+async fn configured_display_name_claim_resolves_a_standard_claim() {
+    let provider = MockProvider::start().await;
+    let identity = discover_with_claims(&provider, None, None, Some("preferred_username"))
+        .await
+        .expect("discovery should succeed");
+
+    let redirect = identity.begin_login().await.expect("begin_login");
+    provider
+        .respond_to_token_exchange(&Nonce::new(redirect.nonce.clone()), Some("configured-name"))
+        .await;
+
+    let identity_result = identity
+        .complete_login(LoginCallback {
+            code: "test-authorization-code".to_string(),
+            state: redirect.csrf_state.clone(),
+            expected_state: redirect.csrf_state.clone(),
+            pkce_verifier: redirect.pkce_verifier.clone(),
+            expected_nonce: redirect.nonce.clone(),
+        })
+        .await
+        .expect("complete_login should succeed");
+
+    assert_eq!(identity_result.display_name, "configured-name");
+}
+
+#[tokio::test]
+async fn configured_display_name_claim_resolves_a_custom_claim_via_userinfo() {
+    let provider = MockProvider::start().await;
+    let identity = discover_with_claims(&provider, None, None, Some("department"))
+        .await
+        .expect("discovery should succeed");
+
+    let redirect = identity.begin_login().await.expect("begin_login");
+    provider
+        .respond_to_token_exchange_with_nonce(&Nonce::new(redirect.nonce.clone()))
+        .await;
+    provider.respond_to_userinfo("department", "Engineering").await;
+
+    let identity_result = identity
+        .complete_login(LoginCallback {
+            code: "test-authorization-code".to_string(),
+            state: redirect.csrf_state.clone(),
+            expected_state: redirect.csrf_state.clone(),
+            pkce_verifier: redirect.pkce_verifier.clone(),
+            expected_nonce: redirect.nonce.clone(),
+        })
+        .await
+        .expect("complete_login should succeed, falling back to /userinfo for the custom claim");
+
+    assert_eq!(identity_result.display_name, "Engineering");
+}
+
+#[tokio::test]
+async fn configured_user_id_claim_resolves_a_custom_claim_via_userinfo() {
+    let provider = MockProvider::start().await;
+    let identity = discover_with_claims(&provider, None, Some("employee_id"), None)
+        .await
+        .expect("discovery should succeed");
+
+    let redirect = identity.begin_login().await.expect("begin_login");
+    provider
+        .respond_to_token_exchange_with_nonce(&Nonce::new(redirect.nonce.clone()))
+        .await;
+    provider.respond_to_userinfo("employee_id", "E-42").await;
+
+    let identity_result = identity
+        .complete_login(LoginCallback {
+            code: "test-authorization-code".to_string(),
+            state: redirect.csrf_state.clone(),
+            expected_state: redirect.csrf_state.clone(),
+            pkce_verifier: redirect.pkce_verifier.clone(),
+            expected_nonce: redirect.nonce.clone(),
+        })
+        .await
+        .expect("complete_login should succeed, falling back to /userinfo for the custom claim");
+
+    assert_eq!(identity_result.user_id.as_str(), "E-42");
+}
+
+#[tokio::test]
+async fn configured_display_name_claim_that_cannot_be_resolved_is_a_hard_error() {
+    let provider = MockProvider::start().await;
+    let identity = discover_with_claims(&provider, None, None, Some("department"))
+        .await
+        .expect("discovery should succeed");
+
+    let redirect = identity.begin_login().await.expect("begin_login");
+    provider
+        .respond_to_token_exchange_with_nonce(&Nonce::new(redirect.nonce.clone()))
+        .await;
+    // No /userinfo mock registered carrying "department" -- it comes back
+    // with only "sub", so the configured claim can't be resolved anywhere.
+    provider.respond_to_userinfo("unrelated_claim", "value").await;
+
+    let err = identity
+        .complete_login(LoginCallback {
+            code: "test-authorization-code".to_string(),
+            state: redirect.csrf_state.clone(),
+            expected_state: redirect.csrf_state.clone(),
+            pkce_verifier: redirect.pkce_verifier.clone(),
+            expected_nonce: redirect.nonce.clone(),
+        })
+        .await
+        .expect_err("an explicitly configured, unresolvable claim must be a hard error");
+
+    assert!(
+        err.to_string().contains("department"),
+        "error should name the unresolved claim, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn configured_user_id_claim_that_cannot_be_resolved_is_a_hard_error() {
+    let provider = MockProvider::start().await;
+    let identity = discover_with_claims(&provider, None, Some("employee_id"), None)
+        .await
+        .expect("discovery should succeed");
+
+    let redirect = identity.begin_login().await.expect("begin_login");
+    provider
+        .respond_to_token_exchange_with_nonce(&Nonce::new(redirect.nonce.clone()))
+        .await;
+    provider.respond_to_userinfo("unrelated_claim", "value").await;
+
+    let err = identity
+        .complete_login(LoginCallback {
+            code: "test-authorization-code".to_string(),
+            state: redirect.csrf_state.clone(),
+            expected_state: redirect.csrf_state.clone(),
+            pkce_verifier: redirect.pkce_verifier.clone(),
+            expected_nonce: redirect.nonce.clone(),
+        })
+        .await
+        .expect_err("an explicitly configured, unresolvable claim must be a hard error");
+
+    assert!(
+        err.to_string().contains("employee_id"),
+        "error should name the unresolved claim, got: {err}"
+    );
 }

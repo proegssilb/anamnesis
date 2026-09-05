@@ -29,6 +29,7 @@ dependencies = [
  "object_store",
  "openidconnect",
  "rsa",
+ "serde",
  "serde_json",
  "sqlx",
  "tempfile",

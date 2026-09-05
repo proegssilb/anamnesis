@@ -10,7 +10,7 @@ use axum_extra::extract::cookie::{Key, SignedCookieJar};
 use minijinja::context;
 use serde::Deserialize;
 
-use anamnesis_app::{IdentityError, IdentityProvider, LoginCallback};
+use anamnesis_app::{AuthenticatedIdentity, IdentityError, IdentityProvider, LoginCallback};
 
 use crate::auth::CurrentUser;
 use crate::error::WebError;
@@ -151,10 +151,13 @@ async fn exchange_and_establish_session(
     callback: LoginCallback,
 ) -> Response {
     match identity.complete_login(callback).await {
-        Ok(user_id) => {
+        Ok(AuthenticatedIdentity {
+            user_id,
+            display_name,
+        }) => {
             let session = SessionData {
-                display_name: user_id.to_string(),
                 user_id,
+                display_name,
                 csrf_token: session::generate_csrf_token(),
             };
             let jar = jar.add(session_cookie(&session, state.secure_cookies));
