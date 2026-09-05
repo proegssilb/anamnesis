@@ -111,6 +111,7 @@ impl IdentityProvider for StubIdentityProvider {
         Ok(AuthenticatedIdentity {
             display_name: self.user.to_string(),
             user_id: self.user.clone(),
+            groups: Vec::new(),
         })
     }
 }

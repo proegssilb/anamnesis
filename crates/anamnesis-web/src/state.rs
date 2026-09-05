@@ -15,10 +15,10 @@
 use std::sync::Arc;
 
 use anamnesis_app::{
-    AreaRepository, AttachmentRepository, BlobStore, BoardQuery, Clock, CommentRepository, IdGen,
-    IdentityProvider, JobLease, MembershipQuery, MembershipRepository, ProjectRepository,
-    RelationshipRepository, SearchIndex, SearchQuery, SettingsRepository, TangleRepository,
-    TaskRepository, TimezoneResolver,
+    AreaRepository, AttachmentRepository, BlobStore, BoardQuery, Clock, CommentRepository,
+    GroupMembershipQuery, GroupMembershipRepository, IdGen, IdentityProvider, JobLease,
+    MembershipQuery, MembershipRepository, ProjectRepository, RelationshipRepository, SearchIndex,
+    SearchQuery, SettingsRepository, TangleRepository, TaskRepository, TimezoneResolver,
 };
 use axum::extract::FromRef;
 use axum_extra::extract::cookie::Key;
@@ -61,6 +61,20 @@ pub struct AppState {
     /// ever needs [`MembershipQuery`], and only `crate::handlers::membership`
     /// ever needs to write a grant.
     pub membership_write: Arc<dyn MembershipRepository>,
+    /// The optional *second* source of grants: what a user's OIDC groups
+    /// hold. Never read on its own — `anamnesis_app::access` joins it with
+    /// [`Self::membership`], and `crate::handlers::access` is the only
+    /// production caller. Present unconditionally even on a deployment that
+    /// never sets `ANAMNESIS_OIDC_GROUPS_CLAIM`, because with no recorded
+    /// membership and no mappings every method already answers "no grant";
+    /// making the field itself optional would buy nothing and would put a
+    /// config decision back into the request path.
+    pub group_membership: Arc<dyn GroupMembershipQuery>,
+    /// The write half of [`Self::group_membership`], split for the same
+    /// reason [`Self::membership_write`] is. Two callers, not one:
+    /// `crate::handlers::group_membership` maps groups to roles, and
+    /// `crate::handlers::login` records what the identity provider asserted.
+    pub group_membership_write: Arc<dyn GroupMembershipRepository>,
     pub timezone: Arc<dyn TimezoneResolver>,
     pub clock: Arc<dyn Clock>,
     pub id_gen: Arc<dyn IdGen>,

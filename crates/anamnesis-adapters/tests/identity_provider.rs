@@ -56,7 +56,9 @@ impl MockProvider {
             EmptyAdditionalProviderMetadata {},
         )
         .set_token_endpoint(Some(TokenUrl::new(format!("{issuer}/token")).unwrap()))
-        .set_userinfo_endpoint(Some(UserInfoUrl::new(format!("{issuer}/userinfo")).unwrap()));
+        .set_userinfo_endpoint(Some(
+            UserInfoUrl::new(format!("{issuer}/userinfo")).unwrap(),
+        ));
 
         Mock::given(method("GET"))
             .and(path("/.well-known/openid-configuration"))
@@ -96,8 +98,8 @@ impl MockProvider {
         let now = Utc::now();
         let mut standard_claims = StandardClaims::new(SubjectIdentifier::new(SUBJECT.to_string()));
         if let Some(name) = preferred_username {
-            standard_claims =
-                standard_claims.set_preferred_username(Some(EndUserUsername::new(name.to_string())));
+            standard_claims = standard_claims
+                .set_preferred_username(Some(EndUserUsername::new(name.to_string())));
         }
         let claims = CoreIdTokenClaims::new(
             self.provider_metadata.issuer().clone(),
@@ -133,18 +135,35 @@ impl MockProvider {
     }
 
     /// Registers a `/userinfo` response carrying `sub` plus one extra custom
-    /// claim -- exercises the fallback path `resolve_claim` takes for a
+    /// claim -- exercises the fallback path `ClaimSource` takes for a
     /// configured claim name outside the recognized standard set.
     async fn respond_to_userinfo(&self, claim_name: &str, claim_value: &str) {
-        let body = json!({
+        self.respond_to_userinfo_json(json!({
             "sub": SUBJECT,
             claim_name: claim_value,
-        });
+        }))
+        .await;
+    }
+
+    /// As [`MockProvider::respond_to_userinfo`], but with the whole response
+    /// body given explicitly -- for claims whose value is not a string.
+    async fn respond_to_userinfo_json(&self, body: serde_json::Value) {
         Mock::given(method("GET"))
             .and(path("/userinfo"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&body))
             .mount(&self.server)
             .await;
+    }
+
+    /// How many `/userinfo` requests this provider has actually served.
+    async fn userinfo_request_count(&self) -> usize {
+        self.server
+            .received_requests()
+            .await
+            .expect("the mock server records requests")
+            .iter()
+            .filter(|request| request.url.path() == "/userinfo")
+            .count()
     }
 }
 
@@ -160,17 +179,29 @@ async fn discover_with_ca_bundle(
     provider: &MockProvider,
     tls_ca_bundle: Option<&str>,
 ) -> Result<OidcIdentityProvider, IdentityError> {
-    discover_with_claims(provider, tls_ca_bundle, None, None).await
+    discover_with_claims(provider, tls_ca_bundle, None, None, None).await
 }
 
-/// As [`discover`], but with explicitly configured user-id/display-name
-/// claim names -- for exercising the "explicitly configured" half of the
-/// resolve-or-error contract.
+/// As [`discover`], but with an explicitly configured groups claim name and
+/// the default user-id/display-name resolution.
+async fn discover_with_groups_claim(
+    provider: &MockProvider,
+    groups_claim: &str,
+) -> OidcIdentityProvider {
+    discover_with_claims(provider, None, None, None, Some(groups_claim))
+        .await
+        .expect("discovery should succeed")
+}
+
+/// As [`discover`], but with explicitly configured user-id/display-name/
+/// groups claim names -- for exercising the "explicitly configured" half of
+/// the resolve-or-error contract.
 async fn discover_with_claims(
     provider: &MockProvider,
     tls_ca_bundle: Option<&str>,
     user_id_claim: Option<&str>,
     display_name_claim: Option<&str>,
+    groups_claim: Option<&str>,
 ) -> Result<OidcIdentityProvider, IdentityError> {
     OidcIdentityProvider::discover(
         &provider.issuer_url(),
@@ -181,8 +212,31 @@ async fn discover_with_claims(
         tls_ca_bundle,
         user_id_claim.map(str::to_string),
         display_name_claim.map(str::to_string),
+        groups_claim.map(str::to_string),
     )
     .await
+}
+
+/// Drives a full login against `provider` with `identity`, from
+/// `begin_login` through a matching `/token` response to `complete_login`.
+async fn login(
+    provider: &MockProvider,
+    identity: &OidcIdentityProvider,
+) -> anamnesis_app::AuthenticatedIdentity {
+    let redirect = identity.begin_login().await.expect("begin_login");
+    provider
+        .respond_to_token_exchange_with_nonce(&Nonce::new(redirect.nonce.clone()))
+        .await;
+    identity
+        .complete_login(LoginCallback {
+            code: "test-authorization-code".to_string(),
+            state: redirect.csrf_state.clone(),
+            expected_state: redirect.csrf_state.clone(),
+            pkce_verifier: redirect.pkce_verifier.clone(),
+            expected_nonce: redirect.nonce,
+        })
+        .await
+        .expect("complete_login should succeed")
 }
 
 /// Discovers with `bundle` as the CA bundle path, asserts it failed, and
@@ -386,7 +440,7 @@ async fn unconfigured_display_name_falls_back_to_subject_when_preferred_username
 #[tokio::test]
 async fn configured_display_name_claim_resolves_a_standard_claim() {
     let provider = MockProvider::start().await;
-    let identity = discover_with_claims(&provider, None, None, Some("preferred_username"))
+    let identity = discover_with_claims(&provider, None, None, Some("preferred_username"), None)
         .await
         .expect("discovery should succeed");
 
@@ -412,7 +466,7 @@ async fn configured_display_name_claim_resolves_a_standard_claim() {
 #[tokio::test]
 async fn configured_display_name_claim_resolves_a_custom_claim_via_userinfo() {
     let provider = MockProvider::start().await;
-    let identity = discover_with_claims(&provider, None, None, Some("department"))
+    let identity = discover_with_claims(&provider, None, None, Some("department"), None)
         .await
         .expect("discovery should succeed");
 
@@ -420,7 +474,9 @@ async fn configured_display_name_claim_resolves_a_custom_claim_via_userinfo() {
     provider
         .respond_to_token_exchange_with_nonce(&Nonce::new(redirect.nonce.clone()))
         .await;
-    provider.respond_to_userinfo("department", "Engineering").await;
+    provider
+        .respond_to_userinfo("department", "Engineering")
+        .await;
 
     let identity_result = identity
         .complete_login(LoginCallback {
@@ -439,7 +495,7 @@ async fn configured_display_name_claim_resolves_a_custom_claim_via_userinfo() {
 #[tokio::test]
 async fn configured_user_id_claim_resolves_a_custom_claim_via_userinfo() {
     let provider = MockProvider::start().await;
-    let identity = discover_with_claims(&provider, None, Some("employee_id"), None)
+    let identity = discover_with_claims(&provider, None, Some("employee_id"), None, None)
         .await
         .expect("discovery should succeed");
 
@@ -466,7 +522,7 @@ async fn configured_user_id_claim_resolves_a_custom_claim_via_userinfo() {
 #[tokio::test]
 async fn configured_display_name_claim_that_cannot_be_resolved_is_a_hard_error() {
     let provider = MockProvider::start().await;
-    let identity = discover_with_claims(&provider, None, None, Some("department"))
+    let identity = discover_with_claims(&provider, None, None, Some("department"), None)
         .await
         .expect("discovery should succeed");
 
@@ -476,7 +532,9 @@ async fn configured_display_name_claim_that_cannot_be_resolved_is_a_hard_error()
         .await;
     // No /userinfo mock registered carrying "department" -- it comes back
     // with only "sub", so the configured claim can't be resolved anywhere.
-    provider.respond_to_userinfo("unrelated_claim", "value").await;
+    provider
+        .respond_to_userinfo("unrelated_claim", "value")
+        .await;
 
     let err = identity
         .complete_login(LoginCallback {
@@ -498,7 +556,7 @@ async fn configured_display_name_claim_that_cannot_be_resolved_is_a_hard_error()
 #[tokio::test]
 async fn configured_user_id_claim_that_cannot_be_resolved_is_a_hard_error() {
     let provider = MockProvider::start().await;
-    let identity = discover_with_claims(&provider, None, Some("employee_id"), None)
+    let identity = discover_with_claims(&provider, None, Some("employee_id"), None, None)
         .await
         .expect("discovery should succeed");
 
@@ -506,7 +564,9 @@ async fn configured_user_id_claim_that_cannot_be_resolved_is_a_hard_error() {
     provider
         .respond_to_token_exchange_with_nonce(&Nonce::new(redirect.nonce.clone()))
         .await;
-    provider.respond_to_userinfo("unrelated_claim", "value").await;
+    provider
+        .respond_to_userinfo("unrelated_claim", "value")
+        .await;
 
     let err = identity
         .complete_login(LoginCallback {
@@ -522,5 +582,115 @@ async fn configured_user_id_claim_that_cannot_be_resolved_is_a_hard_error() {
     assert!(
         err.to_string().contains("employee_id"),
         "error should name the unresolved claim, got: {err}"
+    );
+}
+
+/// The regression that motivated gathering every claim into one
+/// `ClaimSource`: resolving each configured claim on its own made one
+/// byte-identical `/userinfo` request *per* non-standard claim name.
+#[tokio::test]
+async fn a_login_makes_at_most_one_userinfo_request_however_many_claims_are_custom() {
+    let provider = MockProvider::start().await;
+    let identity = discover_with_claims(
+        &provider,
+        None,
+        Some("employee_id"),
+        Some("department"),
+        Some("groups"),
+    )
+    .await
+    .expect("discovery should succeed");
+    provider
+        .respond_to_userinfo_json(json!({
+            "sub": SUBJECT,
+            "employee_id": "E-42",
+            "department": "Engineering",
+            "groups": ["anamnesis-admins"],
+        }))
+        .await;
+
+    let result = login(&provider, &identity).await;
+
+    assert_eq!(result.user_id.as_str(), "E-42");
+    assert_eq!(result.display_name, "Engineering");
+    assert_eq!(result.groups, vec!["anamnesis-admins".to_string()]);
+    assert_eq!(
+        provider.userinfo_request_count().await,
+        1,
+        "three custom claims must still cost one /userinfo request"
+    );
+}
+
+/// The default. No groups claim configured means the whole group dimension
+/// is inert, and — since nothing else needs it — `/userinfo` is never asked
+/// for at all.
+#[tokio::test]
+async fn an_unconfigured_groups_claim_yields_no_groups_and_no_userinfo_request() {
+    let provider = MockProvider::start().await;
+    let identity = discover(&provider).await;
+
+    let result = login(&provider, &identity).await;
+
+    assert!(result.groups.is_empty());
+    assert_eq!(provider.userinfo_request_count().await, 0);
+}
+
+#[tokio::test]
+async fn a_groups_claim_holding_an_array_yields_its_string_elements() {
+    let provider = MockProvider::start().await;
+    let identity = discover_with_groups_claim(&provider, "groups").await;
+    provider
+        .respond_to_userinfo_json(json!({
+            "sub": SUBJECT,
+            // The middle element is not a string: skipped, not fatal.
+            "groups": ["authentik Read-only", 17, "anamnesis-admins"],
+        }))
+        .await;
+
+    let result = login(&provider, &identity).await;
+
+    assert_eq!(
+        result.groups,
+        vec![
+            "authentik Read-only".to_string(),
+            "anamnesis-admins".to_string()
+        ]
+    );
+}
+
+/// Some providers emit a single-valued claim as a bare string rather than a
+/// one-element array.
+#[tokio::test]
+async fn a_groups_claim_holding_a_bare_string_yields_one_group() {
+    let provider = MockProvider::start().await;
+    let identity = discover_with_groups_claim(&provider, "groups").await;
+    provider
+        .respond_to_userinfo("groups", "anamnesis-admins")
+        .await;
+
+    let result = login(&provider, &identity).await;
+
+    assert_eq!(result.groups, vec!["anamnesis-admins".to_string()]);
+}
+
+/// Deliberately unlike the user-id and display-name claims, which are
+/// resolve-or-error: being in no groups is a legitimate state, so a typo in
+/// the configured claim name degrades to "nobody gets group grants" rather
+/// than locking every user out of a working deployment.
+#[tokio::test]
+async fn an_absent_groups_claim_is_empty_rather_than_an_error() {
+    let provider = MockProvider::start().await;
+    let identity = discover_with_groups_claim(&provider, "groups").await;
+    provider
+        .respond_to_userinfo("unrelated_claim", "value")
+        .await;
+
+    let result = login(&provider, &identity).await;
+
+    assert!(result.groups.is_empty());
+    assert_eq!(
+        result.user_id.as_str(),
+        SUBJECT,
+        "the rest of the login is unaffected"
     );
 }

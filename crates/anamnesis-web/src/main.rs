@@ -136,6 +136,7 @@ async fn open_store(config: &Config) -> Arc<SqlStore> {
         &store,
         &UuidIdGen,
         &config.bootstrap_admin,
+        config.oidc_admin_group.as_deref(),
         &config.timezone,
     )
     .await
@@ -187,6 +188,7 @@ async fn resolve_identity(config: &Config) -> Option<Arc<dyn IdentityProvider>> 
         config.tls_ca_bundle.as_deref(),
         config.oidc_user_id_claim.clone(),
         config.oidc_display_name_claim.clone(),
+        config.oidc_groups_claim.clone(),
     )
     .await
     .unwrap_or_else(|err| {
@@ -262,6 +264,8 @@ fn build_state(
         search_index: store.clone(),
         membership: store.clone(),
         membership_write: store.clone(),
+        group_membership: store.clone(),
+        group_membership_write: store.clone(),
         timezone: Arc::new(TzTimezoneResolver::new()),
         clock: Arc::new(SystemClock),
         id_gen: Arc::new(UuidIdGen),

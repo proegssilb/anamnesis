@@ -207,6 +207,8 @@ pub trait IdGen: Send + Sync { fn next(&self) -> uuid::Uuid; }
 pub trait TimezoneResolver: Send + Sync { /* local_date, local_time, to_utc — not async, a real tzdb lookup is in-memory */ }
 #[async_trait] pub trait MembershipQuery: Send + Sync { /* is_system_admin, area_role, project_role, effective_area_role, effective_role, list_system_admins, list_area_members, list_project_members */ }
 #[async_trait] pub trait MembershipRepository: Send + Sync { /* grant_system_admin, revoke_system_admin, set_area_role, revoke_area_role, set_project_role, revoke_project_role */ }
+#[async_trait] pub trait GroupMembershipQuery: Send + Sync { /* is_system_admin_via_group, area_group_role, project_group_role, effective_area_role, effective_role, list_admin_groups, list_area_groups, list_project_groups, list_known_groups */ }
+#[async_trait] pub trait GroupMembershipRepository: Send + Sync { /* replace_user_groups, grant/revoke_admin_group, set/revoke_area_group_role, set/revoke_project_group_role */ }
 #[async_trait] pub trait IdentityProvider: Send + Sync { /* begin_login, complete_login */ }
 ```
 
@@ -298,6 +300,24 @@ Admin status, the Area grant, and the Project grant are three *independent*
 grants, and `effective_role` takes the strongest of the three — adding a
 grant must never subtract capability, exactly as adding a permission bit
 never removes one already held.
+
+Identity-provider groups (`docs/DOMAIN.md`, "Identity-provider groups as a
+fourth grant") add a fourth independent grant on top of those three, and the
+shape of that addition is the point worth recording here. `MembershipQuery`'s
+`effective_*` methods were **not** widened to know about groups: they remain
+the per-user answer, correct on their own and asserted by roughly forty test
+sites. The group dimension lives behind its own port pair and composes *over*
+them, in three free functions in `anamnesis_app::access` that `.max()` the
+two dimensions together. `GroupMembershipQuery` carries its own `effective_*`
+defaults mirroring `MembershipQuery`'s, so a group's grants inherit Area to
+Project the same way a user's do, and the join of the two is one `.max()` at
+the top.
+
+`anamnesis-web::handlers::access` is the **only** production caller of either
+side, which keeps exactly one composition point in the system: a handler that
+reached for `state.membership` directly would silently deny a user whose
+whole access comes through a group, so it doesn't — the module's doc comment
+says so, and there is nothing else to consult.
 
 This is a monotonicity property, so it gets a property test rather than a
 handful of examples:

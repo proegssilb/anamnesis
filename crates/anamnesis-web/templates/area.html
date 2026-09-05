@@ -88,6 +88,46 @@
             <button type="submit">Grant</button>
           </form>
         </section>
+
+        {% if show_groups %}
+          <section class="panel-form">
+            <h2>Groups</h2>
+            <p class="hint">
+              Roles held by an identity-provider group. A user gets the strongest
+              role they hold either directly or through any of their groups, and
+              their group membership refreshes when they next log in.
+            </p>
+            <ul class="member-list">
+              {% for g in groups %}
+                <li class="member-row">
+                  <span class="member-name">{{ g.group }}</span>
+                  <span class="member-role">{{ g.role }}</span>
+                  <form method="post" action="/areas/{{ area.id }}/member-groups/revoke#area-settings">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="group" value="{{ g.group }}">
+                    <button type="submit" class="danger">Revoke</button>
+                  </form>
+                </li>
+              {% else %}
+                <li class="hint">No group has a role on this area yet.</li>
+              {% endfor %}
+            </ul>
+            <form class="inline-form" method="post" action="/areas/{{ area.id }}/member-groups#area-settings">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <label for="member-group">Group</label>
+              <input id="member-group" name="group" required maxlength="200"
+                     list="known-groups" placeholder="a group name from your identity provider">
+              <datalist id="known-groups">
+                {% for known in known_groups %}<option value="{{ known }}">{% endfor %}
+              </datalist>
+              <select name="role">
+                <option value="member">Member</option>
+                <option value="project_admin">Project Admin</option>
+              </select>
+              <button type="submit">Grant</button>
+            </form>
+          </section>
+        {% endif %}
       </div>
     </div>
   {% endif %}

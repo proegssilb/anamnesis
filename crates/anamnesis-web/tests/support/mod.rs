@@ -91,7 +91,7 @@ impl TestApp {
             .await
             .expect("connect to temp SQLite database");
         let id_gen = UuidIdGen;
-        bootstrap::run(&store, &id_gen, bootstrap_admin, "UTC")
+        bootstrap::run(&store, &id_gen, bootstrap_admin, None, "UTC")
             .await
             .expect("bootstrap a fresh test database");
         let store = Arc::new(store);
@@ -307,6 +307,8 @@ async fn test_state(
         search_index: store.clone(),
         membership: store.clone(),
         membership_write: store.clone(),
+        group_membership: store.clone(),
+        group_membership_write: store.clone(),
         timezone: Arc::new(TzTimezoneResolver::new()),
         clock: Arc::new(SystemClock),
         id_gen: Arc::new(UuidIdGen),
