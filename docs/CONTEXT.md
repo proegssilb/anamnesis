@@ -1,66 +1,111 @@
 # Anamnesis — Project Context
 
-> _ἀνάμνησις_ — recollection; the recovery of knowledge you already had.
+> *ἀνάμνησις* — recollection; the recovery of knowledge you already had.
 >
 > "What's below the horizon isn't gone - it's just not up yet."
 
-## What this is
+## What this project is
 
 Anamnesis is a personal task tracker. The name and the tagline carry the core
 premise: **tasks that are not currently relevant are not deleted and not
 nagging — they are below the horizon, and they come back up when they should.**
 
+## What this file is
+
+This file attempts to compile information from multiple raw chats with Claude
+and Claude Code.
+
+The Origin and Design-decisions sections were transcribed from the project
+owner's Claude Chat history on 2026-09-05; that history, not this file, is
+the original record. Said history can date back to 2026-08-26 or older. The
+product constraints below predate the chat history transcription, from a
+direct briefing on 2026-08-26. Note the overlap in time; information was
+compiled from both sources, and the overlap required some editorial discretion.
+
+While the origin of the information is straightforward, the present state of
+this file is less so. Preserving all the original context exactly as it was
+discussed would create contradictory information; at one point, there was a
+"no JavaScript anywhere" policy that failed to create a better user experience
+than using JavaScript judiciously. That policy was therefore abandoned. In
+order to keep this document from misleading readers about current state, some
+history has been pruned or revised as a judgement call. The goal is to provide
+useful perspective, not to endlessly document irrelevant history.
+
 ## Stated product constraints
 
 These come directly from the project owner and are binding on design decisions:
 
-1. **The user loses their position a lot, and that is fine.** Anamnesis is
-   built for someone whose attention is interrupted. Losing scroll position,
-   losing your place in a flow, coming back after three weeks — all normal,
-   none of it is an error state. The system re-orients the user; it does not
-   expect the user to hold state in their head.
-2. **All authentication is delegated.** Anamnesis never stores a password.
+1. **All authentication is delegated.** Anamnesis never stores a password.
    Login goes to an external OAuth2/OIDC provider — Authentik is the reference
    deployment, but the admin picks. Anamnesis must not special-case Authentik.
-3. **The deploying admin picks the database.** SQLite for single-user or small
+
+2. **The deploying admin picks the database.** SQLite for single-user or small
    deployments, an external SQL server otherwise. Selected by connection
    string, `sqlite://` prefix for SQLite.
-4. **The UI must be ready for a future online-only PWA mobile app.** It
+
+3. **The UI must be ready for a future online-only PWA mobile app.** It
    started as server-rendered HTML + CSS with no JavaScript; the owner later
    approved htmx plus a drag library for the task board specifically
    (`docs/DOMAIN.md` §8), with form-POST fallbacks kept everywhere htmx also
    handles. Either way, it must not paint itself into a corner that a mobile
    PWA cannot reuse — no real-time sync, resource-oriented routes throughout.
 
-## Current phase: the real domain model
+## Current phase: MVP
 
-The placeholder kanban board (`Board`/`Column`/`Card`) served its purpose —
-proving the stack end to end — and has been fully replaced. The real domain
-model described in `docs/DOMAIN.md` (areas, projects, tasks, the horizon
-placement, tangles, the capacity-gated suggestion engine, recurrence and
-sweeping) is now built, running, and covered at every test layer; see
-`docs/ARCHITECTURE.md` for how it's structured and `README.md` for what
-still doesn't work yet. A few things from the placeholder phase remain true:
+v1.0 has been released. It's functional, and you can run it in production,
+but it's an early pass and some of that immaturity probably shows.
 
-- The **domain core is still the asset** that mattered most — the specific
-  shape of any one feature is more disposable than the boundary between
-  core and the outside world.
-- **No MCP server yet.** Still anticipated, still not built.
+## Origin
 
-## Provenance — read this before trusting the above
+Anamnesis started from a straightforward frustration with existing task
+trackers: they either nag constantly about everything at once, or let things
+vanish into a backlog that never gets revisited. The goal was a system built
+around externalizing tasks — putting something down with real trust that it
+will come back at the right moment, rather than either holding it in working
+memory or losing it for good.
 
-This file is a **stub, pending transcription.** The project owner's actual
-accumulated context for Anamnesis lives in Claude Chat memories, not here and
-not in Claude Code; they will have those transcribed into this repository
-later.
+An existing self-hosted tool was evaluated as a possible foundation and
+rejected. Its schema only models containment (`parent_task_id`), not a true
+blocking relationship between tasks, and bolting dependency- and
+capacity-aware resurfacing onto someone else's data model wasn't going to
+fit as well as building it in from the start.
 
-What is written above came from two sources only, on 2026-08-26: the repository
-README, and a direct briefing from the owner at the start of the scaffolding
-work. The session that wrote it had no access to the Chat memories — no memory
-tool was exposed to Claude Code, and the repository had no issues, wiki, or
-project board to read.
+The project was originally named "Lethe," after the river of forgetting. It
+became Anamnesis — recollection; also, fittingly, the term for a patient's
+history-taking in a clinical context — because a tool whose entire value is
+"relax, and this will come back to you when it's time" deserves to be named
+for the return trip rather than the departure.
 
-So: when the transcribed memories land, they are **authoritative and this file
-yields to them.** Expect them to add history and intent this stub cannot have,
-and expect them to contradict it in places. Merge rather than append, and
-delete this notice once the real context is in.
+## Design decisions and their reasoning
+
+A few decisions were deliberate or contested enough that a later contributor
+(human or AI) is likely to want to revisit them. Recorded here so they aren't
+relitigated from scratch:
+
+- **Tangles don't get a work-in-progress exemption.** A "tangle" (an isolated
+  cluster of tasks containing one or more cycles) was proposed to sit outside
+  WIP accounting entirely, with a dedicated `Stuck` state, to head off a
+  theoretical livelock where a full board goes silent forever. That was
+  rejected: tangled tasks aren't suggestion-eligible in the first place, so a
+  full board is realistically full of ordinary completable work that drains
+  normally — and the user always has manual override to pick up and complete
+  any task directly regardless of what the suggestion engine offers. A full
+  board offering nothing is expected, self-explanatory behavior, not a UX
+  failure requiring a special state. The one accepted refinement: if capacity
+  is open but everything left to suggest is tangled, the suggester should say
+  so rather than staying quietly silent — a status line, not an architectural
+  carve-out.
+
+- **MCP tokens, once the surface exists, should carry narrower capabilities
+  than a full user session.** Anamnesis is a trust-based tool handed to an
+  agent; giving an MCP client the same scope as the human's own session
+  creates a confused-deputy risk. This is a constraint for whoever builds the
+  MCP surface, not yet enforced since the surface doesn't exist.
+
+## Where the rest of the context lives
+
+Domain model detail — areas, projects, tasks, horizon placement, tangles, the
+capacity-gated suggestion engine, recurrence, sweeping — lives in
+`docs/DOMAIN.md`. System structure lives in `docs/ARCHITECTURE.md`. This file
+is for intent and history those documents don't carry: why a decision was
+made, not what it produced.
