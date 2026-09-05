@@ -10,6 +10,7 @@ mod board;
 mod field_form;
 mod format;
 mod forms;
+mod group_membership;
 mod login;
 mod membership;
 mod misc;
@@ -25,6 +26,10 @@ pub use areas::{
 pub use board::{
     accept_suggestion_handler, accept_tangle_offer_handler, archive_all_handler,
     drop_tangle_handler, reposition_handler, view_board_handler,
+};
+pub use group_membership::{
+    grant_admin_group_handler, grant_area_group_handler, grant_project_group_handler,
+    revoke_admin_group_handler, revoke_area_group_handler, revoke_project_group_handler,
 };
 pub use login::{callback_handler, login_handler, logout_handler};
 pub use membership::{

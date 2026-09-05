@@ -23,6 +23,35 @@ pub struct Config {
     pub oidc_client_id: Option<String>,
     pub oidc_client_secret: Option<Secret>,
     pub oidc_scopes: Vec<String>,
+    /// Which OIDC claim supplies the stable identity anchor
+    /// (`AuthenticatedIdentity::user_id`). `None` means unconfigured: the
+    /// adapter always falls back to `sub`, which the OIDC spec guarantees is
+    /// present. `Some(name)` means an operator explicitly chose `name`; if
+    /// that claim can't be resolved, login fails rather than silently using
+    /// `sub` instead — see `anamnesis_adapters::OidcIdentityProvider`.
+    pub oidc_user_id_claim: Option<String>,
+    /// Which OIDC claim supplies the human-readable label
+    /// (`AuthenticatedIdentity::display_name`). `None` means unconfigured:
+    /// the adapter tries `preferred_username`, falling back to `sub`, and
+    /// never fails login over it. `Some(name)` carries the same
+    /// resolve-or-error contract as [`Self::oidc_user_id_claim`].
+    pub oidc_display_name_claim: Option<String>,
+    /// Which OIDC claim carries the user's groups
+    /// (`AuthenticatedIdentity::groups`). `None` — the default — means the
+    /// whole group dimension of authorization is inert: no groups are read,
+    /// no rows are recorded, and no mapping can match anything. `Some(name)`
+    /// reads `name` as a list of group names at each login. Unlike the two
+    /// claims above, an unresolvable groups claim is *not* a login failure;
+    /// it yields no groups and a warning, so a typo cannot lock a working
+    /// deployment out — see `anamnesis_adapters::OidcIdentityProvider`.
+    pub oidc_groups_claim: Option<String>,
+    /// A group whose members hold System Admin, seeded into
+    /// `system_admin_groups` on every boot by [`crate::bootstrap`]. This
+    /// exists for the same reason [`Self::bootstrap_admin`] does — the
+    /// first-user problem — and is a seeding lever only: at request time the
+    /// database is the single source of truth, and further admin groups are
+    /// granted through the admin UI. Requires [`Self::oidc_groups_claim`].
+    pub oidc_admin_group: Option<String>,
     /// The cookie signing key derived from `ANAMNESIS_SESSION_SECRET`. The
     /// raw secret is consumed by [`resolve_cookie_key`] and never stored, so
     /// there is no cleartext session credential anywhere in this struct.
@@ -142,6 +171,10 @@ impl std::fmt::Debug for Config {
             .field("oidc_client_id", &self.oidc_client_id)
             .field("oidc_client_secret", &self.oidc_client_secret)
             .field("oidc_scopes", &self.oidc_scopes)
+            .field("oidc_user_id_claim", &self.oidc_user_id_claim)
+            .field("oidc_display_name_claim", &self.oidc_display_name_claim)
+            .field("oidc_groups_claim", &self.oidc_groups_claim)
+            .field("oidc_admin_group", &self.oidc_admin_group)
             .field("cookie_key", &"<redacted>")
             .field("dev_auth_bypass", &self.dev_auth_bypass)
             .field("timezone", &self.timezone)
@@ -201,6 +234,9 @@ impl Config {
         let oidc_scopes = resolve_oidc_scopes(&get);
         let (oidc_issuer_url, oidc_client_id, oidc_client_secret) =
             resolve_oidc_credentials(&get, dev_auth_bypass)?;
+        let oidc_user_id_claim = get("ANAMNESIS_OIDC_USER_ID_CLAIM");
+        let oidc_display_name_claim = get("ANAMNESIS_OIDC_DISPLAY_NAME_CLAIM");
+        let (oidc_groups_claim, oidc_admin_group) = resolve_oidc_groups(&get)?;
         let timezone = require(&get, "ANAMNESIS_TIMEZONE")?;
         let bootstrap_admin = require(&get, "ANAMNESIS_BOOTSTRAP_ADMIN")?;
         let blob_root = get("ANAMNESIS_BLOB_ROOT").unwrap_or_else(|| DEFAULT_BLOB_ROOT.to_string());
@@ -216,6 +252,10 @@ impl Config {
             oidc_client_id,
             oidc_client_secret,
             oidc_scopes,
+            oidc_user_id_claim,
+            oidc_display_name_claim,
+            oidc_groups_claim,
+            oidc_admin_group,
             cookie_key,
             dev_auth_bypass,
             timezone,
@@ -373,6 +413,31 @@ fn resolve_oidc_credentials(
         Some(require(get, "ANAMNESIS_OIDC_CLIENT_ID")?),
         Some(Secret::new(require(get, "ANAMNESIS_OIDC_CLIENT_SECRET")?)),
     ))
+}
+
+/// `(oidc_groups_claim, oidc_admin_group)`, both `None` unless the operator
+/// opted into the group dimension.
+///
+/// An admin group named without a groups claim is a hard error rather than a
+/// silent no-op: it can never match anything, so the deployment would look
+/// configured while granting nobody anything — precisely the failure mode
+/// this module exists to prevent. The reverse is fine and expected: a groups
+/// claim alone records groups and lets an existing System Admin map them
+/// from the UI, which is how everything past the first admin is meant to
+/// work.
+fn resolve_oidc_groups(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<(Option<String>, Option<String>), ConfigError> {
+    let groups_claim = get("ANAMNESIS_OIDC_GROUPS_CLAIM").filter(|v| !v.is_empty());
+    let admin_group = get("ANAMNESIS_OIDC_ADMIN_GROUP").filter(|v| !v.is_empty());
+    if admin_group.is_some() && groups_claim.is_none() {
+        return Err(ConfigError::Invalid {
+            name: "ANAMNESIS_OIDC_ADMIN_GROUP",
+            reason: "set without ANAMNESIS_OIDC_GROUPS_CLAIM, so no login could ever match it"
+                .to_string(),
+        });
+    }
+    Ok((groups_claim, admin_group))
 }
 
 fn parse_bool(raw: &str) -> bool {
@@ -713,6 +778,86 @@ mod tests {
                 reason: "must be greater than zero".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn oidc_claim_names_default_to_unset() {
+        let cfg = Config::from_source(env(&full_valid_env())).unwrap();
+        assert_eq!(cfg.oidc_user_id_claim, None);
+        assert_eq!(cfg.oidc_display_name_claim, None);
+    }
+
+    #[test]
+    fn oidc_claim_names_are_overridable() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_OIDC_USER_ID_CLAIM", "employee_id"));
+        pairs.push(("ANAMNESIS_OIDC_DISPLAY_NAME_CLAIM", "nickname"));
+        let cfg = Config::from_source(env(&pairs)).unwrap();
+        assert_eq!(cfg.oidc_user_id_claim.as_deref(), Some("employee_id"));
+        assert_eq!(cfg.oidc_display_name_claim.as_deref(), Some("nickname"));
+    }
+
+    /// The group dimension is off unless explicitly configured.
+    #[test]
+    fn oidc_group_settings_default_to_unset() {
+        let cfg = Config::from_source(env(&full_valid_env())).unwrap();
+        assert_eq!(cfg.oidc_groups_claim, None);
+        assert_eq!(cfg.oidc_admin_group, None);
+    }
+
+    #[test]
+    fn oidc_group_settings_are_overridable() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_OIDC_GROUPS_CLAIM", "groups"));
+        pairs.push(("ANAMNESIS_OIDC_ADMIN_GROUP", "anamnesis-admins"));
+        let cfg = Config::from_source(env(&pairs)).unwrap();
+        assert_eq!(cfg.oidc_groups_claim.as_deref(), Some("groups"));
+        assert_eq!(cfg.oidc_admin_group.as_deref(), Some("anamnesis-admins"));
+    }
+
+    /// A groups claim on its own is the expected shape for every deployment
+    /// past the first admin: groups are recorded, and an existing System
+    /// Admin maps them from the UI.
+    #[test]
+    fn a_groups_claim_without_an_admin_group_is_fine() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_OIDC_GROUPS_CLAIM", "groups"));
+        let cfg = Config::from_source(env(&pairs)).unwrap();
+        assert_eq!(cfg.oidc_groups_claim.as_deref(), Some("groups"));
+        assert_eq!(cfg.oidc_admin_group, None);
+    }
+
+    /// The reverse is not: an admin group with no claim to read groups from
+    /// can never match anything, so the deployment would look configured
+    /// while granting nobody anything.
+    #[test]
+    fn an_admin_group_without_a_groups_claim_is_rejected() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_OIDC_ADMIN_GROUP", "anamnesis-admins"));
+        let err = Config::from_source(env(&pairs)).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ConfigError::Invalid {
+                    name: "ANAMNESIS_OIDC_ADMIN_GROUP",
+                    ..
+                }
+            ),
+            "got: {err}"
+        );
+        assert!(err.to_string().contains("ANAMNESIS_OIDC_GROUPS_CLAIM"));
+    }
+
+    /// Neither is a secret, so both print in full — the redaction canary
+    /// above covers the two fields that must not.
+    #[test]
+    fn debug_shows_the_group_settings() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_OIDC_GROUPS_CLAIM", "groups"));
+        pairs.push(("ANAMNESIS_OIDC_ADMIN_GROUP", "anamnesis-admins"));
+        let rendered = format!("{:?}", Config::from_source(env(&pairs)).unwrap());
+        assert!(rendered.contains("groups"));
+        assert!(rendered.contains("anamnesis-admins"));
     }
 
     #[test]

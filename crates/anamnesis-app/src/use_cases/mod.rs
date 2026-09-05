@@ -8,6 +8,7 @@ mod area;
 mod attachment;
 mod board;
 mod comment;
+mod group_membership;
 mod indexing;
 mod membership;
 mod project;
@@ -24,6 +25,11 @@ pub use attachment::{
 };
 pub use board::{BoardItemKind, reposition_board_item};
 pub use comment::{add_comment, delete_comment, edit_comment, list_comments};
+pub use group_membership::{
+    grant_admin_group, grant_area_group_role, grant_project_group_role, list_admin_groups,
+    list_area_groups, list_known_groups, list_project_groups, revoke_admin_group,
+    revoke_area_group_role, revoke_project_group_role,
+};
 pub use membership::{
     grant_area_role, grant_project_role, grant_system_admin, list_area_members,
     list_project_members, list_system_admins, revoke_area_role, revoke_project_role,

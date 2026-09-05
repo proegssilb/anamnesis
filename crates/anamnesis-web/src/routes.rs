@@ -20,10 +20,12 @@ use crate::handlers::{
     create_relationship_handler, create_task_handler, delete_relationship_handler,
     download_attachment_handler, drop_project_task_handler, drop_tangle_handler, drop_task_handler,
     edit_area_handler, edit_task_description_handler, edit_task_title_handler,
-    grant_area_member_handler, grant_project_member_handler, grant_system_admin_handler,
+    grant_admin_group_handler, grant_area_group_handler, grant_area_member_handler,
+    grant_project_group_handler, grant_project_member_handler, grant_system_admin_handler,
     healthz_handler, list_areas_handler, list_projects_handler, login_handler, logout_handler,
     parent_candidates_handler, raise_project_task_handler, raise_task_handler,
-    relationship_candidates_handler, reposition_handler, revoke_area_member_handler,
+    relationship_candidates_handler, reposition_handler, revoke_admin_group_handler,
+    revoke_area_group_handler, revoke_area_member_handler, revoke_project_group_handler,
     revoke_project_member_handler, revoke_system_admin_handler, root_handler, search_handler,
     set_field_value_handler, set_parent_handler, transition_project_status_handler,
     unarchive_project_handler, unarchive_task_handler, update_settings_handler, view_area_handler,
@@ -65,6 +67,11 @@ fn area_routes() -> Router<AppState> {
             "/areas/{id}/members/revoke",
             post(revoke_area_member_handler),
         )
+        .route("/areas/{id}/member-groups", post(grant_area_group_handler))
+        .route(
+            "/areas/{id}/member-groups/revoke",
+            post(revoke_area_group_handler),
+        )
 }
 
 /// The project listing plus a single project's own lifecycle: membership,
@@ -78,6 +85,14 @@ fn project_routes() -> Router<AppState> {
         .route(
             "/projects/{id}/members/revoke",
             post(revoke_project_member_handler),
+        )
+        .route(
+            "/projects/{id}/member-groups",
+            post(grant_project_group_handler),
+        )
+        .route(
+            "/projects/{id}/member-groups/revoke",
+            post(revoke_project_group_handler),
         )
         .route(
             "/projects/{id}/status",
@@ -181,6 +196,8 @@ fn admin_routes() -> Router<AppState> {
             get(view_users_handler).post(grant_system_admin_handler),
         )
         .route("/users/revoke", post(revoke_system_admin_handler))
+        .route("/users/groups", post(grant_admin_group_handler))
+        .route("/users/groups/revoke", post(revoke_admin_group_handler))
 }
 
 /// Static assets served directly out of the binary (`crate::static_files`).

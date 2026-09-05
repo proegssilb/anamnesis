@@ -33,4 +33,40 @@
            placeholder="the sub claim from their identity provider">
     <button type="submit">Grant System Admin</button>
   </form>
+
+  {% if show_groups %}
+    <h2>Admin groups</h2>
+    <p class="hint">
+      Identity-provider groups whose members are System Admins. A group grants
+      nothing until it is listed here, and a user's group membership refreshes
+      only when they next log in.
+    </p>
+
+    <ul class="member-list">
+      {% for group in admin_groups %}
+        <li class="member-row">
+          <span class="member-name">{{ group }}</span>
+          <form method="post" action="/users/groups/revoke">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="group" value="{{ group }}">
+            <button type="submit" class="danger">Revoke</button>
+          </form>
+        </li>
+      {% else %}
+        <li class="hint">No group grants System Admin.</li>
+      {% endfor %}
+    </ul>
+
+    <form class="panel-form" method="post" action="/users/groups">
+      <h2>Grant System Admin to a group</h2>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="group">Group</label>
+      <input id="group" name="group" required maxlength="200"
+             list="known-groups" placeholder="a group name from your identity provider">
+      <datalist id="known-groups">
+        {% for known in known_groups %}<option value="{{ known }}">{% endfor %}
+      </datalist>
+      <button type="submit">Grant System Admin</button>
+    </form>
+  {% endif %}
 {% endblock %}

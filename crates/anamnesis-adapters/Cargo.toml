@@ -1,20 +1,22 @@
 [package]
 name = "anamnesis-adapters"
-version = "1.0.0"
+version = "1.1.0"
 edition.workspace = true
 # This is an application crate, not a library anyone should depend on; only
 # `job-lease` in this workspace is meant for crates.io.
 publish = false
 
 [dependencies]
-anamnesis-app = { version = "1.0.0", path = "../anamnesis-app" }
-anamnesis-core = { version = "1.0.0", path = "../anamnesis-core" }
+anamnesis-app = { version = "1.1.0", path = "../anamnesis-app" }
+anamnesis-core = { version = "1.1.0", path = "../anamnesis-core" }
 async-trait = "0.1.92"
 job-lease = { version = "0.1.0", path = "../job-lease" }
 # Only the "aws" backend: `S3BlobStore` is the one consumer, and the Azure,
 # GCP and generic-HTTP backends would be dead weight in the binary.
 object_store = { version = "0.14.1", default-features = false, features = ["aws"] }
 openidconnect = "4.0.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "tls-rustls", "sqlite", "postgres", "uuid"] }
 time = "0.3.55"
 time-tz = "2.0.0"
@@ -31,7 +33,6 @@ uuid = { version = "1.25.0", features = ["v4"] }
 [dev-dependencies]
 chrono = "0.4.45"
 rsa = { version = "0.9.10", features = ["pem"] }
-serde_json = "1.0.151"
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 wiremock = "0.6.5"

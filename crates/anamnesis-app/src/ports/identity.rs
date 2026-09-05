@@ -43,8 +43,31 @@ pub struct LoginCallback {
     pub expected_nonce: String,
 }
 
+/// The claim values a completed login resolves: a stable identity anchor, a
+/// human-readable label for it, and the groups the provider asserted. Which
+/// OIDC claim each comes from is a deployment-time choice — different
+/// identity providers populate the standard claims differently, and some
+/// deployments need a non-standard claim — so no field is assumed to be any
+/// particular claim name by anything downstream of
+/// [`IdentityProvider::complete_login`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthenticatedIdentity {
+    /// The stable identity anchor threaded through sessions, membership, and
+    /// bootstrap-admin matching.
+    pub user_id: UserId,
+    /// The label shown to and about this user in the UI.
+    pub display_name: String,
+    /// The groups the provider asserted, from the claim named by
+    /// `ANAMNESIS_OIDC_GROUPS_CLAIM` — empty when that is unconfigured,
+    /// which is the default. Recorded at login through
+    /// [`crate::ports::GroupMembershipRepository::replace_user_groups`];
+    /// membership alone grants nothing until a System Admin maps a group to
+    /// a role.
+    pub groups: Vec<String>,
+}
+
 /// Authenticates a user against an external OIDC provider. Anamnesis never
-/// sees or stores a password; identity is the token's `sub` claim.
+/// sees or stores a password.
 #[async_trait]
 pub trait IdentityProvider: Send + Sync {
     /// Begins a login: builds the authorization URL plus the PKCE/nonce/CSRF
@@ -53,6 +76,9 @@ pub trait IdentityProvider: Send + Sync {
 
     /// Completes a login: exchanges the authorization code for tokens,
     /// validates the ID token (signature, issuer, audience, nonce), and
-    /// returns the authenticated user's id (the `sub` claim).
-    async fn complete_login(&self, callback: LoginCallback) -> Result<UserId, IdentityError>;
+    /// resolves the configured user-id and display-name claims.
+    async fn complete_login(
+        &self,
+        callback: LoginCallback,
+    ) -> Result<AuthenticatedIdentity, IdentityError>;
 }

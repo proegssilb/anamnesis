@@ -511,6 +511,40 @@ caught the System-Admin-demotion defect above; the individual before/after
 example tests in the same file would have kept passing under "most specific
 wins" for the particular cases they happened to construct.
 
+### Identity-provider groups as a fourth grant
+
+Every grant above is keyed on a single user id, which means onboarding
+anyone starts with learning their `sub`. Deployments whose identity provider
+already models access as groups can optionally add a **fourth independent
+grant**: a group named by the configured groups claim can hold System Admin,
+or a role on an Area or a Project, exactly as a user can.
+
+"Independent" is the whole point, and it is the same rule as above rather
+than a new one: the effective role is the strongest of *four* grants now —
+System Admin, the Area grant, the Project grant, and whatever the user's
+groups hold at any of those scopes. A group grant can never demote someone,
+and never overrides a grant held directly. It composes by `.max()` in one
+place (`anamnesis_app::access`), and the per-user resolution it composes
+over is unchanged.
+
+Two asymmetries with the per-user path are deliberate:
+
+**Group membership is a cached provider fact; mappings are ours.** The
+groups a user presented are recorded at login and re-read only at the next
+one (no refresh token is stored), while the group→role mappings live in the
+database and are joined at request time. So revoking a *mapping* takes
+effect immediately, whereas someone removed from a group in the provider
+keeps what it granted until they sign in again.
+
+**Unmapping an admin group has no last-admin check**, unlike revoking System
+Admin from the last user who holds it. That check exists to prevent locking
+everyone out, and it can answer the question because `system_admins` is an
+exhaustive list of who holds admin. A count over admin *groups* cannot: a
+mapped group is not evidence that any user is in it, since Anamnesis never
+enumerates the provider's directory. Rather than a check that looks like a
+guarantee and isn't, there is none — and the per-user check remains the real
+lockout guard.
+
 ### Tangle identity is `TangleId`, not the fingerprint
 
 Covered in full in §3 ("Identity is the id, not the task set") — recorded

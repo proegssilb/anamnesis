@@ -10,7 +10,8 @@ use axum_extra::extract::cookie::{Key, SignedCookieJar};
 use minijinja::context;
 use serde::Deserialize;
 
-use anamnesis_app::{IdentityError, IdentityProvider, LoginCallback};
+use anamnesis_app::{AuthenticatedIdentity, IdentityError, IdentityProvider, LoginCallback};
+use anamnesis_core::UserId;
 
 use crate::auth::CurrentUser;
 use crate::error::WebError;
@@ -143,7 +144,8 @@ fn validate_callback_state(
 }
 
 /// Redeems the authorization code with the identity provider and, on
-/// success, opens the session cookie a signed-in user carries from here on.
+/// success, records the groups it asserted and opens the session cookie a
+/// signed-in user carries from here on.
 async fn exchange_and_establish_session(
     state: &AppState,
     jar: SignedCookieJar<Key>,
@@ -151,10 +153,17 @@ async fn exchange_and_establish_session(
     callback: LoginCallback,
 ) -> Response {
     match identity.complete_login(callback).await {
-        Ok(user_id) => {
+        Ok(AuthenticatedIdentity {
+            user_id,
+            display_name,
+            groups,
+        }) => {
+            if let Err(err) = record_groups(state, &user_id, &groups).await {
+                return (jar, err.into_response_with(&state.templates)).into_response();
+            }
             let session = SessionData {
-                display_name: user_id.to_string(),
                 user_id,
+                display_name,
                 csrf_token: session::generate_csrf_token(),
             };
             let jar = jar.add(session_cookie(&session, state.secure_cookies));
@@ -166,6 +175,50 @@ async fn exchange_and_establish_session(
         )
             .into_response(),
     }
+}
+
+/// Records what the configured groups claim asserted for this login, so
+/// every later permission check can join against it.
+///
+/// Goes straight to [`anamnesis_app::GroupMembershipRepository`] rather than
+/// through a use case, deliberately: there is no authorization decision to
+/// gate. This is not a user asking to be granted something — it is the
+/// server writing down a fact about an identity the provider has *just*
+/// authenticated, before that identity has a session to act with. A use case
+/// would need an actor and a role to check, and the only honest answer to
+/// both is "the login itself".
+///
+/// Group membership is deliberately **not** carried in the session cookie.
+/// A signed cookie is capped near 4 KB, so a user in a large directory would
+/// silently overflow it into a login loop; and a cookie is a snapshot, so a
+/// mapping a System Admin adds tomorrow would not reach anyone until they
+/// logged in again. Persisting means the row is joined at query time, and
+/// `SessionData` / `CurrentUser` / the dev-bypass path need no changes.
+///
+/// Written unconditionally, including the empty vec a deployment with no
+/// configured groups claim always produces: "this user is in no groups" is
+/// the answer that must overwrite a stale row from when they were.
+///
+/// A failure here fails the login rather than logging and continuing. The
+/// alternative is worse than it looks — a user whose write failed would be
+/// signed in with whatever groups their *last* successful login recorded,
+/// which for someone just removed from a group is precisely the stale grant
+/// that persisting groups exists to avoid.
+async fn record_groups(
+    state: &AppState,
+    user_id: &UserId,
+    groups: &[String],
+) -> Result<(), WebError> {
+    state
+        .group_membership_write
+        .replace_user_groups(user_id, groups)
+        .await?;
+    tracing::info!(
+        user = %user_id,
+        groups = ?groups,
+        "login: recorded the identity provider's asserted groups"
+    );
+    Ok(())
 }
 
 pub async fn logout_handler(

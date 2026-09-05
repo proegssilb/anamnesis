@@ -7,6 +7,7 @@ mod support;
 
 use axum::http::StatusCode;
 
+use anamnesis_core::UserId;
 use support::{TestApp, location_of};
 
 #[tokio::test]
@@ -123,4 +124,124 @@ async fn the_area_grid_is_empty_for_a_user_with_no_grants_rather_than_forbidden(
         !body.contains("Home"),
         "an ungranted user must not see an area they hold no role on"
     );
+}
+
+/// Records the groups a login would have recorded, without one — the
+/// `user_groups` write `crate::handlers::login` performs after the identity
+/// provider hands back its claims. Tests reach the port directly because
+/// there is no OIDC provider behind a `TestApp`.
+async fn record_groups(app: &TestApp, user: &str, groups: &[&str]) {
+    let groups: Vec<String> = groups.iter().map(|g| (*g).to_string()).collect();
+    app.state
+        .group_membership_write
+        .replace_user_groups(&UserId::new(user), &groups)
+        .await
+        .expect("recording the identity provider's groups");
+}
+
+#[tokio::test]
+async fn a_mapped_admin_group_grants_system_admin_and_unmapping_it_denies_at_once() {
+    // The behaviour that motivated storing groups in the database rather
+    // than in the session cookie: a mapping is joined at request time, so
+    // both granting and revoking it take effect for an already-signed-in
+    // user with no new login.
+    let app = TestApp::with_bootstrap_admin(false, "admin").await;
+    let admin_cookie = app.login_cookie_header("admin", "admin-token");
+    record_groups(&app, "grouped", &["anamnesis-admins"]).await;
+    let grouped_cookie = app.login_cookie_header("grouped", "grouped-token");
+
+    // A `user_groups` row on its own grants nothing.
+    assert_eq!(
+        app.get("/users", Some(&grouped_cookie)).await.status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let granted = app
+        .post_form(
+            "/users/groups",
+            &[("csrf_token", "admin-token"), ("group", "anamnesis-admins")],
+            Some(&admin_cookie),
+        )
+        .await;
+    assert_eq!(granted.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        app.get("/users", Some(&grouped_cookie)).await.status(),
+        StatusCode::OK,
+        "the mapping must apply without a fresh login"
+    );
+
+    let revoked = app
+        .post_form(
+            "/users/groups/revoke",
+            &[("csrf_token", "admin-token"), ("group", "anamnesis-admins")],
+            Some(&admin_cookie),
+        )
+        .await;
+    assert_eq!(revoked.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        app.get("/users", Some(&grouped_cookie)).await.status(),
+        StatusCode::FORBIDDEN,
+        "revoking the mapping must deny immediately, not at next login"
+    );
+}
+
+#[tokio::test]
+async fn a_group_role_on_an_area_lets_its_members_view_that_area_only() {
+    let app = TestApp::with_bootstrap_admin(false, "admin").await;
+    let admin_cookie = app.login_cookie_header("admin", "admin-token");
+    let area_path = support::new_area(&app, "Home", "admin-token", Some(&admin_cookie)).await;
+    let other_path = support::new_area(&app, "Work", "admin-token", Some(&admin_cookie)).await;
+
+    record_groups(&app, "grouped", &["mealie-admins"]).await;
+    let grouped_cookie = app.login_cookie_header("grouped", "grouped-token");
+    assert_eq!(
+        app.get(&area_path, Some(&grouped_cookie)).await.status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let granted = app
+        .post_form(
+            &format!("{area_path}/member-groups"),
+            &[
+                ("csrf_token", "admin-token"),
+                ("group", "mealie-admins"),
+                ("role", "member"),
+            ],
+            Some(&admin_cookie),
+        )
+        .await;
+    assert_eq!(granted.status(), StatusCode::SEE_OTHER);
+
+    assert_eq!(
+        app.get(&area_path, Some(&grouped_cookie)).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.get(&other_path, Some(&grouped_cookie)).await.status(),
+        StatusCode::FORBIDDEN,
+        "the grant is scoped to the one area it was made on"
+    );
+}
+
+#[tokio::test]
+async fn a_group_cannot_be_granted_system_admin_through_an_area_form() {
+    // `parse_grantable_role` refuses `system_admin` at the transport edge,
+    // before `grant_area_group_role`'s own refusal ever runs — the same
+    // belt-and-suspenders the per-user area form gets.
+    let app = TestApp::with_bootstrap_admin(false, "admin").await;
+    let admin_cookie = app.login_cookie_header("admin", "admin-token");
+    let area_path = support::new_area(&app, "Home", "admin-token", Some(&admin_cookie)).await;
+
+    let response = app
+        .post_form(
+            &format!("{area_path}/member-groups"),
+            &[
+                ("csrf_token", "admin-token"),
+                ("group", "anamnesis-admins"),
+                ("role", "system_admin"),
+            ],
+            Some(&admin_cookie),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

@@ -66,6 +66,8 @@ degraded run — including inside a container.
 | `ANAMNESIS_MAX_BODY_BYTES` | `41943040` (40 MiB) | Whole-request limit — see §5 |
 | `ANAMNESIS_TLS_CA_BUNDLE` | unset | PEM bundle of extra roots for the IdP — see §6 |
 | `ANAMNESIS_OIDC_SCOPES` | `openid profile email` | |
+| `ANAMNESIS_OIDC_GROUPS_CLAIM` | unset | Turns on roles from provider groups — see below |
+| `ANAMNESIS_OIDC_ADMIN_GROUP` | unset | A group holding System Admin; requires the claim above |
 | `RUST_LOG` | `info` | |
 
 The four `ANAMNESIS_S3_*` variables are read **only** when
@@ -74,6 +76,45 @@ ignored rather than rejected, so moving a deployment back to local disk does
 not mean unsetting them all. When the root *is* an `s3://` URL, the two
 credential variables are required and a missing one fails startup by name,
 like any other required variable.
+
+### Roles from provider groups
+
+Unset by default, and inert while unset: no groups are read, nothing is
+stored, and the group half of the admin UI never renders. Setting
+`ANAMNESIS_OIDC_GROUPS_CLAIM` (`groups`, for Authentik, Keycloak and Okta)
+turns it on, and a group can then hold System Admin or a role on one area or
+project, exactly as a user can. A user gets the strongest role they hold
+either directly or through any of their groups.
+
+Groups are not a standard OIDC claim, so they are read from `/userinfo`, and
+your provider has to be configured to return them there — in Authentik, the
+built-in `groups` scope mapping on the provider, plus `groups` in
+`ANAMNESIS_OIDC_SCOPES`. A claim name that resolves to nothing is *not* a
+login failure: the user gets no groups and a warning names the claim, so a
+typo cannot lock a working deployment out.
+
+`ANAMNESIS_OIDC_ADMIN_GROUP` is the group-shaped `ANAMNESIS_BOOTSTRAP_ADMIN`
+and exists for the same first-user problem. It is a seeding lever only: it is
+re-applied on every boot, it is not a one-shot latch, and so **a mapping
+revoked in the UI comes back on the next boot** unless the variable is
+removed too. Setting it without `ANAMNESIS_OIDC_GROUPS_CLAIM` fails startup
+by name, since it could never match a login.
+
+Three timing rules follow from where each fact lives:
+
+- **Group membership refreshes only at login.** No refresh token is stored,
+  so a user removed from a group in the provider keeps whatever it granted
+  until they next sign in. Revoke the *mapping* if you need it gone now.
+- **Mapping changes take effect immediately**, for everyone, signed in or
+  not — mappings are joined at request time, never cached in the session.
+- **Logging out does not clear a user's recorded groups.** They are a cache
+  of a provider fact, replaced wholesale at the next login.
+
+Unmapping a group is never refused for emptying the admin ranks, unlike
+revoking System Admin from the last user who holds it. A group mapping is not
+evidence that any user is actually in that group — Anamnesis never enumerates
+the provider's directory — so keep at least one real per-user System Admin
+(`ANAMNESIS_BOOTSTRAP_ADMIN`'s subject) rather than relying on a group alone.
 
 ### Three rules that bite
 

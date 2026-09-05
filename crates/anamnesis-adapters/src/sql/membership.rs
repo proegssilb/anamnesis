@@ -25,7 +25,7 @@ use sqlx::{PgPool, Row, SqlitePool};
 
 use super::{Backend, SqlStore};
 
-fn role_to_text(role: Role) -> &'static str {
+pub(super) fn role_to_text(role: Role) -> &'static str {
     match role {
         Role::SystemAdmin => "system_admin",
         Role::ProjectAdmin => "project_admin",
@@ -33,7 +33,7 @@ fn role_to_text(role: Role) -> &'static str {
     }
 }
 
-fn role_from_text(raw: &str) -> Result<Role, RepoError> {
+pub(super) fn role_from_text(raw: &str) -> Result<Role, RepoError> {
     match raw {
         "system_admin" => Ok(Role::SystemAdmin),
         "project_admin" => Ok(Role::ProjectAdmin),
