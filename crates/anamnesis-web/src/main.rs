@@ -185,6 +185,8 @@ async fn resolve_identity(config: &Config) -> Option<Arc<dyn IdentityProvider>> 
         format!("{}/auth/callback", config.base_url.trim_end_matches('/')),
         config.oidc_scopes.clone(),
         config.tls_ca_bundle.as_deref(),
+        config.oidc_user_id_claim.clone(),
+        config.oidc_display_name_claim.clone(),
     )
     .await
     .unwrap_or_else(|err| {

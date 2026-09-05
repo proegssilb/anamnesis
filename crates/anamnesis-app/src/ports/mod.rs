@@ -11,7 +11,7 @@ mod query;
 mod repository;
 
 pub use common::{Clock, IdGen};
-pub use identity::{IdentityProvider, LoginCallback, LoginRedirect};
+pub use identity::{AuthenticatedIdentity, IdentityProvider, LoginCallback, LoginRedirect};
 pub use infra::{BlobStore, JobLease, SearchIndex, TimezoneResolver};
 pub use membership::{MembershipQuery, MembershipRepository};
 pub use query::{BoardColumn, BoardItem, BoardQuery, SearchHit, SearchQuery};

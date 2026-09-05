@@ -23,6 +23,19 @@ pub struct Config {
     pub oidc_client_id: Option<String>,
     pub oidc_client_secret: Option<Secret>,
     pub oidc_scopes: Vec<String>,
+    /// Which OIDC claim supplies the stable identity anchor
+    /// (`AuthenticatedIdentity::user_id`). `None` means unconfigured: the
+    /// adapter always falls back to `sub`, which the OIDC spec guarantees is
+    /// present. `Some(name)` means an operator explicitly chose `name`; if
+    /// that claim can't be resolved, login fails rather than silently using
+    /// `sub` instead — see `anamnesis_adapters::OidcIdentityProvider`.
+    pub oidc_user_id_claim: Option<String>,
+    /// Which OIDC claim supplies the human-readable label
+    /// (`AuthenticatedIdentity::display_name`). `None` means unconfigured:
+    /// the adapter tries `preferred_username`, falling back to `sub`, and
+    /// never fails login over it. `Some(name)` carries the same
+    /// resolve-or-error contract as [`Self::oidc_user_id_claim`].
+    pub oidc_display_name_claim: Option<String>,
     /// The cookie signing key derived from `ANAMNESIS_SESSION_SECRET`. The
     /// raw secret is consumed by [`resolve_cookie_key`] and never stored, so
     /// there is no cleartext session credential anywhere in this struct.
@@ -142,6 +155,8 @@ impl std::fmt::Debug for Config {
             .field("oidc_client_id", &self.oidc_client_id)
             .field("oidc_client_secret", &self.oidc_client_secret)
             .field("oidc_scopes", &self.oidc_scopes)
+            .field("oidc_user_id_claim", &self.oidc_user_id_claim)
+            .field("oidc_display_name_claim", &self.oidc_display_name_claim)
             .field("cookie_key", &"<redacted>")
             .field("dev_auth_bypass", &self.dev_auth_bypass)
             .field("timezone", &self.timezone)
@@ -201,6 +216,8 @@ impl Config {
         let oidc_scopes = resolve_oidc_scopes(&get);
         let (oidc_issuer_url, oidc_client_id, oidc_client_secret) =
             resolve_oidc_credentials(&get, dev_auth_bypass)?;
+        let oidc_user_id_claim = get("ANAMNESIS_OIDC_USER_ID_CLAIM");
+        let oidc_display_name_claim = get("ANAMNESIS_OIDC_DISPLAY_NAME_CLAIM");
         let timezone = require(&get, "ANAMNESIS_TIMEZONE")?;
         let bootstrap_admin = require(&get, "ANAMNESIS_BOOTSTRAP_ADMIN")?;
         let blob_root = get("ANAMNESIS_BLOB_ROOT").unwrap_or_else(|| DEFAULT_BLOB_ROOT.to_string());
@@ -216,6 +233,8 @@ impl Config {
             oidc_client_id,
             oidc_client_secret,
             oidc_scopes,
+            oidc_user_id_claim,
+            oidc_display_name_claim,
             cookie_key,
             dev_auth_bypass,
             timezone,
@@ -713,6 +732,23 @@ mod tests {
                 reason: "must be greater than zero".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn oidc_claim_names_default_to_unset() {
+        let cfg = Config::from_source(env(&full_valid_env())).unwrap();
+        assert_eq!(cfg.oidc_user_id_claim, None);
+        assert_eq!(cfg.oidc_display_name_claim, None);
+    }
+
+    #[test]
+    fn oidc_claim_names_are_overridable() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_OIDC_USER_ID_CLAIM", "employee_id"));
+        pairs.push(("ANAMNESIS_OIDC_DISPLAY_NAME_CLAIM", "nickname"));
+        let cfg = Config::from_source(env(&pairs)).unwrap();
+        assert_eq!(cfg.oidc_user_id_claim.as_deref(), Some("employee_id"));
+        assert_eq!(cfg.oidc_display_name_claim.as_deref(), Some("nickname"));
     }
 
     #[test]
