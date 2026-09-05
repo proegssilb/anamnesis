@@ -1,13 +1,13 @@
 [package]
 name = "anamnesis-app"
-version = "1.0.0"
+version = "1.1.0"
 edition.workspace = true
 # This is an application crate, not a library anyone should depend on; only
 # `job-lease` in this workspace is meant for crates.io.
 publish = false
 
 [dependencies]
-anamnesis-core = { version = "1.0.0", path = "../anamnesis-core" }
+anamnesis-core = { version = "1.1.0", path = "../anamnesis-core" }
 async-trait = "0.1.92"
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.20"
