@@ -19,7 +19,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "anamnesis-adapters"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anamnesis-app",
  "anamnesis-core",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "anamnesis-app"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anamnesis-core",
  "async-trait",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "anamnesis-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "rstest",
  "serde",
@@ -68,7 +68,7 @@ dependencies = [
 
 [[package]]
 name = "anamnesis-web"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anamnesis-adapters",
  "anamnesis-app",

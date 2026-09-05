@@ -1,6 +1,6 @@
 [package]
 name = "anamnesis-core"
-version = "0.1.0"
+version = "1.0.0"
 edition.workspace = true
 # This is an application crate, not a library anyone should depend on; only
 # `job-lease` in this workspace is meant for crates.io.
