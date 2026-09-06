@@ -64,7 +64,7 @@
           <ul class="member-list">
             {% for m in members %}
               <li class="member-row">
-                <span class="member-name">{{ m.user_id }}</span>
+                <span class="member-name">{{ m.display_name }}</span>
                 <span class="member-role">{{ m.role }}</span>
                 <form method="post" action="/areas/{{ area.id }}/members/revoke#area-settings">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -80,7 +80,10 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label for="member-user-id">User id</label>
             <input id="member-user-id" name="user_id" required maxlength="200"
-                   placeholder="the sub claim from their identity provider">
+                   list="known-users" placeholder="pick someone who has logged in, or paste a sub">
+            <datalist id="known-users">
+              {% for u in known_users %}<option value="{{ u.id }}">{{ u.name }}</option>{% endfor %}
+            </datalist>
             <select name="role">
               <option value="member">Member</option>
               <option value="project_admin">Project Admin</option>

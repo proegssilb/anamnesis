@@ -31,6 +31,7 @@ mod search;
 mod settings;
 mod tangle;
 mod task;
+mod user_directory;
 
 use std::str::FromStr;
 use std::time::{Duration, Instant};
@@ -59,7 +60,8 @@ pub(crate) enum Backend {
 /// [`anamnesis_app::RelationshipRepository`], [`anamnesis_app::TangleRepository`],
 /// [`anamnesis_app::CommentRepository`], [`anamnesis_app::AttachmentRepository`],
 /// [`anamnesis_app::BoardQuery`], [`anamnesis_app::SearchQuery`],
-/// [`anamnesis_app::SearchIndex`], and [`anamnesis_app::MembershipQuery`].
+/// [`anamnesis_app::SearchIndex`], [`anamnesis_app::MembershipQuery`], and
+/// [`anamnesis_app::UserDirectoryQuery`].
 #[derive(Debug)]
 pub struct SqlStore {
     pub(crate) backend: Backend,

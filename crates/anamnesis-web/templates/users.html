@@ -13,10 +13,10 @@
   <ul class="member-list">
     {% for admin in admins %}
       <li class="member-row">
-        <span class="member-name">{{ admin }}</span>
+        <span class="member-name">{{ admin.display_name }}</span>
         <form method="post" action="/users/revoke">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <input type="hidden" name="user_id" value="{{ admin }}">
+          <input type="hidden" name="user_id" value="{{ admin.id }}">
           <button type="submit" class="danger">Revoke</button>
         </form>
       </li>
@@ -30,7 +30,10 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label for="user_id">User id</label>
     <input id="user_id" name="user_id" required maxlength="200"
-           placeholder="the sub claim from their identity provider">
+           list="known-users" placeholder="pick someone who has logged in, or paste a sub">
+    <datalist id="known-users">
+      {% for u in known_users %}<option value="{{ u.id }}">{{ u.name }}</option>{% endfor %}
+    </datalist>
     <button type="submit">Grant System Admin</button>
   </form>
 

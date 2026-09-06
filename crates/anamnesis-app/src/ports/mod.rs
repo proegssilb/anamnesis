@@ -10,6 +10,7 @@ mod infra;
 mod membership;
 mod query;
 mod repository;
+mod user_directory;
 
 pub use common::{Clock, IdGen};
 pub use group_membership::{GroupMembershipQuery, GroupMembershipRepository};
@@ -22,3 +23,4 @@ pub use repository::{
     RelationshipRepository, SettingsRepository, TangleRepository, TaskAggregate, TaskRepository,
     TaskUpdateError,
 };
+pub use user_directory::{UserDirectoryQuery, UserDirectoryRepository};

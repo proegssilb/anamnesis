@@ -446,6 +446,7 @@ fn render_project_page(
             members => members,
             groups => groups,
             known_groups => panel.known_groups,
+            known_users => panel.known_users_context(),
             show_groups => panel.show_groups(),
             can_manage => panel.can_manage,
             csrf_token => user.csrf_token,

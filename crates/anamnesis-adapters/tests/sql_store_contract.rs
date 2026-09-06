@@ -17,7 +17,8 @@ use anamnesis_app::{
     Comment, CommentId, CommentRepository, GroupMembershipQuery, GroupMembershipRepository,
     JobLease, MembershipQuery, MembershipRepository, ProjectAggregate, ProjectRepository,
     RelationshipRepository, SearchHit, SearchIndex, SearchQuery, Settings, SettingsRepository,
-    TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
+    TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError, UserDirectoryQuery,
+    UserDirectoryRepository,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
@@ -131,6 +132,7 @@ async fn contract(store: &SqlStore) {
     attachment_contract(store, &task_a).await;
     membership_contract(store).await;
     group_membership_contract(store).await;
+    user_directory_contract(store).await;
     search_contract(store).await;
     settings_contract(store).await;
     job_lease_contract(store).await;
@@ -1576,6 +1578,56 @@ async fn project_group_role_contract(
             .await
             .unwrap()
             .is_empty()
+    );
+}
+
+// --- User directory: the best-effort display-name cache, not a users table ---
+
+/// `remember` upserts rather than duplicates, an unremembered id resolves to
+/// nothing at all (not an error, not a placeholder), and `list_known_users`
+/// reflects the latest recorded name, not the first.
+async fn user_directory_contract(store: &SqlStore) {
+    let suffix = Uuid::new_v4();
+    let known = UserId::new(format!("directory-known-{suffix}"));
+    let stranger = UserId::new(format!("directory-stranger-{suffix}"));
+
+    // An id nobody has ever recorded resolves to nothing.
+    let names = store
+        .display_names(std::slice::from_ref(&known))
+        .await
+        .unwrap();
+    assert!(
+        names.is_empty(),
+        "an id with no recorded login must be absent from the result, not present with a \
+         placeholder"
+    );
+
+    store.remember(&known, "First Name").await.unwrap();
+    let names = store
+        .display_names(std::slice::from_ref(&known))
+        .await
+        .unwrap();
+    assert_eq!(names.get(&known), Some(&"First Name".to_string()));
+
+    // A second login with a changed name upserts, it does not duplicate or
+    // merge -- the cache reflects the latest login only.
+    store.remember(&known, "Renamed").await.unwrap();
+    let names = store
+        .display_names(&[known.clone(), stranger.clone()])
+        .await
+        .unwrap();
+    assert_eq!(names.len(), 1, "the stranger must still be absent");
+    assert_eq!(names.get(&known), Some(&"Renamed".to_string()));
+
+    let all = store.list_known_users().await.unwrap();
+    assert!(
+        all.contains(&(known.clone(), "Renamed".to_string())),
+        "list_known_users must reflect the upsert, got: {all:?}"
+    );
+    assert!(
+        !all.iter()
+            .any(|(user, name)| user == &known && name == "First Name"),
+        "the stale name must not linger alongside the renamed one"
     );
 }
 

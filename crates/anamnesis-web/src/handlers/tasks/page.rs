@@ -5,12 +5,14 @@
 //! and needs to re-render it (on success or on a rule violation) goes
 //! through [`render_task_page`].
 
+use std::collections::HashMap;
+
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use minijinja::context;
 
-use anamnesis_app::{BoardColumn, list_attachments, list_comments, resolve_kind};
-use anamnesis_core::Placement;
+use anamnesis_app::{BoardColumn, Comment, list_attachments, list_comments, resolve_kind};
+use anamnesis_core::{Placement, UserId};
 
 use crate::auth::CurrentUser;
 use crate::error::WebError;
@@ -35,6 +37,7 @@ pub(super) async fn render_task_page(
 ) -> Result<Response, WebError> {
     let children = state.tasks.list_children(task_id).await?;
     let comments = list_comments(state.comments.as_ref(), Some(member_role()), task_id).await?;
+    let comments_ctx = build_comments_context(state, &comments).await?;
     let attachments =
         list_attachments(state.attachments.as_ref(), Some(member_role()), task_id).await?;
     let relationships = build_relationships_context(state, task_id).await?;
@@ -61,7 +64,7 @@ pub(super) async fn render_task_page(
             relationship_prefill => relationship_prefill,
             parent => parent,
             children => children_ctx,
-            comments => comments,
+            comments => comments_ctx,
             attachments => attachments,
             relationships => relationships,
             column_options => column_options,
@@ -111,6 +114,33 @@ async fn build_relationships_context(
         });
     }
     Ok(relationships)
+}
+
+/// Each comment's author, resolved to its cached display name when known —
+/// otherwise issue #38 stands: a comment's author was only ever renderable
+/// as its raw OIDC `sub`, which is what `anamnesis_app::UserDirectoryQuery`
+/// exists to fix. An author with no cached entry (never logged in since it
+/// was added) falls back to that same raw id, exactly as before.
+async fn build_comments_context(
+    state: &AppState,
+    comments: &[Comment],
+) -> Result<Vec<minijinja::Value>, WebError> {
+    let authors: Vec<UserId> = comments.iter().map(|c| c.author.clone()).collect();
+    let names: HashMap<UserId, String> = state.user_directory.display_names(&authors).await?;
+    Ok(comments
+        .iter()
+        .map(|c| {
+            let author_name = names
+                .get(&c.author)
+                .cloned()
+                .unwrap_or_else(|| c.author.to_string());
+            context! {
+                id => c.id.to_string(),
+                author_name => author_name,
+                body => c.body.as_str(),
+            }
+        })
+        .collect())
 }
 
 /// The checklist parent's display context — resolved the same way a
