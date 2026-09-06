@@ -161,6 +161,9 @@ async fn exchange_and_establish_session(
             if let Err(err) = record_groups(state, &user_id, &groups).await {
                 return (jar, err.into_response_with(&state.templates)).into_response();
             }
+            if let Err(err) = record_known_user(state, &user_id, &display_name).await {
+                return (jar, err.into_response_with(&state.templates)).into_response();
+            }
             let session = SessionData {
                 user_id,
                 display_name,
@@ -218,6 +221,30 @@ async fn record_groups(
         groups = ?groups,
         "login: recorded the identity provider's asserted groups"
     );
+    Ok(())
+}
+
+/// Records the display name this login presented, so an already-known user
+/// id can later be shown as a name instead of a raw OIDC `sub`
+/// (`crate::handlers::membership`'s and `crate::handlers::
+/// group_membership`'s admin-grant UI, `crate::handlers::tasks::page`'s
+/// comment rendering).
+///
+/// Goes straight to `anamnesis_app::UserDirectoryRepository`, unconditionally,
+/// for the same reason [`record_groups`] does: recording what an identity
+/// the provider just authenticated presented is not an authorization
+/// decision needing an actor and a role to check. Written on every login,
+/// not just the first, so a display name changed at the identity provider
+/// is picked up the next time its owner logs in.
+async fn record_known_user(
+    state: &AppState,
+    user_id: &UserId,
+    display_name: &str,
+) -> Result<(), WebError> {
+    state
+        .user_directory_write
+        .remember(user_id, display_name)
+        .await?;
     Ok(())
 }
 

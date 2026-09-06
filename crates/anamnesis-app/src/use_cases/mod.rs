@@ -17,6 +17,7 @@ mod settings;
 mod suggestion;
 mod tangle;
 mod task;
+mod user_directory;
 
 pub use archive::{ArchiveOutcome, archive_done_tasks};
 pub use area::{create_area, edit_area, list_areas, reposition_area, view_area};
@@ -48,3 +49,4 @@ pub use task::{
     archive_task, create_task, drop_task, edit_task, raise_task, set_checklist_position,
     set_task_field_value, set_task_parent, unarchive_task, view_task,
 };
+pub use user_directory::list_known_users;

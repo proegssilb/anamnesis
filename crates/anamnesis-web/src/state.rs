@@ -19,6 +19,7 @@ use anamnesis_app::{
     GroupMembershipQuery, GroupMembershipRepository, IdGen, IdentityProvider, JobLease,
     MembershipQuery, MembershipRepository, ProjectRepository, RelationshipRepository, SearchIndex,
     SearchQuery, SettingsRepository, TangleRepository, TaskRepository, TimezoneResolver,
+    UserDirectoryQuery, UserDirectoryRepository,
 };
 use axum::extract::FromRef;
 use axum_extra::extract::cookie::Key;
@@ -75,6 +76,17 @@ pub struct AppState {
     /// `crate::handlers::group_membership` maps groups to roles, and
     /// `crate::handlers::login` records what the identity provider asserted.
     pub group_membership_write: Arc<dyn GroupMembershipRepository>,
+    /// The best-effort display-name cache (`docs/CONTEXT.md`: not a users
+    /// table — see `anamnesis_app::UserDirectoryQuery`'s doc comment). Read
+    /// by `crate::handlers::tasks::page` (a comment's author) and
+    /// `crate::handlers::group_membership`/`crate::handlers::membership`
+    /// (an admin's members lists and grant-form pickers); written only by
+    /// `crate::handlers::login`, on every successful login.
+    pub user_directory: Arc<dyn UserDirectoryQuery>,
+    /// The write half of [`Self::user_directory`], split for the same
+    /// reason [`Self::group_membership_write`] is: only `crate::handlers::
+    /// login` ever needs to write a recorded display name.
+    pub user_directory_write: Arc<dyn UserDirectoryRepository>,
     pub timezone: Arc<dyn TimezoneResolver>,
     pub clock: Arc<dyn Clock>,
     pub id_gen: Arc<dyn IdGen>,

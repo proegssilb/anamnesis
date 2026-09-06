@@ -23,9 +23,11 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
 
+use std::collections::HashMap;
+
 use anamnesis_app::{
     AppError, grant_area_role, grant_project_role, grant_system_admin, list_admin_groups,
-    list_known_groups, list_system_admins, revoke_area_role, revoke_project_role,
+    list_known_groups, list_known_users, list_system_admins, revoke_area_role, revoke_project_role,
     revoke_system_admin,
 };
 use anamnesis_core::policy::Role;
@@ -243,8 +245,17 @@ pub async fn view_users_handler(State(state): State<AppState>, user: CurrentUser
 /// under one gate, rendered as one page, and never used apart.
 struct UsersPage {
     admins: Vec<UserId>,
+    /// Cached display names for exactly [`Self::admins`] (`docs/CONTEXT.md`:
+    /// not a users table). An admin with no entry has never logged in since
+    /// being granted System Admin, and falls back to their raw id.
+    admin_names: HashMap<UserId, String>,
     admin_groups: Vec<String>,
     known_groups: Vec<String>,
+    /// Every user id and display name this deployment has ever recorded a
+    /// login for — the picker behind the "grant System Admin" user-id
+    /// input, closing issue #39 the same way [`Self::known_groups`] already
+    /// closes it for groups.
+    known_users: Vec<(UserId, String)>,
 }
 
 impl UsersPage {
@@ -253,6 +264,31 @@ impl UsersPage {
     /// `crate::handlers::group_membership`'s module doc comment.
     fn show_groups(&self) -> bool {
         !self.known_groups.is_empty()
+    }
+
+    /// [`Self::admins`] shaped for `users.html`, each with its resolved
+    /// display name.
+    fn admin_context(&self) -> Vec<minijinja::Value> {
+        self.admins
+            .iter()
+            .map(|admin| {
+                let display_name = self
+                    .admin_names
+                    .get(admin)
+                    .cloned()
+                    .unwrap_or_else(|| admin.to_string());
+                context! { id => admin.to_string(), display_name => display_name }
+            })
+            .collect()
+    }
+
+    /// [`Self::known_users`] shaped for the `<datalist>` behind the "grant
+    /// System Admin" user-id input.
+    fn known_users_context(&self) -> Vec<minijinja::Value> {
+        self.known_users
+            .iter()
+            .map(|(user, name)| context! { id => user.to_string(), name => name })
+            .collect()
     }
 }
 
@@ -264,10 +300,14 @@ async fn view_users_impl(
 ) -> Result<Response, WebError> {
     let admin = access::is_system_admin(state, &user.user_id).await?;
     let role = admin.then_some(Role::SystemAdmin);
+    let admins = list_system_admins(state.membership.as_ref(), role).await?;
+    let admin_names = state.user_directory.display_names(&admins).await?;
     let page = UsersPage {
-        admins: list_system_admins(state.membership.as_ref(), role).await?,
+        admins,
+        admin_names,
         admin_groups: list_admin_groups(state.group_membership.as_ref(), role).await?,
         known_groups: list_known_groups(state.group_membership.as_ref(), role).await?,
+        known_users: list_known_users(state.user_directory.as_ref(), role).await?,
     };
     render_users_page(state, user, &page, error, status)
 }
@@ -349,16 +389,16 @@ fn render_users_page(
     error: Option<&str>,
     status: StatusCode,
 ) -> Result<Response, WebError> {
-    let admin_names: Vec<String> = page.admins.iter().map(|u| u.to_string()).collect();
     let tmpl = state
         .templates
         .get_template("users.html")
         .map_err(WebError::template)?;
     let body = tmpl
         .render(context! {
-            admins => admin_names,
+            admins => page.admin_context(),
             admin_groups => page.admin_groups,
             known_groups => page.known_groups,
+            known_users => page.known_users_context(),
             show_groups => page.show_groups(),
             csrf_token => user.csrf_token,
             current_user => user.display_name,

@@ -266,6 +266,8 @@ fn build_state(
         membership_write: store.clone(),
         group_membership: store.clone(),
         group_membership_write: store.clone(),
+        user_directory: store.clone(),
+        user_directory_write: store.clone(),
         timezone: Arc::new(TzTimezoneResolver::new()),
         clock: Arc::new(SystemClock),
         id_gen: Arc::new(UuidIdGen),

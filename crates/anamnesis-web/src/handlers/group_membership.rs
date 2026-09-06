@@ -33,14 +33,16 @@
 //! request path for no gain — and would get the answer wrong for a
 //! deployment that switched the claim off while old mappings still stood.
 
+use std::collections::HashMap;
+
 use axum::Form;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Redirect, Response};
 
 use anamnesis_app::{
     AppError, grant_admin_group, grant_area_group_role, grant_project_group_role, list_area_groups,
-    list_known_groups, list_project_groups, revoke_admin_group, revoke_area_group_role,
-    revoke_project_group_role,
+    list_known_groups, list_known_users, list_project_groups, revoke_admin_group,
+    revoke_area_group_role, revoke_project_group_role,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{AreaId, ProjectId, UserId};
@@ -66,8 +68,19 @@ use super::membership::{format_role, parse_grantable_role};
 pub(super) struct AccessPanel {
     pub can_manage: bool,
     pub members: Vec<(UserId, Role)>,
+    /// Cached display names for exactly [`Self::members`] (`docs/CONTEXT.md`:
+    /// not a users table — see `anamnesis_app::UserDirectoryQuery`'s doc
+    /// comment). A member with no entry has never logged in since their
+    /// grant was recorded here, and falls back to their raw id.
+    pub member_names: HashMap<UserId, String>,
     pub groups: Vec<(String, Role)>,
     pub known_groups: Vec<String>,
+    /// Every user id and display name this deployment has ever recorded a
+    /// login for — the picker behind the "grant a role" user-id input,
+    /// closing issue #39 (granting a role required knowing that raw id by
+    /// heart) the same way [`Self::known_groups`] already closes it for
+    /// groups.
+    pub known_users: Vec<(UserId, String)>,
 }
 
 impl AccessPanel {
@@ -95,7 +108,16 @@ impl AccessPanel {
             .members
             .iter()
             .map(|(user, role)| {
-                minijinja::context! { user_id => user.to_string(), role => format_role(*role) }
+                let display_name = self
+                    .member_names
+                    .get(user)
+                    .cloned()
+                    .unwrap_or_else(|| user.to_string());
+                minijinja::context! {
+                    user_id => user.to_string(),
+                    display_name => display_name,
+                    role => format_role(*role),
+                }
             })
             .collect();
         let groups = self
@@ -104,6 +126,15 @@ impl AccessPanel {
             .map(|(group, role)| minijinja::context! { group => group, role => format_role(*role) })
             .collect();
         (members, groups)
+    }
+
+    /// [`Self::known_users`] shaped for the `<datalist>` behind a "grant a
+    /// role" user-id input.
+    pub(super) fn known_users_context(&self) -> Vec<minijinja::Value> {
+        self.known_users
+            .iter()
+            .map(|(user, name)| minijinja::context! { id => user.to_string(), name => name })
+            .collect()
     }
 }
 
@@ -118,11 +149,16 @@ pub(super) async fn area_panel(
     if !can_manage {
         return Ok(AccessPanel::hidden());
     }
+    let members =
+        anamnesis_app::list_area_members(state.membership.as_ref(), role, area_id).await?;
+    let member_names = member_display_names(state, &members).await?;
     Ok(AccessPanel {
         can_manage,
-        members: anamnesis_app::list_area_members(state.membership.as_ref(), role, area_id).await?,
+        members,
+        member_names,
         groups: list_area_groups(state.group_membership.as_ref(), role, area_id).await?,
         known_groups: list_known_groups(state.group_membership.as_ref(), role).await?,
+        known_users: list_known_users(state.user_directory.as_ref(), role).await?,
     })
 }
 
@@ -136,15 +172,30 @@ pub(super) async fn project_panel(
     if !can_manage {
         return Ok(AccessPanel::hidden());
     }
+    let members =
+        anamnesis_app::list_project_members(state.membership.as_ref(), role, project_id).await?;
+    let member_names = member_display_names(state, &members).await?;
     Ok(AccessPanel {
         can_manage,
-        members: anamnesis_app::list_project_members(state.membership.as_ref(), role, project_id)
-            .await?,
+        members,
+        member_names,
         groups: list_project_groups(state.group_membership.as_ref(), role, project_id).await?,
         // Gated at `Action::ManageArea`, which a Project Admin satisfies —
-        // see `anamnesis_app::list_known_groups`.
+        // see `anamnesis_app::list_known_groups`/`list_known_users`.
         known_groups: list_known_groups(state.group_membership.as_ref(), role).await?,
+        known_users: list_known_users(state.user_directory.as_ref(), role).await?,
     })
+}
+
+/// Resolves display names for exactly the ids in `members` — the shared
+/// step [`area_panel`] and [`project_panel`] both need, split out so it is
+/// written (and named) once.
+async fn member_display_names(
+    state: &AppState,
+    members: &[(UserId, Role)],
+) -> Result<HashMap<UserId, String>, WebError> {
+    let ids: Vec<UserId> = members.iter().map(|(user, _)| user.clone()).collect();
+    Ok(state.user_directory.display_names(&ids).await?)
 }
 
 // --- Area group mappings ---
