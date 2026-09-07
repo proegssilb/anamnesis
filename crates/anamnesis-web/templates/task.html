@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ task.title }} — Anamnesis{% endblock %}
 {% block content %}
-  <p class="breadcrumb"><a href="/board">Board</a></p>
+  <p class="breadcrumb"><a href="/projects/{{ task.project_id }}">{% if project_title %}{{ project_title }}{% else %}Project{% endif %}</a></p>
 
   <div class="page-header task-header">
     <details class="editable-block editable-title"{% if open_hint == "title" %} open{% endif %}>
