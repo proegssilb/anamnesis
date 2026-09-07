@@ -11,7 +11,8 @@ use minijinja::context;
 use serde::Deserialize;
 
 use anamnesis_app::{
-    AppError, archive_project, create_task, list_all_projects, unarchive_project, view_project,
+    AppError, archive_project, create_task, edit_project_fields, list_all_projects,
+    unarchive_project, view_project,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{Area, Project, ProjectId, ProjectStatus, TaskId};
@@ -25,7 +26,10 @@ use crate::state::AppState;
 use super::access;
 use super::field_form;
 use super::format::format_field_kind;
-use super::forms::{AddFieldDefinitionForm, CreateTaskForm, CsrfOnlyForm};
+use super::forms::{
+    AddFieldDefinitionForm, CreateTaskForm, CsrfOnlyForm, EditProjectDescriptionForm,
+    EditProjectTitleForm,
+};
 use super::group_membership::{self, AccessPanel};
 use super::tasks::{
     RaiseOutcome, WIP_LIMIT_MESSAGE, drop_task_with_bounce_accounting, raise_task_to_column,
@@ -36,7 +40,7 @@ use super::tasks::{
 /// [`render_project_page`] needs (aggregate, tasks, access panel). Shared by
 /// every mutation handler that must re-render the page to show an `error`
 /// after a failed write, rather than redirect to a fresh `GET`.
-async fn render_project_page_reloaded(
+pub(crate) async fn render_project_page_reloaded(
     state: &AppState,
     user: &CurrentUser,
     role: Option<Role>,
@@ -44,11 +48,31 @@ async fn render_project_page_reloaded(
     error: Option<&str>,
     status: StatusCode,
 ) -> Result<Response, WebError> {
+    render_project_page_reloaded_with_hint(state, user, role, project_id, error, None, status).await
+}
+
+/// As [`render_project_page_reloaded`], but also names which of the
+/// title/description `<details>` blocks a rule-violation re-render should
+/// reopen — [`edit_project_title_handler`]/[`edit_project_description_handler`]'s
+/// analog of `crate::handlers::tasks::edit`'s `open_hint`. Split out rather
+/// than adding this parameter to every caller: only those two edit paths
+/// ever have a hint to give.
+async fn render_project_page_reloaded_with_hint(
+    state: &AppState,
+    user: &CurrentUser,
+    role: Option<Role>,
+    project_id: ProjectId,
+    error: Option<&str>,
+    open_hint: Option<&str>,
+    status: StatusCode,
+) -> Result<Response, WebError> {
     let aggregate = view_project(state.projects.as_ref(), role, project_id).await?;
     let tasks = state.tasks.list_by_project(project_id).await?;
     let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
     let panel = group_membership::project_panel(state, role, project_id, can_manage).await?;
-    render_project_page(state, user, &aggregate, &tasks, &panel, error, status)
+    render_project_page(
+        state, user, &aggregate, &tasks, &panel, error, open_hint, status,
+    )
 }
 
 pub async fn view_project_handler(
@@ -75,6 +99,120 @@ async fn view_project_impl(
     let area_id = aggregate.project.area_id;
     let role = access::project_role(state, &user.user_id, project_id, area_id).await?;
     render_project_page_reloaded(state, user, role, project_id, None, StatusCode::OK).await
+}
+
+/// Renames a project — the project-page analog of
+/// `crate::handlers::tasks::edit::edit_task_title_handler`, gated (via
+/// `edit_project_fields`'s `Action::EditProject` check) on Project Admin (or
+/// System Admin), unlike a task's own title which any Member may edit.
+pub async fn edit_project_title_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<uuid::Uuid>,
+    Form(form): Form<EditProjectTitleForm>,
+) -> Response {
+    match edit_project_title_impl(&state, &user, ProjectId::new(id), form).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn edit_project_title_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    project_id: ProjectId,
+    form: EditProjectTitleForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    apply_project_edit(state, user, project_id, Some(&form.title), None, "title").await
+}
+
+/// Replaces a project's description — the project-page analog of
+/// `crate::handlers::tasks::edit::edit_task_description_handler`.
+pub async fn edit_project_description_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<uuid::Uuid>,
+    Form(form): Form<EditProjectDescriptionForm>,
+) -> Response {
+    match edit_project_description_impl(&state, &user, ProjectId::new(id), form).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn edit_project_description_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    project_id: ProjectId,
+    form: EditProjectDescriptionForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    apply_project_edit(
+        state,
+        user,
+        project_id,
+        None,
+        Some(&form.description),
+        "description",
+    )
+    .await
+}
+
+/// The shared body of [`edit_project_title_impl`] and
+/// [`edit_project_description_impl`]: both call `edit_project_fields` with
+/// one field changed and the other left as `None` (unchanged), then handle
+/// the result identically — re-rendering the project page either way, an
+/// inline `422` error re-render on a rule violation, or bubbling any other
+/// error up. Mirrors `crate::handlers::tasks::edit::apply_task_edit`.
+async fn apply_project_edit(
+    state: &AppState,
+    user: &CurrentUser,
+    project_id: ProjectId,
+    title: Option<&str>,
+    description: Option<&str>,
+    open_hint: &'static str,
+) -> Result<Response, WebError> {
+    let aggregate = state
+        .projects
+        .load(project_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let area_id = aggregate.project.area_id;
+    let role = access::project_role(state, &user.user_id, project_id, area_id).await?;
+
+    match edit_project_fields(
+        state.projects.as_ref(),
+        state.clock.as_ref(),
+        state.search_index.as_ref(),
+        role,
+        project_id,
+        title,
+        description,
+    )
+    .await
+    {
+        Ok(_) => {
+            render_project_page_reloaded(state, user, role, project_id, None, StatusCode::OK).await
+        }
+        Err(AppError::Rule(e)) => {
+            render_project_page_reloaded_with_hint(
+                state,
+                user,
+                role,
+                project_id,
+                Some(&e.to_string()),
+                Some(open_hint),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            )
+            .await
+        }
+        Err(err) => Err(WebError::from(err)),
+    }
 }
 
 pub async fn create_task_handler(
@@ -405,6 +543,7 @@ async fn add_field_definition_impl(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_project_page(
     state: &AppState,
     user: &CurrentUser,
@@ -412,6 +551,7 @@ fn render_project_page(
     tasks: &[anamnesis_core::Task],
     panel: &AccessPanel,
     error: Option<&str>,
+    open_hint: Option<&str>,
     status: StatusCode,
 ) -> Result<Response, WebError> {
     let board_sections = build_board_sections(tasks);
@@ -452,6 +592,7 @@ fn render_project_page(
             csrf_token => user.csrf_token,
             current_user => user.display_name,
             error => error,
+            open_hint => open_hint,
         })
         .map_err(WebError::template)?;
     Ok((status, Html(body)).into_response())
