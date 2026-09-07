@@ -7,6 +7,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+ammonia = "4.1.4"
 anamnesis-adapters = { version = "1.2.0", path = "../anamnesis-adapters" }
 anamnesis-app = { version = "1.2.0", path = "../anamnesis-app" }
 anamnesis-core = { version = "1.2.0", path = "../anamnesis-core" }
@@ -14,6 +15,7 @@ async-trait = "0.1.92"
 axum = { version = "0.8.9", features = ["multipart"] }
 axum-extra = { version = "0.12.6", features = ["cookie", "cookie-signed"] }
 minijinja = "2.24.0"
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
 # Plain HTTP to loopback is all the `--health-check` probe needs, so no TLS
 # features are requested here. `openidconnect` already pulls `reqwest` into
 # the graph with `rustls-tls`, so this adds no build time or binary size.

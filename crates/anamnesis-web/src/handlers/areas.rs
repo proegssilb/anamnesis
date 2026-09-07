@@ -106,6 +106,7 @@ async fn create_area_impl(
     let admin = access::is_system_admin(state, &user.user_id).await?;
     let role = admin.then_some(Role::SystemAdmin);
     let position = state.areas.list().await?.len() as u32;
+    let description = super::markdown::strip_html(&form.description);
     match create_area(
         state.areas.as_ref(),
         state.id_gen.as_ref(),
@@ -113,7 +114,7 @@ async fn create_area_impl(
         state.search_index.as_ref(),
         role,
         &form.title,
-        &form.description,
+        &description,
         position,
     )
     .await
@@ -198,6 +199,7 @@ async fn edit_area_impl(
         return Err(WebError::CsrfMismatch);
     }
     let role = access::area_role(state, &user.user_id, area_id).await?;
+    let description = super::markdown::strip_html(&form.description);
     match edit_area(
         state.areas.as_ref(),
         state.clock.as_ref(),
@@ -205,7 +207,7 @@ async fn edit_area_impl(
         role,
         area_id,
         &form.title,
-        &form.description,
+        &description,
     )
     .await
     {
@@ -256,6 +258,7 @@ async fn create_project_impl(
         return Err(WebError::CsrfMismatch);
     }
     let role = access::area_role(state, &user.user_id, area_id).await?;
+    let description = super::markdown::strip_html(&form.description);
     match create_project(
         state.projects.as_ref(),
         state.id_gen.as_ref(),
@@ -264,7 +267,7 @@ async fn create_project_impl(
         role,
         area_id,
         &form.title,
-        &form.description,
+        &description,
     )
     .await
     {
@@ -602,6 +605,7 @@ fn render_area_page(
         .render(context! {
             area => area,
             area_id => area.id.to_string(),
+            description_html => super::markdown::render(area.description.as_str()),
             board_sections => board_sections,
             members => members,
             groups => groups,

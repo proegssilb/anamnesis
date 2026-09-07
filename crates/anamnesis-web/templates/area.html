@@ -12,7 +12,7 @@
       </div>
     {% endif %}
   </div>
-  {% if area.description %}<p class="hint">{{ area.description }}</p>{% endif %}
+  {% if area.description %}<div class="hint">{{ description_html }}</div>{% endif %}
 
   {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 

@@ -74,13 +74,14 @@ async fn edit_task_description_impl(
     }
     let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
     let current = state.tasks.load(task_id).await?.ok_or(AppError::NotFound)?;
+    let description = crate::handlers::markdown::strip_html(&form.description);
     apply_task_edit(
         state,
         user,
         task_id,
         role,
         current.task.title.as_str(),
-        &form.description,
+        &description,
         "description",
     )
     .await

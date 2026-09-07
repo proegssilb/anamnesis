@@ -152,12 +152,13 @@ async fn edit_project_description_impl(
     if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
         return Err(WebError::CsrfMismatch);
     }
+    let description = super::markdown::strip_html(&form.description);
     apply_project_edit(
         state,
         user,
         project_id,
         None,
-        Some(&form.description),
+        Some(&description),
         "description",
     )
     .await
@@ -243,6 +244,7 @@ async fn create_task_impl(
         .ok_or(AppError::NotFound)?;
     let area_id = aggregate.project.area_id;
     let role = access::project_role(state, &user.user_id, project_id, area_id).await?;
+    let description = super::markdown::strip_html(&form.description);
 
     match create_task(
         state.tasks.as_ref(),
@@ -252,7 +254,7 @@ async fn create_task_impl(
         role,
         project_id,
         &form.title,
-        &form.description,
+        &description,
     )
     .await
     {
@@ -581,6 +583,7 @@ fn render_project_page(
         .render(context! {
             project => aggregate.project,
             project_id => aggregate.project.id.to_string(),
+            description_html => super::markdown::render(aggregate.project.description.as_str()),
             board_sections => board_sections,
             fields => fields,
             members => members,
