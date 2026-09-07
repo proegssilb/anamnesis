@@ -292,7 +292,7 @@
     {% if comments %}
       <ul class="comment-list">
         {% for c in comments %}
-          <li><p class="comment-meta">{{ c.author_name }}</p><p>{{ c.body }}</p></li>
+          <li><p class="comment-meta">{{ c.author_name }}</p><div class="comment-body">{{ c.body_html }}</div></li>
         {% endfor %}
       </ul>
     {% else %}

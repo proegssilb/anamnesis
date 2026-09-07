@@ -605,7 +605,7 @@ fn render_area_page(
         .render(context! {
             area => area,
             area_id => area.id.to_string(),
-            description_html => super::markdown::render(area.description.as_str()),
+            description_html => super::markdown::render(area.description.as_str(), user.user_id.as_str()),
             board_sections => board_sections,
             members => members,
             groups => groups,

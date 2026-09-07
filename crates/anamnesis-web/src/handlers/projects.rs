@@ -557,23 +557,10 @@ fn render_project_page(
     status: StatusCode,
 ) -> Result<Response, WebError> {
     let board_sections = build_board_sections(tasks);
-
-    // This project's own custom field vocabulary (`docs/DOMAIN.md` §3) — the
-    // house-hunting example's price/viewing-date/... definitions, so a
-    // project admin can see what already exists before adding another one.
-    let fields: Vec<_> = aggregate
-        .field_definitions
-        .iter()
-        .map(|def| {
-            context! {
-                id => def.id.to_string(),
-                name => def.name.as_str(),
-                kind => format_field_kind(def.kind),
-                show_on_card => def.show_on_card,
-            }
-        })
-        .collect();
+    let fields = build_field_definitions_context(&aggregate.field_definitions);
     let (members, groups) = panel.member_and_group_context();
+    let description_html =
+        super::markdown::render(&aggregate.project.description, user.user_id.as_str());
 
     let tmpl = state
         .templates
@@ -583,7 +570,7 @@ fn render_project_page(
         .render(context! {
             project => aggregate.project,
             project_id => aggregate.project.id.to_string(),
-            description_html => super::markdown::render(aggregate.project.description.as_str()),
+            description_html => description_html,
             board_sections => board_sections,
             fields => fields,
             members => members,
@@ -599,6 +586,27 @@ fn render_project_page(
         })
         .map_err(WebError::template)?;
     Ok((status, Html(body)).into_response())
+}
+
+/// This project's own custom field vocabulary (`docs/DOMAIN.md` §3) — the
+/// house-hunting example's price/viewing-date/... definitions, so a project
+/// admin can see what already exists before adding another one. Split out
+/// of `render_project_page` the same way `tasks::page::field_context` is:
+/// one field per definition, with nothing per-task about it.
+fn build_field_definitions_context(
+    field_definitions: &[anamnesis_core::FieldDefinition],
+) -> Vec<minijinja::Value> {
+    field_definitions
+        .iter()
+        .map(|def| {
+            context! {
+                id => def.id.to_string(),
+                name => def.name.as_str(),
+                kind => format_field_kind(def.kind),
+                show_on_card => def.show_on_card,
+            }
+        })
+        .collect()
 }
 
 /// Splits `tasks` into the project page's two lists — "On the board"
