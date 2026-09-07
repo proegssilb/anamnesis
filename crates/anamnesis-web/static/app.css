@@ -846,6 +846,38 @@ input[type="checkbox"] {
   background: var(--bg);
 }
 
+/* --- @-mention picker (issue #44, `static/app.js`'s `initMentionPicker`):
+   a plain `<ul>` immediately after whichever textarea is currently showing
+   suggestions, toggled via the `hidden` attribute rather than `:target`
+   since it opens and closes purely from keystrokes, not navigation.
+   Deliberately laid out in normal document flow (not `position: absolute`)
+   -- a textarea can sit inside any container, and flow avoids depending on
+   which of its ancestors happens to be a positioning context. --- */
+
+.mention-menu {
+  z-index: 10;
+  max-width: 20rem;
+  margin: 0.15rem 0 0;
+  padding: 0.35rem;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 0.25rem 0.75rem color-mix(in srgb, black 20%, transparent);
+}
+
+.mention-menu li {
+  padding: 0.4rem 0.6rem;
+  border-radius: calc(var(--radius) - 0.15rem);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.mention-menu li:hover,
+.mention-menu li.mention-menu-active {
+  background: var(--bg);
+}
+
 .dropdown-close {
   color: var(--muted);
 }

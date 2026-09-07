@@ -232,4 +232,141 @@
       }
     });
   });
+
+  // @-mention picker (issue #44). Progressive enhancement only: the token
+  // format (`@[Display Name](user:USER_ID)`, `crate::handlers::
+  // markdown`'s doc comment) is plain text a description or comment
+  // already accepts with no JS at all -- this just saves typing it by
+  // hand. `data-mentions` on a textarea names the id of the
+  // `<script type="application/json">` block on the same page holding its
+  // candidate list (`crate::handlers::format::mentionable_users_json`);
+  // absent or empty, the textarea is simply left alone.
+  ready(function () {
+    function candidatesFor(textarea) {
+      var dataId = textarea.getAttribute("data-mentions");
+      if (!dataId) {
+        return [];
+      }
+      var script = document.getElementById(dataId);
+      if (!script) {
+        return [];
+      }
+      try {
+        var parsed = JSON.parse(script.textContent);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    // The `@query` run immediately before the caret, if any --
+    // `{start, query}` (`start` is the index of the "@") or `null` when
+    // the caret isn't inside a mentionable run (mid-word, or no "@" found
+    // before the previous whitespace/newline).
+    function activeMentionQuery(text, caret) {
+      var upToCaret = text.slice(0, caret);
+      var at = upToCaret.lastIndexOf("@");
+      if (at === -1) {
+        return null;
+      }
+      var query = upToCaret.slice(at + 1);
+      if (/[\s\]]/.test(query)) {
+        return null;
+      }
+      return { start: at, query: query };
+    }
+
+    function initMentionPicker(textarea) {
+      var candidates = candidatesFor(textarea);
+      if (candidates.length === 0) {
+        return;
+      }
+
+      var menu = document.createElement("ul");
+      menu.className = "mention-menu";
+      menu.hidden = true;
+      textarea.insertAdjacentElement("afterend", menu);
+
+      var active = null; // {start, query} of the run the menu is open for.
+
+      function close() {
+        active = null;
+        menu.hidden = true;
+        menu.textContent = "";
+      }
+
+      function choose(user) {
+        if (!active) {
+          return;
+        }
+        var text = textarea.value;
+        var caret = textarea.selectionStart;
+        var token = "@[" + user.name + "](user:" + user.id + ") ";
+        textarea.value = text.slice(0, active.start) + token + text.slice(caret);
+        var newCaret = active.start + token.length;
+        textarea.setSelectionRange(newCaret, newCaret);
+        close();
+        textarea.focus();
+      }
+
+      function render() {
+        var matches = candidates.filter(function (u) {
+          return u.name.toLowerCase().indexOf(active.query.toLowerCase()) !== -1;
+        });
+        if (matches.length === 0) {
+          close();
+          return;
+        }
+        menu.textContent = "";
+        matches.slice(0, 8).forEach(function (user, index) {
+          var item = document.createElement("li");
+          item.textContent = user.name;
+          item.className = index === 0 ? "mention-menu-active" : "";
+          item.addEventListener("mousedown", function (event) {
+            // mousedown, not click: fires before the textarea's blur.
+            event.preventDefault();
+            choose(user);
+          });
+          menu.appendChild(item);
+        });
+        menu.hidden = false;
+      }
+
+      textarea.addEventListener("input", function () {
+        var found = activeMentionQuery(textarea.value, textarea.selectionStart);
+        if (!found) {
+          close();
+          return;
+        }
+        active = found;
+        render();
+      });
+
+      textarea.addEventListener("keydown", function (event) {
+        if (menu.hidden) {
+          return;
+        }
+        if (event.key === "Escape") {
+          close();
+          return;
+        }
+        if (event.key !== "Enter" && event.key !== "Tab") {
+          return;
+        }
+        var first = menu.querySelector("li");
+        if (!first) {
+          return;
+        }
+        event.preventDefault();
+        var index = Array.prototype.indexOf.call(menu.children, first);
+        choose(candidates.filter(function (u) {
+          return u.name.toLowerCase().indexOf(active.query.toLowerCase()) !== -1;
+        })[index]);
+      });
+
+      textarea.addEventListener("blur", close);
+    }
+
+    document.querySelectorAll("textarea[data-mentions]").forEach(initMentionPicker);
+  });
 })();

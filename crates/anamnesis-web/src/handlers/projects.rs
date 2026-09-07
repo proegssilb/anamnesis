@@ -70,8 +70,25 @@ async fn render_project_page_reloaded_with_hint(
     let tasks = state.tasks.list_by_project(project_id).await?;
     let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
     let panel = group_membership::project_panel(state, role, project_id, can_manage).await?;
+    let mentionable_users = anamnesis_app::list_mentionable_users(
+        state.membership.as_ref(),
+        state.group_membership.as_ref(),
+        state.user_directory.as_ref(),
+        role,
+        project_id,
+        aggregate.project.area_id,
+    )
+    .await?;
     render_project_page(
-        state, user, &aggregate, &tasks, &panel, error, open_hint, status,
+        state,
+        user,
+        &aggregate,
+        &tasks,
+        &panel,
+        mentionable_users,
+        error,
+        open_hint,
+        status,
     )
 }
 
@@ -552,6 +569,7 @@ fn render_project_page(
     aggregate: &anamnesis_app::ProjectAggregate,
     tasks: &[anamnesis_core::Task],
     panel: &AccessPanel,
+    mentionable_users: Vec<(anamnesis_core::UserId, String)>,
     error: Option<&str>,
     open_hint: Option<&str>,
     status: StatusCode,
@@ -561,6 +579,7 @@ fn render_project_page(
     let (members, groups) = panel.member_and_group_context();
     let description_html =
         super::markdown::render(&aggregate.project.description, user.user_id.as_str());
+    let mentionable_users = super::format::mentionable_users_json(mentionable_users);
 
     let tmpl = state
         .templates
@@ -577,6 +596,7 @@ fn render_project_page(
             groups => groups,
             known_groups => panel.known_groups,
             known_users => panel.known_users_context(),
+            mentionable_users => mentionable_users,
             show_groups => panel.show_groups(),
             can_manage => panel.can_manage,
             csrf_token => user.csrf_token,

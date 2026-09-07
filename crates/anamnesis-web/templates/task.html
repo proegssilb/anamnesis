@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ task.title }} — Anamnesis{% endblock %}
 {% block content %}
+  <script type="application/json" id="task-mention-users">{{ mentionable_users }}</script>
   <p class="breadcrumb"><a href="/projects/{{ task.project_id }}">{% if project_title %}{{ project_title }}{% else %}Project{% endif %}</a></p>
 
   <div class="page-header task-header">
@@ -47,7 +48,7 @@
     <form class="panel-form" method="post" action="/tasks/{{ task.id }}/description">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label for="description">Description</label>
-      <textarea id="description" name="description">{{ task.description }}</textarea>
+      <textarea id="description" name="description" data-mentions="task-mention-users">{{ task.description }}</textarea>
       <button type="submit">Save</button>
     </form>
   </details>
@@ -301,7 +302,7 @@
     <form class="inline-form" method="post" action="/tasks/{{ task.id }}/comments">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label for="body">Add a comment</label>
-      <textarea id="body" name="body" required></textarea>
+      <textarea id="body" name="body" required data-mentions="task-mention-users"></textarea>
       <button type="submit">Comment</button>
     </form>
   </section>

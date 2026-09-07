@@ -1,9 +1,10 @@
 //! Small, shared rendering helpers: locating a column's `is_done` flag (for
-//! bounce accounting on drop) and formatting a [`FieldData`] compactly for
-//! the board's `show_on_card` fields and the task detail page.
+//! bounce accounting on drop), formatting a [`FieldData`] compactly for the
+//! board's `show_on_card` fields and the task detail page, and serializing
+//! the `@`-mention picker's candidate list.
 
 use anamnesis_app::{BoardColumn, TimezoneResolver};
-use anamnesis_core::{ColumnId, FieldData, FieldKind};
+use anamnesis_core::{ColumnId, FieldData, FieldKind, UserId};
 
 /// Whether `column_id` is an `is_done` column, per the board's current
 /// column list — `None` if no such column exists (should not happen for a
@@ -114,6 +115,27 @@ pub fn field_input_value(
         }
         FieldData::Line(s) | FieldData::Block(s) => (s.clone(), None),
     }
+}
+
+/// Serializes the `@`-mention picker's candidate list
+/// (`anamnesis_app::list_mentionable_users`) to a JSON array of `{id,
+/// name}` objects, ready to sit inside a `<script type="application/json">`
+/// block that `static/app.js` parses to drive the picker.
+///
+/// `</` is escaped to `<\/` — the standard defense for JSON embedded
+/// directly in HTML, since an unescaped `</script` anywhere in a display
+/// name would otherwise close the block early. `minijinja`'s own
+/// auto-escaping is not this: it HTML-escapes for element/attribute
+/// context, which would mangle JSON syntax (quotes become `&#34;` etc.), so
+/// this returns a pre-escaped [`minijinja::Value`] marked safe, the same
+/// way `crate::handlers::markdown::render` does for its HTML.
+pub fn mentionable_users_json(users: Vec<(UserId, String)>) -> minijinja::Value {
+    let payload: Vec<serde_json::Value> = users
+        .into_iter()
+        .map(|(id, name)| serde_json::json!({ "id": id.to_string(), "name": name }))
+        .collect();
+    let json = serde_json::to_string(&payload).unwrap_or_else(|_| "[]".to_string());
+    minijinja::Value::from_safe_string(json.replace("</", "<\\/"))
 }
 
 fn format_scaled(units: i64, scale: u8) -> String {
