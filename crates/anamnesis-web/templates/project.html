@@ -33,7 +33,7 @@
 
   {% if can_manage %}
     <details class="editable-block editable-description"{% if open_hint == "description" %} open{% endif %}>
-      <summary>{% if project.description %}<p class="card-body">{{ project.description }}</p>{% else %}<p class="hint">No description — click to add one</p>{% endif %}</summary>
+      <summary>{% if project.description %}<div class="card-body">{{ description_html }}</div>{% else %}<p class="hint">No description — click to add one</p>{% endif %}</summary>
       <form class="panel-form" method="post" action="/projects/{{ project.id }}/description">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label for="description">Description</label>
@@ -42,7 +42,7 @@
       </form>
     </details>
   {% elif project.description %}
-    <p class="hint">{{ project.description }}</p>
+    <div class="hint">{{ description_html }}</div>
   {% endif %}
 
   <div class="modal-overlay" id="project-status">

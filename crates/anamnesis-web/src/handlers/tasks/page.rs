@@ -43,11 +43,8 @@ pub(super) async fn render_task_page(
     let relationships = build_relationships_context(state, task_id).await?;
     let parent = build_parent_context(state, task.parent_task_id).await?;
 
-    let columns = state.board.columns_with_items().await?;
-    let column_options = build_column_options(&columns);
-    let (current_column_is_done, current_column_title) =
-        current_column_info(&columns, task.placement);
-    let children_ctx = build_children_context(&children, &columns);
+    let (column_options, current_column_is_done, current_column_title, children_ctx) =
+        build_board_context(state, task, &children).await?;
     let (fields, project_title) = build_project_context(state, task).await?;
 
     let tmpl = state
@@ -57,6 +54,7 @@ pub(super) async fn render_task_page(
     let body = tmpl
         .render(context! {
             task => task,
+            description_html => crate::handlers::markdown::render(task.description.as_str()),
             project_title => project_title,
             is_on_board => task.placement.is_on_board(),
             current_column_is_done => current_column_is_done,
@@ -165,6 +163,39 @@ async fn build_parent_context(
         .unwrap_or_else(|| "(deleted task)".to_string());
     Ok(Some(
         context! { id => parent_id.to_string(), title => title },
+    ))
+}
+
+/// Everything on the page that reads from the board's current column list:
+/// the raise-task form's choices, this task's own placement pill
+/// (`is_done`/title of the column it's in, if any), and each checklist
+/// child's `done` reading. Split out of [`render_task_page`] the same way
+/// [`build_project_context`] is — one repository read
+/// (`columns_with_items`) feeding several display-only derivations that
+/// have nothing to do with each other except sharing that read.
+async fn build_board_context(
+    state: &AppState,
+    task: &anamnesis_core::Task,
+    children: &[anamnesis_core::Task],
+) -> Result<
+    (
+        Vec<minijinja::Value>,
+        Option<bool>,
+        Option<String>,
+        Vec<minijinja::Value>,
+    ),
+    WebError,
+> {
+    let columns = state.board.columns_with_items().await?;
+    let column_options = build_column_options(&columns);
+    let (current_column_is_done, current_column_title) =
+        current_column_info(&columns, task.placement);
+    let children_ctx = build_children_context(children, &columns);
+    Ok((
+        column_options,
+        current_column_is_done,
+        current_column_title,
+        children_ctx,
     ))
 }
 

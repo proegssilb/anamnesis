@@ -43,7 +43,7 @@
   </div>
 
   <details class="editable-block editable-description"{% if open_hint == "description" %} open{% endif %}>
-    <summary>{% if task.description %}<p class="card-body">{{ task.description }}</p>{% else %}<p class="hint">No description — click to add one</p>{% endif %}</summary>
+    <summary>{% if task.description %}<div class="card-body">{{ description_html }}</div>{% else %}<p class="hint">No description — click to add one</p>{% endif %}</summary>
     <form class="panel-form" method="post" action="/tasks/{{ task.id }}/description">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label for="description">Description</label>

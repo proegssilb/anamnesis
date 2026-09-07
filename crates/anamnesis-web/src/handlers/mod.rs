@@ -12,6 +12,7 @@ mod format;
 mod forms;
 mod group_membership;
 mod login;
+mod markdown;
 mod membership;
 mod misc;
 mod projects;
