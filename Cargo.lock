@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "anamnesis-adapters"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "anamnesis-app",
  "anamnesis-core",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "anamnesis-app"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "anamnesis-core",
  "async-trait",
@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "anamnesis-core"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "rstest",
  "serde",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "anamnesis-web"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "ammonia",
  "anamnesis-adapters",
