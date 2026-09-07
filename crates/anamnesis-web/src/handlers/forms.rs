@@ -249,7 +249,7 @@ pub struct AddChecklistItemForm {
 pub struct CreateRelationshipForm {
     pub csrf_token: String,
     pub to_task_id: uuid::Uuid,
-    /// `"blocks"` | `"relates_to"` | `"duplicates"`.
+    /// `"blocks"` | `"blocked_by"` | `"relates_to"` | `"duplicates"`.
     pub kind: String,
 }
 
