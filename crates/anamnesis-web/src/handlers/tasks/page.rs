@@ -48,7 +48,7 @@ pub(super) async fn render_task_page(
     let (current_column_is_done, current_column_title) =
         current_column_info(&columns, task.placement);
     let children_ctx = build_children_context(&children, &columns);
-    let fields = build_fields_context(state, task).await?;
+    let (fields, project_title) = build_project_context(state, task).await?;
 
     let tmpl = state
         .templates
@@ -57,6 +57,7 @@ pub(super) async fn render_task_page(
     let body = tmpl
         .render(context! {
             task => task,
+            project_title => project_title,
             is_on_board => task.placement.is_on_board(),
             current_column_is_done => current_column_is_done,
             current_column_title => current_column_title,
@@ -252,13 +253,8 @@ fn field_context(
 async fn build_fields_context(
     state: &AppState,
     task: &anamnesis_core::Task,
+    field_definitions: &[anamnesis_core::FieldDefinition],
 ) -> Result<Vec<minijinja::Value>, WebError> {
-    let field_definitions = state
-        .projects
-        .load(task.project_id)
-        .await?
-        .map(|a| a.field_definitions)
-        .unwrap_or_default();
     let field_values = state
         .tasks
         .load(task.id)
@@ -269,4 +265,22 @@ async fn build_fields_context(
         .iter()
         .map(|def| field_context(state, def, &field_values))
         .collect())
+}
+
+/// The task's parent project, loaded once and read for both the fields
+/// section (its field definitions) and the breadcrumb (its title) — the one
+/// project-level lookup [`render_task_page`] needs, split out the same way
+/// [`build_relationships_context`] and [`build_parent_context`] are.
+async fn build_project_context(
+    state: &AppState,
+    task: &anamnesis_core::Task,
+) -> Result<(Vec<minijinja::Value>, Option<String>), WebError> {
+    let project = state.projects.load(task.project_id).await?;
+    let field_definitions = project
+        .as_ref()
+        .map(|a| a.field_definitions.as_slice())
+        .unwrap_or_default();
+    let fields = build_fields_context(state, task, field_definitions).await?;
+    let project_title = project.map(|a| a.project.title.as_str().to_string());
+    Ok((fields, project_title))
 }
