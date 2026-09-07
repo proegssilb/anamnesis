@@ -354,12 +354,21 @@ async fn apply_status_transition(
 ///   lanes just reflect the true (unchanged) DB state.
 /// - A plain form post gets a redirect on success, or the whole area page
 ///   reloaded with the error on failure.
+///
+/// `return_to_project`, set only by the project page's own status pill
+/// (`TransitionProjectStatusForm::return_to`), sends a successful plain-form
+/// transition back to the project page instead of the area board — every
+/// other caller (the area kanban lane's select+button form, and any htmx
+/// drag) is unaffected.
+#[allow(clippy::too_many_arguments)]
 async fn respond_to_transition(
     state: &AppState,
     user: &CurrentUser,
     headers: &HeaderMap,
     role: Option<Role>,
     area_id: AreaId,
+    project_id: ProjectId,
+    return_to_project: bool,
     can_manage: bool,
     outcome: TransitionOutcome,
 ) -> Result<Response, WebError> {
@@ -368,13 +377,29 @@ async fn respond_to_transition(
     }
     let message = match outcome {
         TransitionOutcome::Ok => {
-            return Ok(Redirect::to(&format!("/areas/{area_id}")).into_response());
+            let location = if return_to_project {
+                format!("/projects/{project_id}")
+            } else {
+                format!("/areas/{area_id}")
+            };
+            return Ok(Redirect::to(&location).into_response());
         }
         TransitionOutcome::ActiveProjectLimitExceeded => {
             "The active project limit has been reached.".to_string()
         }
         TransitionOutcome::Rule(message) => message,
     };
+    if return_to_project {
+        return super::projects::render_project_page_reloaded(
+            state,
+            user,
+            role,
+            project_id,
+            Some(&message),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        )
+        .await;
+    }
     render_area_page_reloaded(
         state,
         user,
@@ -415,7 +440,18 @@ async fn transition_project_status_impl(
 
     let outcome =
         apply_status_transition(state, role, project_id, new_status, active_project_limit).await?;
-    respond_to_transition(state, user, headers, role, area_id, can_manage, outcome).await
+    respond_to_transition(
+        state,
+        user,
+        headers,
+        role,
+        area_id,
+        project_id,
+        form.return_to == "project",
+        can_manage,
+        outcome,
+    )
+    .await
 }
 
 fn parse_status(raw: &str) -> Result<ProjectStatus, WebError> {

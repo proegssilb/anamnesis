@@ -3,17 +3,67 @@
 {% block content %}
   <p class="breadcrumb"><a href="/areas/{{ project.area_id }}">Area</a></p>
   <div class="page-header">
-    <h1>{{ project.title }}</h1>
+    {% if can_manage %}
+      <details class="editable-block editable-title"{% if open_hint == "title" %} open{% endif %}>
+        <summary><h1>{{ project.title }}</h1></summary>
+        <form class="panel-form" method="post" action="/projects/{{ project.id }}/title">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label for="title">Title</label>
+          <input id="title" name="title" required maxlength="200" value="{{ project.title }}">
+          <button type="submit">Save</button>
+        </form>
+      </details>
+    {% else %}
+      <h1>{{ project.title }}</h1>
+    {% endif %}
     <div class="header-actions">
       <a class="icon-button" href="#new-task" aria-label="New task" title="New task">+</a>
       {% if can_manage %}<a class="icon-button" href="#project-settings" aria-label="Settings" title="Settings">⚙</a>{% endif %}
     </div>
   </div>
-  <p class="hint">
-    Status: <span class="badge">{{ project.status }}</span>
+
+  <div class="hint task-status-row">
+    {% if can_manage %}
+      <a href="#project-status" class="badge placement-badge">Status: {{ project.status }}</a>
+    {% else %}
+      <span class="badge">Status: {{ project.status }}</span>
+    {% endif %}
     {% if project.archived_at %}<span class="badge">archived</span>{% endif %}
-  </p>
-  {% if project.description %}<p class="hint">{{ project.description }}</p>{% endif %}
+  </div>
+
+  {% if can_manage %}
+    <details class="editable-block editable-description"{% if open_hint == "description" %} open{% endif %}>
+      <summary>{% if project.description %}<p class="card-body">{{ project.description }}</p>{% else %}<p class="hint">No description — click to add one</p>{% endif %}</summary>
+      <form class="panel-form" method="post" action="/projects/{{ project.id }}/description">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="description">Description</label>
+        <textarea id="description" name="description">{{ project.description }}</textarea>
+        <button type="submit">Save</button>
+      </form>
+    </details>
+  {% elif project.description %}
+    <p class="hint">{{ project.description }}</p>
+  {% endif %}
+
+  <div class="modal-overlay" id="project-status">
+    <div class="modal" role="dialog" aria-labelledby="project-status-title">
+      <div class="modal-header">
+        <h2 id="project-status-title">Status</h2>
+        <a class="modal-close" href="#" aria-label="Close">&times;</a>
+      </div>
+      <form class="panel-form" method="post" action="/projects/{{ project.id }}/status#project-status">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="return_to" value="project">
+        <label for="status">Status</label>
+        <select id="status" name="status">
+          <option value="pending" {% if project.status == "Pending" %}selected{% endif %}>Pending</option>
+          <option value="active" {% if project.status == "Active" %}selected{% endif %}>Active</option>
+          <option value="complete" {% if project.status == "Complete" %}selected{% endif %}>Complete</option>
+        </select>
+        <button type="submit">Save</button>
+      </form>
+    </div>
+  </div>
 
   {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 

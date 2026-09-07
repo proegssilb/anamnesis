@@ -41,6 +41,30 @@ pub struct TransitionProjectStatusForm {
     /// SQL adapter stores (`anamnesis_adapters::sql::project_status_to_text`),
     /// so a `<select>` option's value round-trips without translation.
     pub status: String,
+    /// `"project"` when submitted from the project page's own status pill,
+    /// so a successful transition redirects back there instead of to the
+    /// area board (`transition_project_status_impl`'s default, used by the
+    /// area kanban lane's select+button "Move" form, which omits this
+    /// field). Anything else — including absence — keeps that default.
+    #[serde(default)]
+    pub return_to: String,
+}
+
+/// Replaces a project's title (`anamnesis_app::edit_project_fields`) — the
+/// project-page analog of [`EditTaskTitleForm`].
+#[derive(Debug, Deserialize)]
+pub struct EditProjectTitleForm {
+    pub csrf_token: String,
+    pub title: String,
+}
+
+/// Replaces a project's description — the project-page analog of
+/// [`EditTaskDescriptionForm`].
+#[derive(Debug, Deserialize)]
+pub struct EditProjectDescriptionForm {
+    pub csrf_token: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 /// Grants a role on an Area (`crate::handlers::membership`). `role` is
