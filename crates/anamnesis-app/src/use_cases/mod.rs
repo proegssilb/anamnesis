@@ -11,6 +11,7 @@ mod comment;
 mod group_membership;
 mod indexing;
 mod membership;
+mod mentions;
 mod project;
 mod relationship;
 mod settings;
@@ -36,6 +37,7 @@ pub use membership::{
     list_project_members, list_system_admins, revoke_area_role, revoke_project_role,
     revoke_system_admin,
 };
+pub use mentions::list_mentionable_users;
 pub use project::{
     add_field_definition, add_relationship_kind, archive_project, create_project, edit_project,
     edit_project_fields, list_all_projects, list_projects_in_area, rename_field_definition,

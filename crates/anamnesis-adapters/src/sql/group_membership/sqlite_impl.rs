@@ -100,6 +100,19 @@ pub(super) async fn list_known_groups(pool: &SqlitePool) -> Result<Vec<String>, 
     Ok(rows.into_iter().map(|(g,)| g).collect())
 }
 
+pub(super) async fn list_users_in_group(
+    pool: &SqlitePool,
+    group: &str,
+) -> Result<Vec<UserId>, RepoError> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT user_id FROM user_groups WHERE group_name = ? ORDER BY user_id")
+            .bind(group)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| RepoError::from_source("failed to list users in group", e))?;
+    Ok(rows.into_iter().map(|(u,)| UserId::new(u)).collect())
+}
+
 pub(super) async fn replace_user_groups(
     pool: &SqlitePool,
     user: &UserId,

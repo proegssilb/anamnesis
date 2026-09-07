@@ -110,6 +110,18 @@ pub trait GroupMembershipQuery: Send + Sync {
     /// typing one blind and silently creating a mapping that can never
     /// match. Never consult it to make an authorization decision.
     async fn list_known_groups(&self) -> Result<Vec<String>, RepoError>;
+
+    /// Every user currently recorded as presenting `group` — the reverse of
+    /// what [`GroupMembershipRepository::replace_user_groups`] writes.
+    ///
+    /// Like [`Self::list_known_groups`], purely a UI affordance (the
+    /// @-mention picker, `crate::use_cases::mentions::
+    /// list_mentionable_users`, needs to turn "this group is mapped onto
+    /// the project" into an actual list of people): a `user_groups` row
+    /// confers nothing on its own, so this is never itself an authorization
+    /// check, exactly as the module doc comment states for the rest of this
+    /// port.
+    async fn list_users_in_group(&self, group: &str) -> Result<Vec<UserId>, RepoError>;
 }
 
 /// The write half of [`GroupMembershipQuery`], split for the same reason
