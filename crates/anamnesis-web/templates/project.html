@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% block title %}{{ project.title }} — Anamnesis{% endblock %}
 {% block content %}
+  {% if can_manage %}
+    <script type="application/json" id="project-mention-users">{{ mentionable_users }}</script>
+  {% endif %}
   <p class="breadcrumb"><a href="/areas/{{ project.area_id }}">Area</a></p>
   <div class="page-header">
     {% if can_manage %}
@@ -37,7 +40,7 @@
       <form class="panel-form" method="post" action="/projects/{{ project.id }}/description">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label for="description">Description</label>
-        <textarea id="description" name="description">{{ project.description }}</textarea>
+        <textarea id="description" name="description" data-mentions="project-mention-users">{{ project.description }}</textarea>
         <button type="submit">Save</button>
       </form>
     </details>

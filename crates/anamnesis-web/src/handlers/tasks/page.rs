@@ -11,7 +11,9 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use minijinja::context;
 
-use anamnesis_app::{BoardColumn, Comment, list_attachments, list_comments, resolve_kind};
+use anamnesis_app::{
+    Attachment, BoardColumn, Comment, list_attachments, list_comments, resolve_kind,
+};
 use anamnesis_core::{Placement, UserId};
 
 use crate::auth::CurrentUser;
@@ -38,14 +40,13 @@ pub(super) async fn render_task_page(
     let children = state.tasks.list_children(task_id).await?;
     let comments = list_comments(state.comments.as_ref(), Some(member_role()), task_id).await?;
     let comments_ctx = build_comments_context(state, &comments, &user.user_id).await?;
-    let attachments =
-        list_attachments(state.attachments.as_ref(), Some(member_role()), task_id).await?;
-    let relationships = build_relationships_context(state, task_id).await?;
-    let parent = build_parent_context(state, task.parent_task_id).await?;
+    let (attachments, relationships, parent) =
+        build_related_context(state, task_id, task.parent_task_id).await?;
 
     let (column_options, current_column_is_done, current_column_title, children_ctx) =
         build_board_context(state, task, &children).await?;
-    let (fields, project_title) = build_project_context(state, task).await?;
+    let (fields, project_title, mentionable_users) =
+        build_project_context(state, user, task).await?;
     let description_html =
         crate::handlers::markdown::render(&task.description, user.user_id.as_str());
 
@@ -58,6 +59,7 @@ pub(super) async fn render_task_page(
             task => task,
             description_html => description_html,
             project_title => project_title,
+            mentionable_users => mentionable_users,
             is_on_board => task.placement.is_on_board(),
             current_column_is_done => current_column_is_done,
             current_column_title => current_column_title,
@@ -167,6 +169,30 @@ async fn build_parent_context(
     Ok(Some(
         context! { id => parent_id.to_string(), title => title },
     ))
+}
+
+/// The three remaining "detail column" reads [`render_task_page`] needs
+/// beyond comments: attachments, relationships, and the checklist parent.
+/// Grouped only because none of them individually earns its own line in
+/// the caller — each is already its own well-named call — not because they
+/// share a data source the way [`build_board_context`]'s do.
+async fn build_related_context(
+    state: &AppState,
+    task_id: anamnesis_core::TaskId,
+    parent_task_id: Option<anamnesis_core::TaskId>,
+) -> Result<
+    (
+        Vec<Attachment>,
+        Vec<minijinja::Value>,
+        Option<minijinja::Value>,
+    ),
+    WebError,
+> {
+    let attachments =
+        list_attachments(state.attachments.as_ref(), Some(member_role()), task_id).await?;
+    let relationships = build_relationships_context(state, task_id).await?;
+    let parent = build_parent_context(state, parent_task_id).await?;
+    Ok((attachments, relationships, parent))
 }
 
 /// Everything on the page that reads from the board's current column list:
@@ -307,14 +333,44 @@ async fn build_fields_context(
 /// [`build_relationships_context`] and [`build_parent_context`] are.
 async fn build_project_context(
     state: &AppState,
+    user: &CurrentUser,
     task: &anamnesis_core::Task,
-) -> Result<(Vec<minijinja::Value>, Option<String>), WebError> {
+) -> Result<(Vec<minijinja::Value>, Option<String>, minijinja::Value), WebError> {
     let project = state.projects.load(task.project_id).await?;
     let field_definitions = project
         .as_ref()
         .map(|a| a.field_definitions.as_slice())
         .unwrap_or_default();
     let fields = build_fields_context(state, task, field_definitions).await?;
+    let area_id = project.as_ref().map(|a| a.project.area_id);
     let project_title = project.map(|a| a.project.title.as_str().to_string());
-    Ok((fields, project_title))
+    let mentionable_users = build_mentionable_users(state, user, task.project_id, area_id).await?;
+    Ok((fields, project_title, mentionable_users))
+}
+
+/// The `@`-mention picker's candidate list for this task's project — empty
+/// (not an error) when the project has since been deleted, matching how
+/// [`build_project_context`] already degrades `project_title` to `None` in
+/// that same case rather than failing the whole page.
+async fn build_mentionable_users(
+    state: &AppState,
+    user: &CurrentUser,
+    project_id: anamnesis_core::ProjectId,
+    area_id: Option<anamnesis_core::AreaId>,
+) -> Result<minijinja::Value, WebError> {
+    let Some(area_id) = area_id else {
+        return Ok(crate::handlers::format::mentionable_users_json(Vec::new()));
+    };
+    let role =
+        crate::handlers::access::project_role(state, &user.user_id, project_id, area_id).await?;
+    let users = anamnesis_app::list_mentionable_users(
+        state.membership.as_ref(),
+        state.group_membership.as_ref(),
+        state.user_directory.as_ref(),
+        role,
+        project_id,
+        area_id,
+    )
+    .await?;
+    Ok(crate::handlers::format::mentionable_users_json(users))
 }
