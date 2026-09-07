@@ -37,7 +37,7 @@ pub(super) async fn render_task_page(
 ) -> Result<Response, WebError> {
     let children = state.tasks.list_children(task_id).await?;
     let comments = list_comments(state.comments.as_ref(), Some(member_role()), task_id).await?;
-    let comments_ctx = build_comments_context(state, &comments).await?;
+    let comments_ctx = build_comments_context(state, &comments, &user.user_id).await?;
     let attachments =
         list_attachments(state.attachments.as_ref(), Some(member_role()), task_id).await?;
     let relationships = build_relationships_context(state, task_id).await?;
@@ -46,6 +46,8 @@ pub(super) async fn render_task_page(
     let (column_options, current_column_is_done, current_column_title, children_ctx) =
         build_board_context(state, task, &children).await?;
     let (fields, project_title) = build_project_context(state, task).await?;
+    let description_html =
+        crate::handlers::markdown::render(&task.description, user.user_id.as_str());
 
     let tmpl = state
         .templates
@@ -54,7 +56,7 @@ pub(super) async fn render_task_page(
     let body = tmpl
         .render(context! {
             task => task,
-            description_html => crate::handlers::markdown::render(task.description.as_str()),
+            description_html => description_html,
             project_title => project_title,
             is_on_board => task.placement.is_on_board(),
             current_column_is_done => current_column_is_done,
@@ -123,6 +125,7 @@ async fn build_relationships_context(
 async fn build_comments_context(
     state: &AppState,
     comments: &[Comment],
+    viewer: &UserId,
 ) -> Result<Vec<minijinja::Value>, WebError> {
     let authors: Vec<UserId> = comments.iter().map(|c| c.author.clone()).collect();
     let names: HashMap<UserId, String> = state.user_directory.display_names(&authors).await?;
@@ -136,7 +139,7 @@ async fn build_comments_context(
             context! {
                 id => c.id.to_string(),
                 author_name => author_name,
-                body => c.body.as_str(),
+                body_html => crate::handlers::markdown::render(c.body.as_str(), viewer.as_str()),
             }
         })
         .collect())

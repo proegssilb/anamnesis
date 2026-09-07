@@ -36,6 +36,7 @@ async fn add_comment_impl(
         return Err(WebError::CsrfMismatch);
     }
     let (_, role) = role_for_task(state, &user.user_id, task_id).await?;
+    let body = crate::handlers::markdown::strip_html(&form.body);
     add_comment(
         state.comments.as_ref(),
         state.id_gen.as_ref(),
@@ -43,7 +44,7 @@ async fn add_comment_impl(
         role,
         task_id,
         user.user_id.clone(),
-        &form.body,
+        &body,
     )
     .await?;
     Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response())
