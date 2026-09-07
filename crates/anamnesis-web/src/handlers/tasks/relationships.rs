@@ -47,14 +47,18 @@ async fn refresh_tangles_if_blocking(state: &AppState, kind_id: anamnesis_core::
 }
 
 /// Maps the form's plain-string `kind` to the built-in relationship kind id
-/// it names — pure input parsing, kept separate from
-/// [`create_relationship_impl`]'s handling of the async `create_relationship`
-/// result.
-fn relationship_kind_id(kind: &str) -> Result<anamnesis_core::KindId, WebError> {
+/// it names, plus whether the edge runs opposite the form's `from`/`to`
+/// fields — true only for `blocked_by`, the reverse reading of `blocks`
+/// (`RelationshipKind::reverse_label`), which has no built-in id of its own
+/// and is stored as a `blocks` edge with the two tasks swapped. Pure input
+/// parsing, kept separate from [`create_relationship_impl`]'s handling of
+/// the async `create_relationship` result.
+fn relationship_kind_id(kind: &str) -> Result<(anamnesis_core::KindId, bool), WebError> {
     match kind {
-        "blocks" => Ok(builtin_blocks().id),
-        "relates_to" => Ok(builtin_relates_to().id),
-        "duplicates" => Ok(builtin_duplicates().id),
+        "blocks" => Ok((builtin_blocks().id, false)),
+        "blocked_by" => Ok((builtin_blocks().id, true)),
+        "relates_to" => Ok((builtin_relates_to().id, false)),
+        "duplicates" => Ok((builtin_duplicates().id, false)),
         other => Err(WebError::BadRequest(format!(
             "{other:?} is not a known relationship kind"
         ))),
@@ -78,19 +82,24 @@ async fn create_relationship_impl(
         .await?
         .ok_or_else(|| WebError::BadRequest("that target task does not exist".to_string()))?;
 
-    let kind_id = relationship_kind_id(&form.kind)?;
+    let (kind_id, reversed) = relationship_kind_id(&form.kind)?;
     let _ = resolve_kind(state.projects.as_ref(), kind_id).await?; // built-ins always resolve; keeps this call site honest about going through the same lookup create_relationship itself uses.
 
+    let (from_id, from_project, to_id, to_project) = if reversed {
+        (to_task_id, to.task.project_id, task_id, from_project_id)
+    } else {
+        (task_id, from_project_id, to_task_id, to.task.project_id)
+    };
     match create_relationship(
         state.relationships.as_ref(),
         state.projects.as_ref(),
         state.id_gen.as_ref(),
         state.clock.as_ref(),
         role,
-        task_id,
-        from_project_id,
-        to_task_id,
-        to.task.project_id,
+        from_id,
+        from_project,
+        to_id,
+        to_project,
         kind_id,
     )
     .await
