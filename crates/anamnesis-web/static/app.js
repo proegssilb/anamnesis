@@ -216,4 +216,20 @@
     document.body.addEventListener("htmx:afterSwap", initAllSortables);
     document.body.addEventListener("htmx:oobAfterSwap", initAllSortables);
   });
+
+  // Esc closes an open modal (issue #47). Every modal here is a pure-CSS
+  // `:target` overlay (`static/app.css`'s "settings modal" comment) that a
+  // `<a class="modal-close" href="#">` already closes by navigating to the
+  // empty fragment -- this listener does exactly that same navigation, just
+  // from the keyboard instead of a click.
+  ready(function () {
+    document.addEventListener("keydown", function (event) {
+      if (event.key !== "Escape") {
+        return;
+      }
+      if (document.querySelector(".modal-overlay:target")) {
+        window.location.hash = "";
+      }
+    });
+  });
 })();
