@@ -136,6 +136,9 @@ mod tests {
         async fn list_known_groups(&self) -> Result<Vec<String>, RepoError> {
             Ok(vec![])
         }
+        async fn list_users_in_group(&self, _: &str) -> Result<Vec<UserId>, RepoError> {
+            Ok(vec![])
+        }
     }
 
     fn user() -> UserId {

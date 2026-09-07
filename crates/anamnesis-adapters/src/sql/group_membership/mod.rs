@@ -120,6 +120,13 @@ impl GroupMembershipQuery for SqlStore {
             Backend::Postgres(pool) => postgres_impl::list_known_groups(pool).await,
         }
     }
+
+    async fn list_users_in_group(&self, group: &str) -> Result<Vec<UserId>, RepoError> {
+        match &self.backend {
+            Backend::Sqlite(pool) => sqlite_impl::list_users_in_group(pool, group).await,
+            Backend::Postgres(pool) => postgres_impl::list_users_in_group(pool, group).await,
+        }
+    }
 }
 
 #[async_trait]

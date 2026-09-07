@@ -1398,8 +1398,43 @@ async fn group_membership_contract(store: &SqlStore) {
         .unwrap();
 
     user_groups_replace_contract(store, &outsider, &readers, &suffix).await;
+    list_users_in_group_contract(store, &insider, &outsider, &admins, &readers).await;
     admin_group_contract(store, &insider, &outsider, &admins).await;
     scoped_group_role_contract(store, &insider, &admins, &readers, a.id, p.id).await;
+}
+
+/// `list_users_in_group` is the reverse of `replace_user_groups`: it names
+/// every user currently presenting a group, not the groups a user presents
+/// -- the lookup the @-mention picker needs to turn "this group is mapped
+/// onto the project" into actual people
+/// (`anamnesis_app::use_cases::mentions::list_mentionable_users`).
+async fn list_users_in_group_contract(
+    store: &SqlStore,
+    insider: &UserId,
+    outsider: &UserId,
+    admins: &str,
+    readers: &str,
+) {
+    let mut in_readers = store.list_users_in_group(readers).await.unwrap();
+    in_readers.sort();
+    let mut expected = vec![insider.clone(), outsider.clone()];
+    expected.sort();
+    assert_eq!(
+        in_readers, expected,
+        "both the insider and the outsider present {readers}"
+    );
+
+    let in_admins = store.list_users_in_group(admins).await.unwrap();
+    assert_eq!(
+        in_admins,
+        vec![insider.clone()],
+        "only the insider presents {admins}"
+    );
+
+    assert_eq!(
+        store.list_users_in_group("no-such-group").await.unwrap(),
+        Vec::<UserId>::new()
+    );
 }
 
 /// `replace_user_groups` replaces the user's rows wholesale rather than
