@@ -4,9 +4,14 @@
 //! grouping here is organisational only.
 
 mod access_control;
+mod archive_sweep;
+mod collaboration;
 mod placement;
+mod project_lifecycle;
+mod relationships;
 mod suggestions;
 mod tangles;
+mod task_lifecycle;
 mod world;
 
 pub use world::AppWorld;

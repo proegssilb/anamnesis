@@ -3,11 +3,11 @@
 
 use std::collections::HashMap;
 
-use anamnesis_app::{AppError, Clock, IdGen};
+use anamnesis_app::{AppError, AttachmentId, Clock, CommentId, IdGen};
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
-    AreaId, ColumnId, DetectedTangle, ProjectId, ProjectStatus, Reconciliation, Relationship,
-    RelationshipId, Tangle, TangleId, Task, TaskId, TaskSummary, UserId,
+    AreaId, ColumnId, DetectedTangle, KindId, ProjectId, ProjectStatus, Reconciliation,
+    Relationship, RelationshipId, Tangle, TangleId, Task, TaskId, TaskSummary, Timestamp, UserId,
 };
 
 use crate::domain_fakes::Fakes;
@@ -65,6 +65,34 @@ pub struct AppWorld {
     /// error otherwise. Distinct from `last_error` (the legacy Board
     /// scenarios' field) so the two suites cannot interfere.
     pub last_domain_error: Option<AppError>,
+
+    // --- Extra Phase D scenario state: task_lifecycle.feature /
+    // project_lifecycle.feature / collaboration.feature /
+    // relationships.feature / archive_sweep.feature. ---
+    /// A standalone Area created by name, independent of any project --
+    /// unlike [`Self::domain_project`]/[`Self::domain_area_of`], which only
+    /// ever mint an Area as a project's implicit container.
+    domain_areas: HashMap<String, AreaId>,
+    /// A task's `last_touched_at` as it stood the moment a scenario declared
+    /// it "open for editing" -- what a stale in-hand copy would still be
+    /// carrying once someone else edits the same task first.
+    domain_task_snapshots: HashMap<String, Timestamp>,
+    /// The most recent comment id a named user authored, keyed by author
+    /// name -- these scenarios never have one author leave more than one
+    /// comment live at a time, so "author name" is a stable enough key.
+    domain_comments: HashMap<String, CommentId>,
+    /// An attachment id, keyed by the scenario's own label for it (a
+    /// filename or a URL).
+    domain_attachments: HashMap<String, AttachmentId>,
+    /// A file attachment's blob-store key, keyed by filename -- captured at
+    /// creation so a `Then` step can still check the blob store after the
+    /// attachment row itself has been deleted.
+    domain_blob_keys: HashMap<String, String>,
+    /// A relationship id, keyed by `(from task name, to task name)`.
+    domain_relationships: HashMap<(String, String), RelationshipId>,
+    /// A project-local custom `RelationshipKind`'s id, keyed by its forward
+    /// label.
+    domain_kinds: HashMap<String, KindId>,
 }
 
 impl AppWorld {
@@ -287,5 +315,120 @@ impl AppWorld {
     /// never assigned one (an unmentioned user holds no role anywhere).
     pub fn domain_role(&self, user_name: &str) -> Option<Role> {
         self.domain_roles.get(user_name).copied().flatten()
+    }
+
+    /// Registers a `TaskId` a use case (not a `Given` step) just minted under
+    /// a scenario task name -- for scenarios where creating the task through
+    /// `create_task` is itself the behaviour under test, unlike
+    /// [`Self::domain_task`], which creates one directly against the store.
+    pub fn register_domain_task(&mut self, task_name: &str, id: TaskId) {
+        self.domain_tasks.insert(task_name.to_string(), id);
+    }
+
+    /// Registers a `ProjectId` a use case just minted under a scenario
+    /// project name -- the project-lifecycle counterpart of
+    /// [`Self::register_domain_task`].
+    pub fn register_domain_project(&mut self, project_name: &str, id: ProjectId) {
+        self.domain_projects.insert(project_name.to_string(), id);
+    }
+
+    /// Ensures a standalone Area named `area_name` exists, returning its id
+    /// -- unlike [`Self::domain_area_of`], this Area owns no project of its
+    /// own until a scenario explicitly creates one in it.
+    pub fn domain_area(&mut self, area_name: &str) -> AreaId {
+        if let Some(id) = self.domain_areas.get(area_name) {
+            return *id;
+        }
+        let area_id = AreaId::new(self.ids.next());
+        let area =
+            anamnesis_core::create_area(area_id, area_name, "", 0, self.clock.now()).unwrap();
+        self.domain.seed_area(area);
+        self.domain_areas.insert(area_name.to_string(), area_id);
+        area_id
+    }
+
+    /// Snapshots `task_name`'s current `last_touched_at` -- what a scenario
+    /// means by "has this task open for editing": a stale in-hand copy that
+    /// does not see whatever anyone else writes afterward.
+    pub fn snapshot_domain_task(&mut self, task_name: &str) {
+        let snapshot = self.domain_task_state(task_name).last_touched_at;
+        self.domain_task_snapshots
+            .insert(task_name.to_string(), snapshot);
+    }
+
+    /// The `last_touched_at` captured by [`Self::snapshot_domain_task`].
+    pub fn domain_task_snapshot(&self, task_name: &str) -> Timestamp {
+        *self
+            .domain_task_snapshots
+            .get(task_name)
+            .unwrap_or_else(|| panic!("no snapshot was ever taken of task {task_name:?}"))
+    }
+
+    /// Records `author_name`'s most recent comment id.
+    pub fn set_domain_comment(&mut self, author_name: &str, id: CommentId) {
+        self.domain_comments.insert(author_name.to_string(), id);
+    }
+
+    /// The comment id most recently recorded for `author_name`.
+    pub fn domain_comment_id(&self, author_name: &str) -> CommentId {
+        *self
+            .domain_comments
+            .get(author_name)
+            .unwrap_or_else(|| panic!("{author_name:?} never authored a comment this scenario"))
+    }
+
+    /// Records an attachment id under `label` (its filename or URL).
+    pub fn set_domain_attachment(&mut self, label: &str, id: AttachmentId) {
+        self.domain_attachments.insert(label.to_string(), id);
+    }
+
+    /// The attachment id recorded under `label`.
+    pub fn domain_attachment_id(&self, label: &str) -> AttachmentId {
+        *self
+            .domain_attachments
+            .get(label)
+            .unwrap_or_else(|| panic!("no attachment was ever recorded as {label:?}"))
+    }
+
+    /// Records a file attachment's blob-store key under `filename`.
+    pub fn set_domain_blob_key(&mut self, filename: &str, blob_key: String) {
+        self.domain_blob_keys.insert(filename.to_string(), blob_key);
+    }
+
+    /// The blob-store key recorded under `filename`.
+    pub fn domain_blob_key(&self, filename: &str) -> String {
+        self.domain_blob_keys
+            .get(filename)
+            .unwrap_or_else(|| panic!("no blob key was ever recorded for {filename:?}"))
+            .clone()
+    }
+
+    /// Records the id of a relationship from `from_task_name` to
+    /// `to_task_name`.
+    pub fn set_domain_relationship(&mut self, from: &str, to: &str, id: RelationshipId) {
+        self.domain_relationships
+            .insert((from.to_string(), to.to_string()), id);
+    }
+
+    /// The relationship id recorded for `(from_task_name, to_task_name)`.
+    pub fn domain_relationship_id(&self, from: &str, to: &str) -> RelationshipId {
+        *self
+            .domain_relationships
+            .get(&(from.to_string(), to.to_string()))
+            .unwrap_or_else(|| panic!("no relationship was ever recorded from {from:?} to {to:?}"))
+    }
+
+    /// Records a project-local custom `RelationshipKind`'s id under its
+    /// forward label.
+    pub fn set_domain_kind(&mut self, label: &str, id: KindId) {
+        self.domain_kinds.insert(label.to_string(), id);
+    }
+
+    /// The `KindId` recorded under `label`.
+    pub fn domain_kind_id(&self, label: &str) -> KindId {
+        *self
+            .domain_kinds
+            .get(label)
+            .unwrap_or_else(|| panic!("no relationship kind was ever recorded as {label:?}"))
     }
 }
