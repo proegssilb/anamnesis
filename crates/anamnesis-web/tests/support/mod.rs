@@ -139,20 +139,24 @@ impl TestApp {
     }
 
     /// Runs one tangle-detection pass — detection plus the resolution of
-    /// frozen tangles — exactly as `anamnesis_web::tangles` does once it
-    /// holds the job lease.
+    /// frozen tangles — synchronously, via `anamnesis_web::tangles::
+    /// refresh_tangles_leased` rather than `tangles::refresh_after_graph_change`'s
+    /// spawned, fire-and-forget path.
     ///
-    /// Rarely needed. A board GET used to run detection as a side effect and
-    /// no longer does, but the replacement is event-driven: editing a
-    /// `blocks` edge through the real relationship routes runs a pass by
-    /// itself, so a test that sets its graph up that way needs nothing here.
-    /// This is for the cases that deliberately bypass those routes — writing
-    /// edges straight through the store to check that a read path really does
-    /// stay read-only. It drives the real pass without a background task ever
-    /// being spawned, the structural property that keeps them out of this
-    /// harness entirely.
+    /// Used two ways: for the cases that deliberately bypass the relationship
+    /// routes entirely — writing edges straight through the store to check
+    /// that a read path really does stay read-only — where nothing else
+    /// would ever trigger a pass at all; and as the deterministic settle
+    /// point shared helpers like [`knot_together`] use to restore an
+    /// "already detected" guarantee for their callers, now that the route
+    /// itself only schedules a pass rather than completing one before it
+    /// responds. Taking the lease itself (`refresh_tangles_leased`, not the
+    /// bare `refresh_tangles`) matters for the second use: a background pass
+    /// from an earlier request may still be in flight, and calling the
+    /// unleased pass directly would race it and risk inserting a duplicate
+    /// tangle for the same knot.
     pub async fn refresh_tangles(&self) {
-        anamnesis_web::tangles::refresh_tangles(&self.state)
+        anamnesis_web::tangles::refresh_tangles_leased(&self.state)
             .await
             .expect("a tangle detection pass succeeds");
     }
@@ -528,7 +532,11 @@ pub async fn setup_task_as_admin() -> (TestApp, String, String) {
 ///
 /// Going through the route rather than the store matters beyond realism: a
 /// `blocks` edit is what drives tangle detection (`anamnesis_web::tangles`),
-/// so this is also how a test gets detection to have run.
+/// so this is also how a test gets a pass *scheduled*. It does not wait for
+/// that pass to finish — `refresh_after_graph_change` spawns it and this
+/// helper returns as soon as the HTTP response does — so a caller that needs
+/// detection to have actually run should either await [`knot_together`]
+/// (which forces a settle) or poll for the eventual result with [`wait_for`].
 pub async fn create_blocking_edge(
     app: &TestApp,
     from_task_path: &str,
@@ -557,9 +565,14 @@ pub async fn create_blocking_edge(
 /// knotted pair to place and/or untangle (`tangle_board.rs`,
 /// `relationship_removal.rs`), which used to build this setup verbatim.
 ///
-/// Detection has therefore already run by the time this returns -- the
-/// second edge closes the cycle, and the route that creates it re-derives
-/// the tangle set before responding.
+/// Detection is guaranteed to have run by the time this returns, but not
+/// because the route itself finishes it synchronously anymore --
+/// `anamnesis_web::tangles::refresh_after_graph_change` now spawns the pass
+/// and returns immediately (see its doc comment). This helper is setup
+/// scaffolding, not a test of the route's own timing, so it restores the old
+/// "detection has already run" contract itself with an explicit
+/// `refresh_tangles` call, letting every caller that only cares about later
+/// state keep assuming synchronous detection without change.
 pub async fn knot_together(
     app: &TestApp,
     task_a_path: &str,
@@ -569,6 +582,7 @@ pub async fn knot_together(
 ) {
     create_blocking_edge(app, task_a_path, task_b_path, csrf, cookie).await;
     create_blocking_edge(app, task_b_path, task_a_path, csrf, cookie).await;
+    app.refresh_tangles().await;
 }
 
 pub fn location_of(response: &Response<Body>) -> &str {
@@ -583,6 +597,33 @@ pub fn location_of(response: &Response<Body>) -> &str {
 pub async fn body_text(response: Response<Body>) -> String {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+/// Polls `check` every 10ms until it returns `Some`, or `timeout` elapses
+/// (returning `None`).
+///
+/// For asserting on the eventual effect of a fire-and-forget background task
+/// (`anamnesis_web::tangles::refresh_after_graph_change` spawns detection
+/// rather than completing it before its caller's HTTP response) without
+/// depending on exactly when the runtime happens to schedule it. Not a
+/// substitute for [`TestApp::refresh_tangles`] or [`knot_together`] as a
+/// setup helper -- this is for tests that specifically want to observe the
+/// spawned path itself rather than force a deterministic pass.
+pub async fn wait_for<T, F, Fut>(timeout: std::time::Duration, mut check: F) -> Option<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Some(v) = check().await {
+            return Some(v);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
 
 #[allow(dead_code)]

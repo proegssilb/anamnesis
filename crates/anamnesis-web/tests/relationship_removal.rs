@@ -264,6 +264,12 @@ async fn remove_blocking_edge(
         )
         .await;
     assert_eq!(remove.status(), StatusCode::SEE_OTHER);
+
+    // The delete route only schedules detection now
+    // (`anamnesis_web::tangles::refresh_after_graph_change` spawns it rather
+    // than completing it before responding) -- force a settle so callers
+    // asserting on tangle state right after this returns keep working.
+    app.refresh_tangles().await;
 }
 
 /// Asserts the now-acyclic frozen tangle resolved and landed in the Done

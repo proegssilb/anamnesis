@@ -32,17 +32,18 @@ pub async fn create_relationship_handler(
     }
 }
 
-/// Re-derives the tangle set when the edge just created or deleted was a
-/// `blocks` edge, and does nothing otherwise.
+/// Schedules a re-derivation of the tangle set when the edge just created or
+/// deleted was a `blocks` edge, and does nothing otherwise.
 ///
 /// `blocks` is the only kind tangle detection reads
 /// (`RelationshipRepository::list_blocking`), so a `relates_to` or
-/// `duplicates` edit cannot change the answer and must not pay for a pass —
-/// or, more to the point, must not queue behind one. See `crate::tangles`'
-/// module doc comment for why the mutating instance runs detection at all.
-async fn refresh_tangles_if_blocking(state: &AppState, kind_id: anamnesis_core::KindId) {
+/// `duplicates` edit cannot change the answer and must not pay for a pass.
+/// See `crate::tangles`' module doc comment for why the mutating instance
+/// spawns detection rather than running it inline: this call schedules the
+/// pass and returns immediately, it does not wait for it to finish.
+fn refresh_tangles_if_blocking(state: &AppState, kind_id: anamnesis_core::KindId) {
     if kind_id == builtin_blocks().id {
-        crate::tangles::refresh_after_graph_change(state).await;
+        crate::tangles::refresh_after_graph_change(state);
     }
 }
 
@@ -105,7 +106,7 @@ async fn create_relationship_impl(
     .await
     {
         Ok(_) => {
-            refresh_tangles_if_blocking(state, kind_id).await;
+            refresh_tangles_if_blocking(state, kind_id);
             Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response())
         }
         Err(AppError::Rule(e)) => rerender_with_rule_error(state, user, task_id, role, &e).await,
@@ -195,7 +196,7 @@ async fn delete_relationship_impl(
     }
 
     delete_relationship(state.relationships.as_ref(), role, relationship_id).await?;
-    refresh_tangles_if_blocking(state, relationship.kind_id).await;
+    refresh_tangles_if_blocking(state, relationship.kind_id);
     Ok(Redirect::to(&format!("/tasks/{task_id}")).into_response())
 }
 
