@@ -183,11 +183,20 @@
         <input id="url" name="url" required type="url" placeholder="https://...">
         <button type="submit">Attach</button>
       </form>
-      <form class="panel-form" method="post" action="/tasks/{{ task.id }}/attachments/file#task-add-attachment" enctype="multipart/form-data">
+      <form
+        class="panel-form"
+        method="post"
+        action="/tasks/{{ task.id }}/attachments/file#task-add-attachment"
+        enctype="multipart/form-data"
+        data-chunked-upload
+        data-task-id="{{ task.id }}"
+        data-chunk-size="{{ max_body_bytes }}"
+      >
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label for="file">Attach a file</label>
         <input id="file" name="file" type="file" required>
         <button type="submit">Upload</button>
+        <progress class="chunked-upload-progress" hidden max="100" value="0"></progress>
       </form>
     </div>
   </div>

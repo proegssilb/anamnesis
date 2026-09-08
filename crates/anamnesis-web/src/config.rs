@@ -103,6 +103,16 @@ pub struct Config {
     /// axum's own 2 MiB, which is far too small for the file attachments
     /// `docs/DOMAIN.md` §3 describes.
     pub max_body_bytes: usize,
+    /// The largest a *finished* attachment may be, in bytes — the chunked
+    /// upload flow's own ceiling (`crate::handlers::tasks::chunked_attachments`),
+    /// enforced as parts accumulate rather than by the router's body-size
+    /// layer. Distinct from [`Self::max_body_bytes`] on purpose: that caps
+    /// one HTTP request (a plain form, a single-shot small-file upload, or
+    /// one chunk of a larger file), while this caps the whole file a
+    /// chunked upload assembles across many such requests — a deployment
+    /// wanting genuinely large attachments raises this, not
+    /// `max_body_bytes`, which stays a sane per-request ceiling regardless.
+    pub max_attachment_bytes: u64,
 }
 
 /// What an `s3://` blob root needs to actually reach its bucket.
@@ -183,6 +193,7 @@ impl std::fmt::Debug for Config {
             .field("s3", &self.s3)
             .field("tls_ca_bundle", &self.tls_ca_bundle)
             .field("max_body_bytes", &self.max_body_bytes)
+            .field("max_attachment_bytes", &self.max_attachment_bytes)
             .finish()
     }
 }
@@ -200,6 +211,13 @@ const DEFAULT_BLOB_ROOT: &str = "./data/blobs";
 /// whole in a `Vec<u8>`, so peak memory per upload is bounded by a small,
 /// roughly constant amount regardless of this figure.
 const DEFAULT_MAX_BODY_BYTES: usize = 40 * 1024 * 1024;
+/// 100 MiB. The default ceiling on a *finished* attachment
+/// (`Config::max_attachment_bytes`) — independent of [`DEFAULT_MAX_BODY_BYTES`],
+/// which bounds one request/chunk, not the whole file a chunked upload
+/// assembles from several. Chosen to match issue #21's own framing ("if
+/// someone is crazy enough to allow 100MiB attachments") as the shipped
+/// default for the knob that actually governs that.
+const DEFAULT_MAX_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
 /// The floor `axum_extra`'s `Key::from` accepts without panicking. Enforced
 /// on `ANAMNESIS_SESSION_SECRET` so a short secret is a named configuration
 /// error at startup rather than a panic deep in cookie signing.
@@ -243,6 +261,7 @@ impl Config {
         let s3 = resolve_s3(&get, &blob_root)?;
         let tls_ca_bundle = get("ANAMNESIS_TLS_CA_BUNDLE").filter(|v| !v.is_empty());
         let max_body_bytes = resolve_max_body_bytes(&get)?;
+        let max_attachment_bytes = resolve_max_attachment_bytes(&get)?;
 
         Ok(Config {
             database_url: required.database_url,
@@ -264,6 +283,7 @@ impl Config {
             s3,
             tls_ca_bundle,
             max_body_bytes,
+            max_attachment_bytes,
         })
     }
 
@@ -365,6 +385,24 @@ fn resolve_max_body_bytes(get: &impl Fn(&str) -> Option<String>) -> Result<usize
         reason,
     };
     match raw.trim().parse::<usize>() {
+        Ok(0) => Err(invalid("must be greater than zero".to_string())),
+        Ok(bytes) => Ok(bytes),
+        Err(e) => Err(invalid(format!("expected a byte count: {e}"))),
+    }
+}
+
+/// `ANAMNESIS_MAX_ATTACHMENT_BYTES`, defaulting to
+/// [`DEFAULT_MAX_ATTACHMENT_BYTES`] — the same parse/validate shape as
+/// [`resolve_max_body_bytes`], for the same reasons.
+fn resolve_max_attachment_bytes(get: &impl Fn(&str) -> Option<String>) -> Result<u64, ConfigError> {
+    let Some(raw) = get("ANAMNESIS_MAX_ATTACHMENT_BYTES").filter(|v| !v.is_empty()) else {
+        return Ok(DEFAULT_MAX_ATTACHMENT_BYTES);
+    };
+    let invalid = |reason: String| ConfigError::Invalid {
+        name: "ANAMNESIS_MAX_ATTACHMENT_BYTES",
+        reason,
+    };
+    match raw.trim().parse::<u64>() {
         Ok(0) => Err(invalid("must be greater than zero".to_string())),
         Ok(bytes) => Ok(bytes),
         Err(e) => Err(invalid(format!("expected a byte count: {e}"))),
@@ -795,6 +833,48 @@ mod tests {
             err,
             ConfigError::Invalid {
                 name: "ANAMNESIS_MAX_BODY_BYTES",
+                reason: "must be greater than zero".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn max_attachment_bytes_defaults_to_100_mib() {
+        let cfg = Config::from_source(env(&full_valid_env())).unwrap();
+        assert_eq!(cfg.max_attachment_bytes, 100 * 1024 * 1024);
+    }
+
+    #[test]
+    fn max_attachment_bytes_is_overridable() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_MAX_ATTACHMENT_BYTES", "1048576"));
+        let cfg = Config::from_source(env(&pairs)).unwrap();
+        assert_eq!(cfg.max_attachment_bytes, 1024 * 1024);
+    }
+
+    #[test]
+    fn non_numeric_max_attachment_bytes_is_rejected_by_name() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_MAX_ATTACHMENT_BYTES", "100MB"));
+        let err = Config::from_source(env(&pairs)).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "ANAMNESIS_MAX_ATTACHMENT_BYTES",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn zero_max_attachment_bytes_is_rejected_by_name() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_MAX_ATTACHMENT_BYTES", "0"));
+        let err = Config::from_source(env(&pairs)).unwrap_err();
+        assert_eq!(
+            err,
+            ConfigError::Invalid {
+                name: "ANAMNESIS_MAX_ATTACHMENT_BYTES",
                 reason: "must be greater than zero".to_string(),
             }
         );

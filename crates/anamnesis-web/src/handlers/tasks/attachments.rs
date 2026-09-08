@@ -90,7 +90,7 @@ pub async fn add_file_attachment_handler(
 /// `filename`), so rejecting the shape outright is the honest behaviour
 /// rather than silently accepting attacker-controlled path syntax into a
 /// display field.
-fn filename_is_safe(name: &str) -> bool {
+pub(super) fn filename_is_safe(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('.')
         && !name.contains('/')

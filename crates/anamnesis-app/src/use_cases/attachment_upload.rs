@@ -138,6 +138,29 @@ pub async fn abort_file_upload(
     Ok(())
 }
 
+/// Discards every upload that has sat open (never completed or aborted)
+/// for longer than `ttl` — a browser tab closed mid-upload, or a lost
+/// connection, otherwise leaves both a staging-side upload and an
+/// `attachment_uploads` row behind forever. Called on a fixed interval by
+/// `anamnesis-web`'s own GC ticker, not on `sweep`'s calendar-recurrence
+/// schedule — there is no user-facing "when" to configure here, only
+/// "eventually." Returns how many uploads were removed.
+pub async fn expire_stale_uploads(
+    uploads: &dyn AttachmentUploadRepository,
+    chunked: &dyn ChunkedUpload,
+    clock: &dyn Clock,
+    ttl: std::time::Duration,
+) -> Result<usize, AppError> {
+    let before_seconds = clock.now().unix_seconds() - ttl.as_secs() as i64;
+    let before = anamnesis_core::Timestamp::from_unix_seconds(before_seconds)
+        .unwrap_or_else(|_| clock.now());
+    let stale = uploads.list_stale(before).await?;
+    for upload in &stale {
+        abort_upload_storage(uploads, chunked, upload).await;
+    }
+    Ok(stale.len())
+}
+
 /// Shared cleanup for [`upload_file_part`] (over the size cap) and
 /// [`abort_file_upload`]: tell the blob store to discard whatever it has,
 /// then drop the tracking row regardless of whether that succeeded — a

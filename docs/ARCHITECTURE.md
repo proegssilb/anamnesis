@@ -186,6 +186,7 @@ side:
 #[async_trait] pub trait TangleRepository: Send + Sync { /* list_active, load, insert, update */ }
 #[async_trait] pub trait CommentRepository: Send + Sync { /* list_for_task, load, insert, update, delete */ }
 #[async_trait] pub trait AttachmentRepository: Send + Sync { /* list_for_task, load, insert, delete */ }
+#[async_trait] pub trait AttachmentUploadRepository: Send + Sync { /* create, load, record_part, list_parts, delete, list_stale — chunked upload sessions (issue #21) */ }
 #[async_trait] pub trait SettingsRepository: Send + Sync { /* load, update, record_sweep — the singleton Settings row */ }
 ```
 
@@ -202,7 +203,8 @@ Infrastructure (`crate::ports::infra`, `crate::ports::common`,
 ```rust
 pub trait Clock: Send + Sync { fn now(&self) -> Timestamp; }
 pub trait IdGen: Send + Sync { fn next(&self) -> uuid::Uuid; }
-#[async_trait] pub trait BlobStore: Send + Sync { /* put, get, delete — attachment file bytes */ }
+#[async_trait] pub trait BlobStore: Send + Sync { /* put, get, get_range, delete — streamed attachment file bytes */ }
+#[async_trait] pub trait ChunkedUpload: Send + Sync { /* begin, put_part, complete, abort — multi-request attachment uploads (issue #21) */ }
 #[async_trait] pub trait SearchIndex: Send + Sync { /* index_area/project/task, remove_area/project/task */ }
 pub trait TimezoneResolver: Send + Sync { /* local_date, local_time, to_utc — not async, a real tzdb lookup is in-memory */ }
 #[async_trait] pub trait MembershipQuery: Send + Sync { /* is_system_admin, area_role, project_role, effective_area_role, effective_role, list_system_admins, list_area_members, list_project_members */ }

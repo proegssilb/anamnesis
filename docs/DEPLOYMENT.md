@@ -63,7 +63,8 @@ degraded run — including inside a container.
 | `ANAMNESIS_S3_SECRET_ACCESS_KEY` | unset | **Required** when `ANAMNESIS_BLOB_ROOT` is an `s3://` URL |
 | `ANAMNESIS_S3_ENDPOINT` | AWS's own | e.g. `https://garage.example.com:3900` — always set it for Garage or MinIO |
 | `ANAMNESIS_S3_REGION` | `us-east-1` | Must match what the server was configured with; it is signed over |
-| `ANAMNESIS_MAX_BODY_BYTES` | `41943040` (40 MiB) | Whole-request limit — see §5 |
+| `ANAMNESIS_MAX_BODY_BYTES` | `41943040` (40 MiB) | Per-request limit — see §5 |
+| `ANAMNESIS_MAX_ATTACHMENT_BYTES` | `104857600` (100 MiB) | Per-attachment limit — see §5 |
 | `ANAMNESIS_TLS_CA_BUNDLE` | unset | PEM bundle of extra roots for the IdP — see §6 |
 | `ANAMNESIS_OIDC_SCOPES` | `openid profile email` | |
 | `ANAMNESIS_OIDC_GROUPS_CLAIM` | unset | Turns on roles from provider groups — see below |
@@ -232,22 +233,45 @@ is load-bearing.
 
 ## 5. Upload limits
 
-`ANAMNESIS_MAX_BODY_BYTES` — 40 MiB (`41943040`) by default — is the **only**
-ceiling on an upload. There is no separate per-attachment cap, so this one
-number is what limits attachment size, and raising it raises that. Over-limit
-uploads are answered with `413 Payload Too Large`.
+Two separate knobs, for two separate things:
 
-It is a plain byte count (`41943040`, not `40MB`).
+- **`ANAMNESIS_MAX_BODY_BYTES`** — 40 MiB (`41943040`) by default — caps any
+  single HTTP request body: an ordinary form post, a single-request file
+  attachment, and each individual part of a chunked (multi-request) upload.
+  This is the number the reverse proxy's own body-size limit must match
+  (§4) — raise it and the proxy's limit together.
+- **`ANAMNESIS_MAX_ATTACHMENT_BYTES`** — 100 MiB (`104857600`) by default —
+  caps the total size of one assembled attachment. A file this size or
+  smaller but larger than `ANAMNESIS_MAX_BODY_BYTES` still uploads fine: the
+  browser's own JS (`/static/chunked-upload.js`) automatically splits it
+  into several part requests, each under `ANAMNESIS_MAX_BODY_BYTES`, and the
+  server enforces `ANAMNESIS_MAX_ATTACHMENT_BYTES` against the running total
+  as parts arrive — so raising this ceiling alone, without touching the
+  per-request cap, is enough to allow a larger file.
+
+Both are plain byte counts (`41943040`, not `40MB`). Over-limit requests
+and over-cap attachments are both answered with `413 Payload Too Large`.
+
 Uploads and downloads are streamed straight between the socket and the blob
 store, never held whole in memory, so peak memory per transfer is bounded by
-a small, roughly constant amount — not by this limit — and raising it does
-not raise peak memory in proportion the way it used to.
+a small, roughly constant amount — not by either limit — and raising either
+does not raise peak memory in proportion the way it used to.
+
+A begun-but-never-finished chunked upload (a browser tab closed mid-upload,
+a network failure) is swept up automatically: an hourly job aborts and
+deletes any upload session more than 24 hours old, freeing its storage-side
+state (a staging directory on the filesystem backend, an in-progress
+multipart upload on S3) without operator intervention.
 
 **Watch the units when you set the proxy's matching limit.** Most proxies read
 `MB` as decimal, so a literal `40MB` is 40,000,000 — 1.9 MB *below* the app's
 ceiling, quietly making the proxy the real limit. Use the binary unit
 (`40MiB` in Caddy, `42m` in nginx) or a plain byte count. `deploy/Caddyfile.example`
 does this correctly; it is the easiest thing on this page to get subtly wrong.
+Only `ANAMNESIS_MAX_BODY_BYTES` needs a matching proxy setting —
+`ANAMNESIS_MAX_ATTACHMENT_BYTES` is enforced entirely inside the app, across
+several requests, so no single request ever needs the proxy to admit a body
+that large.
 
 ---
 
@@ -523,10 +547,15 @@ Four things worth knowing before you switch:
 - **Attachments stream through here too.** `S3BlobStore` uses a real
   multipart upload for anything past a small peek-ahead buffer, and ranged
   `GET`s for downloads — an object store buys shared storage *and*
-  streaming, not shared storage instead of it. An upload large enough to use
-  multipart leaves an incomplete upload behind if the process is killed
-  mid-transfer; set a bucket lifecycle rule to abort incomplete multipart
-  uploads after a day or so as cleanup.
+  streaming, not shared storage instead of it. A single-request upload large
+  enough to use multipart, and every chunked (multi-request) upload
+  (§5), leaves an incomplete multipart upload behind if the process is
+  killed mid-transfer or the client abandons it. The app's own hourly GC
+  sweep (§5) already cleans up abandoned chunked uploads it knows about; a
+  bucket lifecycle rule to abort incomplete multipart uploads after a day
+  or so is still worth setting as defense-in-depth for anything that
+  sweep can't reach (a killed process mid-transfer, before an upload
+  session even exists).
 
 **Every instance needs an identical `ANAMNESIS_SESSION_SECRET`.** Sessions are
 signed cookies with no server-side state, so nothing needs sharing and no

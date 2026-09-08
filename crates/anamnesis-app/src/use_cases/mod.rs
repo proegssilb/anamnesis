@@ -28,7 +28,8 @@ pub use attachment::{
     add_file_attachment, add_link_attachment, delete_attachment, list_attachments,
 };
 pub use attachment_upload::{
-    abort_file_upload, begin_file_upload, complete_file_upload, upload_file_part,
+    abort_file_upload, begin_file_upload, complete_file_upload, expire_stale_uploads,
+    upload_file_part,
 };
 pub use board::{BoardItemKind, reposition_board_item};
 pub use bulk::BulkCreateOutcome;

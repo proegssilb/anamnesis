@@ -37,6 +37,11 @@ pub const DEV_CSRF_TOKEN: &str = "test-dev-csrf-token";
 /// gets when `ANAMNESIS_MAX_BODY_BYTES` is unset.
 pub const TEST_MAX_BODY_BYTES: usize = 40 * 1024 * 1024;
 
+/// The attachment-size cap every test app gets unless it asks for another —
+/// the same 100 MiB `config::DEFAULT_MAX_ATTACHMENT_BYTES` a deployment gets
+/// when `ANAMNESIS_MAX_ATTACHMENT_BYTES` is unset.
+pub const TEST_MAX_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
+
 /// The dev-bypass user's id — `anamnesis_web::auth::DEV_USER_ID`, duplicated
 /// here as a plain string constant so tests need not depend on that private
 /// module path.
@@ -68,17 +73,51 @@ impl TestApp {
     /// instead of the dev-bypass user — for tests that need a distinct,
     /// real-OIDC-style admin identity.
     pub async fn with_bootstrap_admin(dev_auth_bypass: bool, bootstrap_admin: &str) -> Self {
-        Self::build(dev_auth_bypass, bootstrap_admin, TEST_MAX_BODY_BYTES).await
+        Self::build(
+            dev_auth_bypass,
+            bootstrap_admin,
+            TEST_MAX_BODY_BYTES,
+            TEST_MAX_ATTACHMENT_BYTES,
+        )
+        .await
     }
 
     /// As [`TestApp::new`], but with a router-wide body limit other than the
     /// default — so a test can cross that ceiling without allocating a
     /// 40 MiB request to do it.
     pub async fn with_max_body_bytes(dev_auth_bypass: bool, max_body_bytes: usize) -> Self {
-        Self::build(dev_auth_bypass, DEV_USER_ID, max_body_bytes).await
+        Self::build(
+            dev_auth_bypass,
+            DEV_USER_ID,
+            max_body_bytes,
+            TEST_MAX_ATTACHMENT_BYTES,
+        )
+        .await
     }
 
-    async fn build(dev_auth_bypass: bool, bootstrap_admin: &str, max_body_bytes: usize) -> Self {
+    /// As [`TestApp::new`], but with an attachment-size cap other than the
+    /// default — for chunked-upload tests exercising
+    /// `ANAMNESIS_MAX_ATTACHMENT_BYTES` directly, independent of the
+    /// router-wide per-request body limit.
+    pub async fn with_max_attachment_bytes(
+        dev_auth_bypass: bool,
+        max_attachment_bytes: u64,
+    ) -> Self {
+        Self::build(
+            dev_auth_bypass,
+            DEV_USER_ID,
+            TEST_MAX_BODY_BYTES,
+            max_attachment_bytes,
+        )
+        .await
+    }
+
+    async fn build(
+        dev_auth_bypass: bool,
+        bootstrap_admin: &str,
+        max_body_bytes: usize,
+        max_attachment_bytes: u64,
+    ) -> Self {
         assert!(
             TEST_SESSION_SECRET.len() >= 64,
             "test session secret must meet the same floor as production"
@@ -110,6 +149,7 @@ impl TestApp {
             key.clone(),
             dev_auth_bypass,
             max_body_bytes,
+            max_attachment_bytes,
         )
         .await;
         let router = routes::build_router(state.clone());
@@ -252,6 +292,68 @@ impl TestApp {
         self.router.clone().oneshot(request).await.unwrap()
     }
 
+    /// Posts a JSON body with the CSRF token as an `X-Csrf-Token` header —
+    /// what `crate::handlers::tasks::chunked_attachments::begin_upload_handler`
+    /// needs, since a raw request body (unlike a form) has no field of its
+    /// own to carry one.
+    pub async fn post_json(
+        &self,
+        path: &str,
+        json: &str,
+        csrf_token: &str,
+        cookie: Option<&str>,
+    ) -> Response<Body> {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("X-Csrf-Token", csrf_token);
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        let request = builder.body(Body::from(json.to_string())).unwrap();
+        self.router.clone().oneshot(request).await.unwrap()
+    }
+
+    /// `PUT`s a raw body with the CSRF token as an `X-Csrf-Token` header —
+    /// what `chunked_attachments::upload_part_handler` reads a chunk from.
+    pub async fn put_bytes(
+        &self,
+        path: &str,
+        bytes: &[u8],
+        csrf_token: &str,
+        cookie: Option<&str>,
+    ) -> Response<Body> {
+        let mut builder = Request::builder()
+            .method("PUT")
+            .uri(path)
+            .header("X-Csrf-Token", csrf_token);
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        let request = builder.body(Body::from(bytes.to_vec())).unwrap();
+        self.router.clone().oneshot(request).await.unwrap()
+    }
+
+    /// `DELETE`s `path` with the CSRF token as an `X-Csrf-Token` header —
+    /// what `chunked_attachments::abort_upload_handler` needs.
+    pub async fn delete_with_csrf(
+        &self,
+        path: &str,
+        csrf_token: &str,
+        cookie: Option<&str>,
+    ) -> Response<Body> {
+        let mut builder = Request::builder()
+            .method("DELETE")
+            .uri(path)
+            .header("X-Csrf-Token", csrf_token);
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        let request = builder.body(Body::empty()).unwrap();
+        self.router.clone().oneshot(request).await.unwrap()
+    }
+
     async fn post_form_maybe_hx(
         &self,
         path: &str,
@@ -286,17 +388,20 @@ impl TestApp {
 /// The job lease is opened from `store`'s own pool rather than passed in, as
 /// `bootstrap::run` does it, so no test can forget it — an `AppState` without
 /// one cannot run the tangle detection its relationship routes now drive.
+#[allow(clippy::too_many_arguments)]
 async fn test_state(
     store: Arc<SqlStore>,
     blobs: FsBlobStore,
     cookie_key: Key,
     dev_auth_bypass: bool,
     max_body_bytes: usize,
+    max_attachment_bytes: u64,
 ) -> AppState {
     let leases = store
         .job_lease()
         .await
         .expect("open the temp database's job-lease store");
+    let blobs = Arc::new(blobs);
     AppState {
         areas: store.clone(),
         projects: store.clone(),
@@ -305,7 +410,9 @@ async fn test_state(
         tangles: store.clone(),
         comments: store.clone(),
         attachments: store.clone(),
-        blobs: Arc::new(blobs),
+        blobs: blobs.clone(),
+        attachment_uploads: store.clone(),
+        chunked: blobs,
         board: store.clone(),
         search: store.clone(),
         search_index: store.clone(),
@@ -326,6 +433,7 @@ async fn test_state(
         dev_csrf_token: DEV_CSRF_TOKEN.to_string(),
         secure_cookies: false,
         max_body_bytes,
+        max_attachment_bytes,
         settings: store,
         timezone_name: "UTC".to_string(),
     }
