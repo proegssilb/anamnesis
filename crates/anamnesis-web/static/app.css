@@ -451,6 +451,20 @@ button:hover {
   font-size: 1rem;
 }
 
+/* --- bulk-add disclosure (issue #34): one pasted list creates many areas/
+   projects/tasks at once, tucked behind a <details> next to the existing
+   one-at-a-time form so it stays out of the way until asked for. --- */
+
+.bulk-add > summary {
+  margin-top: 1rem;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.bulk-add textarea {
+  min-height: 8rem;
+}
+
 .inline-form {
   flex-direction: row;
   flex-wrap: wrap;

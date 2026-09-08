@@ -40,8 +40,9 @@ pub use settings::{
     DEFAULT_SUGGESTION_COOLDOWN_SECONDS, Settings,
 };
 pub use use_cases::{
-    ArchiveOutcome, BoardItemKind, add_comment, add_field_definition, add_file_attachment,
-    add_link_attachment, add_relationship_kind, archive_done_tasks, archive_project, archive_task,
+    ArchiveOutcome, BoardItemKind, BulkCreateOutcome, add_comment, add_field_definition,
+    add_file_attachment, add_link_attachment, add_relationship_kind, archive_done_tasks,
+    archive_project, archive_task, bulk_create_areas, bulk_create_projects, bulk_create_tasks,
     create_area, create_project, create_relationship, create_task, delete_attachment,
     delete_comment, delete_relationship, derive_seed, drop_tangle, drop_task, edit_area,
     edit_comment, edit_project, edit_project_fields, edit_task, grant_admin_group,

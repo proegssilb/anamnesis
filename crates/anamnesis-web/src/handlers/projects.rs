@@ -11,8 +11,8 @@ use minijinja::context;
 use serde::Deserialize;
 
 use anamnesis_app::{
-    AppError, archive_project, create_task, edit_project_fields, list_all_projects,
-    unarchive_project, view_project,
+    AppError, archive_project, bulk_create_tasks, create_task, edit_project_fields,
+    list_all_projects, unarchive_project, view_project,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{Area, Project, ProjectId, ProjectStatus, TaskId};
@@ -27,8 +27,8 @@ use super::access;
 use super::field_form;
 use super::format::format_field_kind;
 use super::forms::{
-    AddFieldDefinitionForm, CreateTaskForm, CsrfOnlyForm, EditProjectDescriptionForm,
-    EditProjectTitleForm,
+    AddFieldDefinitionForm, BulkTitlesForm, CreateTaskForm, CsrfOnlyForm,
+    EditProjectDescriptionForm, EditProjectTitleForm,
 };
 use super::group_membership::{self, AccessPanel};
 use super::tasks::{
@@ -292,6 +292,71 @@ async fn create_task_impl(
             .await
         }
         Err(err) => Err(WebError::from(err)),
+    }
+}
+
+/// Bulk-creates tasks under `project_id`, one per pasted line (issue #34) —
+/// the project-page analog of `crate::handlers::areas::bulk_create_areas_impl`
+/// / `bulk_create_projects_impl`. Every task lands below the horizon with no
+/// parent, exactly like [`create_task_impl`]'s single-item form.
+pub async fn bulk_create_tasks_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<uuid::Uuid>,
+    Form(form): Form<BulkTitlesForm>,
+) -> Response {
+    match bulk_create_tasks_impl(&state, &user, ProjectId::new(id), form).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn bulk_create_tasks_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    project_id: ProjectId,
+    form: BulkTitlesForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let aggregate = state
+        .projects
+        .load(project_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let area_id = aggregate.project.area_id;
+    let role = access::project_role(state, &user.user_id, project_id, area_id).await?;
+    let titles = form.titles();
+
+    let message = if titles.is_empty() {
+        Some("Enter at least one title, one per line.".to_string())
+    } else {
+        let outcome = bulk_create_tasks(
+            state.tasks.as_ref(),
+            state.id_gen.as_ref(),
+            state.clock.as_ref(),
+            state.search_index.as_ref(),
+            role,
+            project_id,
+            &titles,
+        )
+        .await?;
+        super::bulk_failure_message(titles.len(), &outcome)
+    };
+    match message {
+        None => Ok(Redirect::to(&format!("/projects/{project_id}")).into_response()),
+        Some(message) => {
+            render_project_page_reloaded(
+                state,
+                user,
+                role,
+                project_id,
+                Some(&message),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            )
+            .await
+        }
     }
 }
 

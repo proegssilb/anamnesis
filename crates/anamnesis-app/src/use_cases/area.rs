@@ -14,6 +14,7 @@ use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
 use crate::ports::{AreaRepository, Clock, IdGen, SearchIndex};
 
+use super::bulk::{BulkCreateOutcome, bulk_create};
 use super::indexing::log_index_failure;
 
 /// Creates a new area, then indexes it for global search
@@ -48,6 +49,35 @@ pub async fn create_area(
         log_index_failure("create_area", err);
     }
     Ok(area)
+}
+
+/// Bulk-creates areas, one per `titles` entry, in order — the "paste a list,
+/// get an area per line" flow (issue #34). Each gets its own trailing
+/// position, same as calling [`create_area`] that many times in a row; see
+/// `super::bulk`'s module doc comment for how a per-title rule violation is
+/// handled.
+pub async fn bulk_create_areas(
+    repo: &dyn AreaRepository,
+    ids: &dyn IdGen,
+    clock: &dyn Clock,
+    search: &dyn SearchIndex,
+    role: Option<Role>,
+    titles: &[&str],
+) -> Result<BulkCreateOutcome<Area>, AppError> {
+    let base_position = repo.list().await?.len() as u32;
+    bulk_create(titles, |index, title| {
+        create_area(
+            repo,
+            ids,
+            clock,
+            search,
+            role,
+            title,
+            "",
+            base_position + index as u32,
+        )
+    })
+    .await
 }
 
 /// Returns a single area.

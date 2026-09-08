@@ -17,6 +17,28 @@ pub struct CreateAreaForm {
     pub description: String,
 }
 
+/// Shared by every "bulk add" route (issue #34: areas, projects, and tasks
+/// can each be raised in bulk from a single pasted list) — one title per
+/// line, no description, since a paste-many-things flow has nowhere sane to
+/// put one per item.
+#[derive(Debug, Deserialize)]
+pub struct BulkTitlesForm {
+    pub csrf_token: String,
+    pub titles: String,
+}
+
+impl BulkTitlesForm {
+    /// `titles`, split into one trimmed, non-blank title per line, in the
+    /// order they were pasted.
+    pub fn titles(&self) -> Vec<&str> {
+        self.titles
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect()
+    }
+}
+
 /// Replaces an area's title and description (`anamnesis_app::edit_area`).
 #[derive(Debug, Deserialize)]
 pub struct EditAreaForm {

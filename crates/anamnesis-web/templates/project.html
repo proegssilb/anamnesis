@@ -89,6 +89,16 @@
         <textarea id="description" name="description"></textarea>
         <button type="submit">Create task</button>
       </form>
+
+      <details class="bulk-add">
+        <summary>Add multiple tasks at once</summary>
+        <form class="panel-form" method="post" action="/projects/{{ project.id }}/tasks/bulk#new-task">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label for="bulk-task-titles">One title per line</label>
+          <textarea id="bulk-task-titles" name="titles" required placeholder="Buy primer&#10;Sand the trim&#10;Paint the door"></textarea>
+          <button type="submit">Create tasks</button>
+        </form>
+      </details>
     </div>
   </div>
 

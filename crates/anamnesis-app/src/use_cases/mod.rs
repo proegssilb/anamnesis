@@ -7,6 +7,7 @@ mod archive;
 mod area;
 mod attachment;
 mod board;
+mod bulk;
 mod comment;
 mod group_membership;
 mod indexing;
@@ -21,11 +22,12 @@ mod task;
 mod user_directory;
 
 pub use archive::{ArchiveOutcome, archive_done_tasks};
-pub use area::{create_area, edit_area, list_areas, reposition_area, view_area};
+pub use area::{bulk_create_areas, create_area, edit_area, list_areas, reposition_area, view_area};
 pub use attachment::{
     add_file_attachment, add_link_attachment, delete_attachment, list_attachments,
 };
 pub use board::{BoardItemKind, reposition_board_item};
+pub use bulk::BulkCreateOutcome;
 pub use comment::{add_comment, delete_comment, edit_comment, list_comments};
 pub use group_membership::{
     grant_admin_group, grant_area_group_role, grant_project_group_role, list_admin_groups,
@@ -39,16 +41,16 @@ pub use membership::{
 };
 pub use mentions::list_mentionable_users;
 pub use project::{
-    add_field_definition, add_relationship_kind, archive_project, create_project, edit_project,
-    edit_project_fields, list_all_projects, list_projects_in_area, rename_field_definition,
-    transition_project_status, unarchive_project, view_project,
+    add_field_definition, add_relationship_kind, archive_project, bulk_create_projects,
+    create_project, edit_project, edit_project_fields, list_all_projects, list_projects_in_area,
+    rename_field_definition, transition_project_status, unarchive_project, view_project,
 };
 pub use relationship::{create_relationship, delete_relationship, resolve_kind};
 pub use settings::{update_settings, view_settings};
 pub use suggestion::{derive_seed, request_suggestion};
 pub use tangle::{drop_tangle, place_tangle, resolve_frozen_tangles, run_tangle_detection};
 pub use task::{
-    archive_task, create_task, drop_task, edit_task, raise_task, set_checklist_position,
-    set_task_field_value, set_task_parent, unarchive_task, view_task,
+    archive_task, bulk_create_tasks, create_task, drop_task, edit_task, raise_task,
+    set_checklist_position, set_task_field_value, set_task_parent, unarchive_task, view_task,
 };
 pub use user_directory::list_known_users;
