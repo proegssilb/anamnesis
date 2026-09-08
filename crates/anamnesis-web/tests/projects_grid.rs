@@ -154,6 +154,54 @@ async fn the_area_filter_narrows_to_one_area() {
     assert!(!filtered.contains("Marathon training"), "{filtered}");
 }
 
+/// Issue #52: the grid's Created/Updated columns used to dump
+/// `Timestamp::unix_seconds()` straight into the page with no formatting at
+/// all. The server still can't know the visitor's timezone, so it hands off
+/// a `<time data-epoch>` for `static/app.js` to format client-side
+/// (browser-based timezone awareness) — this only checks the server's half:
+/// the epoch value is there, tagged, and correct.
+#[tokio::test]
+async fn project_timestamps_are_rendered_as_tagged_local_timestamps() {
+    let app = TestApp::with_bootstrap_admin(false, "admin").await;
+    let cookie = app.login_cookie_header("admin", "admin-token");
+    let csrf = "admin-token";
+
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let area_path = create_area(&app, &cookie, csrf, "Home Ops").await;
+    create_project(&app, &cookie, csrf, &area_path, "Fix the fence").await;
+    let after = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let body = body_text(app.get("/projects", Some(&cookie)).await).await;
+    assert!(
+        body.contains(r#"class="local-timestamp""#),
+        "timestamps must be tagged for client-side formatting: {body}"
+    );
+
+    let epochs: Vec<u64> = body
+        .split("data-epoch=\"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .filter_map(|s| s.parse::<u64>().ok())
+        .collect();
+    assert_eq!(
+        epochs.len(),
+        2,
+        "one project must produce a created and an updated epoch: {body}"
+    );
+    for epoch in epochs {
+        assert!(
+            (before..=after).contains(&epoch),
+            "epoch {epoch} must fall within [{before}, {after}]"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_user_with_no_grant_on_the_area_never_sees_its_projects() {
     let app = TestApp::with_bootstrap_admin(false, "admin").await;
