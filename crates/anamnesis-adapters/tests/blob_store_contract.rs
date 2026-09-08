@@ -12,8 +12,27 @@
 //! *sends* without a server; only this one proves a real implementation
 //! answers the way the port expects.
 
+use bytes::Bytes;
+use futures_util::StreamExt;
+
 use anamnesis_adapters::{FsBlobStore, S3BlobStore, S3Settings};
-use anamnesis_app::BlobStore;
+use anamnesis_app::{BlobStore, ByteStream};
+
+/// Wraps a byte slice as a single-chunk [`ByteStream`].
+fn once(bytes: &[u8]) -> ByteStream<'static> {
+    let bytes = Bytes::copy_from_slice(bytes);
+    Box::pin(futures_util::stream::once(async move { Ok(bytes) }))
+}
+
+/// Drains a returned [`ByteStream`] into an owned `Vec<u8>` for assertions.
+async fn collect(stream: Option<ByteStream<'static>>) -> Option<Vec<u8>> {
+    let mut stream = stream?;
+    let mut out = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        out.extend_from_slice(&chunk.unwrap());
+    }
+    Some(out)
+}
 
 /// Every promise [`BlobStore`] makes, in the order a caller meets them.
 ///
@@ -27,14 +46,15 @@ async fn contract(store: &dyn BlobStore, keyspace: &str) {
 
     // A key nobody has written is absent, not an error: this is what makes
     // a missing attachment a 404 rather than a 500.
-    assert_eq!(store.get(&key).await.unwrap(), None);
+    assert_eq!(collect(store.get(&key).await.unwrap()).await, None);
 
-    store
-        .put(&key, b"the original bytes".to_vec(), "application/pdf")
+    let written = store
+        .put(&key, once(b"the original bytes"), "application/pdf")
         .await
         .unwrap();
+    assert_eq!(written, "the original bytes".len() as u64);
     assert_eq!(
-        store.get(&key).await.unwrap(),
+        collect(store.get(&key).await.unwrap()).await,
         Some(b"the original bytes".to_vec())
     );
 
@@ -42,21 +62,27 @@ async fn contract(store: &dyn BlobStore, keyspace: &str) {
     // deliberate: a backend that wrote in place rather than atomically would
     // leave the tail of the first write behind, and this would catch it.
     store
-        .put(&key, b"shorter".to_vec(), "application/pdf")
+        .put(&key, once(b"shorter"), "application/pdf")
         .await
         .unwrap();
-    assert_eq!(store.get(&key).await.unwrap(), Some(b"shorter".to_vec()));
+    assert_eq!(
+        collect(store.get(&key).await.unwrap()).await,
+        Some(b"shorter".to_vec())
+    );
 
     // Keys with several segments are ordinary keys, not a directory feature
     // one backend has and the other does not.
     store
-        .put(&nested, b"nested".to_vec(), "application/pdf")
+        .put(&nested, once(b"nested"), "application/pdf")
         .await
         .unwrap();
-    assert_eq!(store.get(&nested).await.unwrap(), Some(b"nested".to_vec()));
+    assert_eq!(
+        collect(store.get(&nested).await.unwrap()).await,
+        Some(b"nested".to_vec())
+    );
 
     store.delete(&key).await.unwrap();
-    assert_eq!(store.get(&key).await.unwrap(), None);
+    assert_eq!(collect(store.get(&key).await.unwrap()).await, None);
 
     // Deleting what is already gone is success on both backends — an
     // attachment row removed twice must not fail the second time.
@@ -67,6 +93,75 @@ async fn contract(store: &dyn BlobStore, keyspace: &str) {
     assert!(store.get("../escaped").await.is_err());
 
     store.delete(&nested).await.unwrap();
+
+    multi_chunk_round_trip(store, keyspace).await;
+    mid_stream_failure_leaves_no_partial_blob(store, keyspace).await;
+    get_range_round_trip(store, keyspace).await;
+}
+
+/// A larger, multi-chunk upload — several distinct `Bytes` chunks totalling
+/// well past any single-buffer shortcut either backend might take — proves
+/// `put` really does stream rather than silently reassembling one big
+/// buffer first, and that its returned size is the true total.
+async fn multi_chunk_round_trip(store: &dyn BlobStore, keyspace: &str) {
+    let key = format!("{keyspace}/multi-chunk.bin");
+    const CHUNK: usize = 4 * 1024 * 1024;
+    let chunks: Vec<Bytes> = (0..3).map(|n| Bytes::from(vec![n as u8; CHUNK])).collect();
+    let total: Vec<u8> = chunks.iter().flat_map(|c| c.to_vec()).collect();
+    let stream: ByteStream<'static> =
+        Box::pin(futures_util::stream::iter(chunks.into_iter().map(Ok)));
+
+    let written = store
+        .put(&key, stream, "application/octet-stream")
+        .await
+        .unwrap();
+    assert_eq!(written, total.len() as u64);
+    assert_eq!(collect(store.get(&key).await.unwrap()).await, Some(total));
+
+    store.delete(&key).await.unwrap();
+}
+
+/// A stream that fails partway through must leave `put` erroring, and must
+/// leave the store exactly as it was before the attempt — proving the
+/// abort/atomic-publish guarantee holds for a streaming write, not only a
+/// whole-buffer one.
+async fn mid_stream_failure_leaves_no_partial_blob(store: &dyn BlobStore, keyspace: &str) {
+    let key = format!("{keyspace}/mid-stream-failure.bin");
+    let failing: ByteStream<'static> = Box::pin(futures_util::stream::iter(vec![
+        Ok(Bytes::from_static(b"partial")),
+        Err(std::io::Error::other("boom")),
+    ]));
+    let before = collect(store.get(&key).await.unwrap()).await;
+
+    let err = store.put(&key, failing, "application/octet-stream").await;
+    assert!(err.is_err(), "a mid-stream read failure must fail `put`");
+
+    let after = collect(store.get(&key).await.unwrap()).await;
+    assert_eq!(
+        before, after,
+        "a failed put must not change what a following get sees"
+    );
+}
+
+/// A ranged read against a known multi-chunk blob returns exactly the
+/// requested byte span.
+async fn get_range_round_trip(store: &dyn BlobStore, keyspace: &str) {
+    let key = format!("{keyspace}/range.bin");
+    let bytes: Vec<u8> = (0u8..=255).collect();
+    store
+        .put(&key, once(&bytes), "application/octet-stream")
+        .await
+        .unwrap();
+
+    let middle = store.get_range(&key, 10, 19).await.unwrap();
+    assert_eq!(collect(middle).await, Some(bytes[10..=19].to_vec()));
+
+    let end = store.get_range(&key, 250, 255).await.unwrap();
+    assert_eq!(collect(end).await, Some(bytes[250..=255].to_vec()));
+
+    assert!(store.get_range("nope", 0, 3).await.unwrap().is_none());
+
+    store.delete(&key).await.unwrap();
 }
 
 #[tokio::test]

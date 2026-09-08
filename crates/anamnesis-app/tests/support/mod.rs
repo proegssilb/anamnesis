@@ -11,13 +11,23 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use bytes::Bytes;
 
 use anamnesis_app::{
-    AuthenticatedIdentity, Clock, IdGen, IdentityError, IdentityProvider, LoginCallback,
-    LoginRedirect,
+    AuthenticatedIdentity, ByteStream, Clock, IdGen, IdentityError, IdentityProvider,
+    LoginCallback, LoginRedirect,
 };
 use anamnesis_core::{Timestamp, UserId};
 use uuid::Uuid;
+
+/// Wraps `bytes` as a single-chunk [`ByteStream`], for tests that just need
+/// *some* upload body rather than one that exercises real multi-chunk
+/// behaviour (`anamnesis-adapters/tests/blob_store_contract.rs` covers that).
+pub fn byte_stream(bytes: Vec<u8>) -> ByteStream<'static> {
+    Box::pin(futures_util::stream::once(
+        async move { Ok(Bytes::from(bytes)) },
+    ))
+}
 
 /// A `Clock` that always reports the same instant.
 #[derive(Debug, Clone, Copy)]

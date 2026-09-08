@@ -11,6 +11,8 @@ use anamnesis_app::{
     add_link_attachment, delete_attachment, edit_comment,
 };
 
+use crate::support::byte_stream;
+
 use super::AppWorld;
 
 #[when(regex = r#"^"([^"]+)" comments "([^"]+)" on task "([^"]+)"$"#)]
@@ -115,7 +117,7 @@ async fn attaches_a_file(world: &mut AppWorld, user: String, filename: String, t
         task_id,
         &filename,
         "application/pdf",
-        vec![1, 2, 3, 4],
+        byte_stream(vec![1, 2, 3, 4]),
     )
     .await
     .expect("scenario setup: attaching the file must succeed");

@@ -9,7 +9,7 @@ use anamnesis_core::policy::Role;
 use crate::entities::{self, Attachment, AttachmentId, AttachmentKind};
 use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
-use crate::ports::{AttachmentRepository, BlobStore, Clock, IdGen};
+use crate::ports::{AttachmentRepository, BlobStore, ByteStream, Clock, IdGen};
 
 /// Attaches an external link to a task.
 pub async fn add_link_attachment(
@@ -29,10 +29,12 @@ pub async fn add_link_attachment(
     Ok(attachment)
 }
 
-/// Uploads `bytes` to the blob store and attaches the resulting file to a
+/// Streams `data` into the blob store and attaches the resulting file to a
 /// task. `blob_key` is minted by the caller (the id generator is the
 /// simplest deterministic source), used both as the blob store's key and as
-/// the `blob_key` recorded on the attachment.
+/// the `blob_key` recorded on the attachment. Authorization is checked
+/// *before* `data` is ever polled, so a `Forbidden` caller never causes a
+/// single byte of the upload to be read.
 #[allow(clippy::too_many_arguments)]
 pub async fn add_file_attachment(
     repo: &dyn AttachmentRepository,
@@ -43,14 +45,13 @@ pub async fn add_file_attachment(
     task_id: TaskId,
     filename: &str,
     mime: &str,
-    bytes: Vec<u8>,
+    data: ByteStream<'_>,
 ) -> Result<Attachment, AppError> {
     if !is_allowed(role, Action::CreateAttachment) {
         return Err(AppError::Forbidden);
     }
     let blob_key = ids.next().to_string();
-    let size = bytes.len() as u64;
-    blobs.put(&blob_key, bytes, mime).await?;
+    let size = blobs.put(&blob_key, data, mime).await?;
     let attachment = entities::attach_file(
         AttachmentId::new(ids.next()),
         task_id,

@@ -7,7 +7,7 @@ mod domain_fakes;
 mod support;
 
 use domain_fakes::Fakes;
-use support::{FixedClock, SequentialIdGen};
+use support::{FixedClock, SequentialIdGen, byte_stream};
 
 // `anamnesis_app` and `anamnesis_core` both export same-named use-case /
 // pure-transition functions (`create_area`, `create_project`, `create_task`,
@@ -2386,7 +2386,7 @@ async fn add_link_and_file_attachments_and_delete_cleans_up_the_blob() {
         task.id,
         "photo.png",
         "image/png",
-        vec![1, 2, 3],
+        byte_stream(vec![1, 2, 3]),
     )
     .await
     .unwrap();

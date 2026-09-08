@@ -13,8 +13,9 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use anamnesis_app::{BlobStore, RepoError};
+use anamnesis_app::{BlobStore, ByteStream, RepoError};
 use async_trait::async_trait;
+use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 /// A [`BlobStore`] rooted at one directory on the local filesystem.
 #[derive(Debug, Clone)]
@@ -86,23 +87,42 @@ impl FsBlobStore {
 
 #[async_trait]
 impl BlobStore for FsBlobStore {
-    async fn put(&self, key: &str, bytes: Vec<u8>, _mime: &str) -> Result<(), RepoError> {
+    async fn put(&self, key: &str, data: ByteStream<'_>, _mime: &str) -> Result<u64, RepoError> {
         let path = self.resolve(key)?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(|e| RepoError::from_source("failed to create blob parent directory", e))?;
         }
-        write_atomically(&path, bytes).await
+        write_atomically(&path, data).await
     }
 
-    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, RepoError> {
+    async fn get(&self, key: &str) -> Result<Option<ByteStream<'static>>, RepoError> {
         let path = self.resolve(key)?;
-        match tokio::fs::read(&path).await {
-            Ok(bytes) => Ok(Some(bytes)),
+        match tokio::fs::File::open(&path).await {
+            Ok(file) => Ok(Some(Box::pin(tokio_util::io::ReaderStream::new(file)))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(RepoError::from_source("failed to read blob", e)),
         }
+    }
+
+    async fn get_range(
+        &self,
+        key: &str,
+        start: u64,
+        end: u64,
+    ) -> Result<Option<ByteStream<'static>>, RepoError> {
+        let path = self.resolve(key)?;
+        let mut file = match tokio::fs::File::open(&path).await {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(RepoError::from_source("failed to read blob", e)),
+        };
+        file.seek(std::io::SeekFrom::Start(start))
+            .await
+            .map_err(|e| RepoError::from_source("failed to seek blob", e))?;
+        let limited = file.take(end - start + 1);
+        Ok(Some(Box::pin(tokio_util::io::ReaderStream::new(limited))))
     }
 
     async fn delete(&self, key: &str) -> Result<(), RepoError> {
@@ -132,7 +152,7 @@ impl BlobStore for FsBlobStore {
 /// deliberate trade — a stray temporary is inert and collectable, a
 /// truncated blob is served — and it is what the blob GC sweep this plan
 /// leaves a slot for would remove.
-async fn write_atomically(path: &Path, bytes: Vec<u8>) -> Result<(), RepoError> {
+async fn write_atomically(path: &Path, data: ByteStream<'_>) -> Result<u64, RepoError> {
     // `resolve` only ever returns the canonicalised root with at least one
     // component pushed onto it, so there is always a parent; this stays an
     // error rather than an `expect` so the invariant cannot become a panic.
@@ -141,9 +161,10 @@ async fn write_atomically(path: &Path, bytes: Vec<u8>) -> Result<(), RepoError> 
         .ok_or_else(|| RepoError::new(format!("blob path {path:?} has no parent directory")))?;
     let tmp = parent.join(format!(".tmp-{}", uuid::Uuid::new_v4()));
 
-    let published = match write_and_sync(&tmp, bytes).await {
-        Ok(()) => tokio::fs::rename(&tmp, path)
+    let published = match write_and_sync(&tmp, data).await {
+        Ok(written) => tokio::fs::rename(&tmp, path)
             .await
+            .map(|()| written)
             .map_err(|e| RepoError::from_source("failed to publish blob", e)),
         Err(e) => Err(e),
     };
@@ -155,26 +176,48 @@ async fn write_atomically(path: &Path, bytes: Vec<u8>) -> Result<(), RepoError> 
     published
 }
 
-/// Creates `path`, writes `bytes`, and flushes them to the device before
-/// returning — so that a `rename` afterwards cannot publish a name whose
-/// contents never reached disk.
-async fn write_and_sync(path: &Path, bytes: Vec<u8>) -> Result<(), RepoError> {
-    use tokio::io::AsyncWriteExt as _;
-
+/// Creates `path`, streams `data` into it, and flushes the result to the
+/// device before returning — so that a `rename` afterwards cannot publish a
+/// name whose contents never reached disk. Returns the number of bytes
+/// written, since the caller (the port's `put`) never knows the total size
+/// upfront.
+async fn write_and_sync(path: &Path, data: ByteStream<'_>) -> Result<u64, RepoError> {
     let mut file = tokio::fs::File::create(path)
         .await
         .map_err(|e| RepoError::from_source("failed to create temporary blob", e))?;
-    file.write_all(&bytes)
+    let mut reader = tokio_util::io::StreamReader::new(data);
+    let written = tokio::io::copy(&mut reader, &mut file)
         .await
         .map_err(|e| RepoError::from_source("failed to write blob", e))?;
     file.sync_all()
         .await
-        .map_err(|e| RepoError::from_source("failed to flush blob", e))
+        .map_err(|e| RepoError::from_source("failed to flush blob", e))?;
+    Ok(written)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::StreamExt as _;
+
+    /// Wraps a byte slice as the single-chunk [`ByteStream`] a test `put`
+    /// needs -- real multi-chunk behaviour is exercised in
+    /// `anamnesis-adapters/tests/blob_store_contract.rs`, shared by both
+    /// backends.
+    fn once(bytes: &[u8]) -> ByteStream<'static> {
+        let bytes = bytes::Bytes::copy_from_slice(bytes);
+        Box::pin(futures_util::stream::once(async move { Ok(bytes) }))
+    }
+
+    /// Drains a returned [`ByteStream`] into an owned `Vec<u8>` for
+    /// assertions.
+    async fn collect(mut stream: ByteStream<'static>) -> Vec<u8> {
+        let mut out = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            out.extend_from_slice(&chunk.unwrap());
+        }
+        out
+    }
 
     #[tokio::test]
     async fn put_then_get_round_trips_bytes() {
@@ -182,11 +225,11 @@ mod tests {
         let store = FsBlobStore::new(dir.path()).await.unwrap();
 
         store
-            .put("photos/a.png", b"hello".to_vec(), "image/png")
+            .put("photos/a.png", once(b"hello"), "image/png")
             .await
             .unwrap();
-        let got = store.get("photos/a.png").await.unwrap();
-        assert_eq!(got, Some(b"hello".to_vec()));
+        let got = store.get("photos/a.png").await.unwrap().unwrap();
+        assert_eq!(collect(got).await, b"hello");
     }
 
     #[tokio::test]
@@ -196,7 +239,7 @@ mod tests {
         // else, or every write would litter a shared blob root.
         let dir = tempfile::tempdir().unwrap();
         let store = FsBlobStore::new(dir.path()).await.unwrap();
-        store.put("a", b"x".to_vec(), "text/plain").await.unwrap();
+        store.put("a", once(b"x"), "text/plain").await.unwrap();
 
         let mut names = Vec::new();
         let mut entries = tokio::fs::read_dir(dir.path()).await.unwrap();
@@ -213,30 +256,31 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = FsBlobStore::new(dir.path()).await.unwrap();
         store
-            .put("a", b"the original bytes".to_vec(), "text/plain")
+            .put("a", once(b"the original bytes"), "text/plain")
             .await
             .unwrap();
         store
-            .put("a", b"shorter".to_vec(), "text/plain")
+            .put("a", once(b"shorter"), "text/plain")
             .await
             .unwrap();
-        assert_eq!(store.get("a").await.unwrap(), Some(b"shorter".to_vec()));
+        let got = store.get("a").await.unwrap().unwrap();
+        assert_eq!(collect(got).await, b"shorter");
     }
 
     #[tokio::test]
     async fn get_of_a_missing_key_is_none_not_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let store = FsBlobStore::new(dir.path()).await.unwrap();
-        assert_eq!(store.get("nope").await.unwrap(), None);
+        assert!(store.get("nope").await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn delete_then_get_is_none() {
         let dir = tempfile::tempdir().unwrap();
         let store = FsBlobStore::new(dir.path()).await.unwrap();
-        store.put("a", b"x".to_vec(), "text/plain").await.unwrap();
+        store.put("a", once(b"x"), "text/plain").await.unwrap();
         store.delete("a").await.unwrap();
-        assert_eq!(store.get("a").await.unwrap(), None);
+        assert!(store.get("a").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -252,7 +296,7 @@ mod tests {
         let store = FsBlobStore::new(dir.path()).await.unwrap();
 
         let err = store
-            .put("../../etc/passwd", b"pwned".to_vec(), "text/plain")
+            .put("../../etc/passwd", once(b"pwned"), "text/plain")
             .await
             .expect_err("a key climbing above the root must be rejected");
         assert!(err.to_string().contains("escapes the store root"));
@@ -270,7 +314,8 @@ mod tests {
         let err = store
             .get("a/../../escaped")
             .await
-            .expect_err("a key that climbs above the root even after descending must be rejected");
+            .err()
+            .expect("a key that climbs above the root even after descending must be rejected");
         assert!(err.to_string().contains("escapes the store root"));
     }
 
@@ -280,7 +325,7 @@ mod tests {
         let store = FsBlobStore::new(dir.path()).await.unwrap();
 
         let err = store
-            .put("/etc/passwd", b"pwned".to_vec(), "text/plain")
+            .put("/etc/passwd", once(b"pwned"), "text/plain")
             .await
             .expect_err("an absolute-path key must be rejected");
         assert!(err.to_string().contains("must be a relative path"));
@@ -291,7 +336,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = FsBlobStore::new(dir.path()).await.unwrap();
         let err = store
-            .put("", b"x".to_vec(), "text/plain")
+            .put("", once(b"x"), "text/plain")
             .await
             .expect_err("an empty key must be rejected");
         assert!(err.to_string().contains("must not be empty"));
@@ -301,10 +346,7 @@ mod tests {
     async fn a_key_that_is_only_parent_dirs_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let store = FsBlobStore::new(dir.path()).await.unwrap();
-        let err = store
-            .put("..", b"x".to_vec(), "text/plain")
-            .await
-            .unwrap_err();
+        let err = store.put("..", once(b"x"), "text/plain").await.unwrap_err();
         assert!(err.to_string().contains("escapes the store root"));
     }
 
@@ -315,9 +357,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = FsBlobStore::new(dir.path()).await.unwrap();
         store
-            .put("a/../b", b"ok".to_vec(), "text/plain")
+            .put("a/../b", once(b"ok"), "text/plain")
             .await
             .unwrap();
-        assert_eq!(store.get("b").await.unwrap(), Some(b"ok".to_vec()));
+        let got = store.get("b").await.unwrap().unwrap();
+        assert_eq!(collect(got).await, b"ok");
+    }
+
+    #[tokio::test]
+    async fn get_range_returns_the_requested_slice() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsBlobStore::new(dir.path()).await.unwrap();
+        store
+            .put("a", once(b"0123456789"), "text/plain")
+            .await
+            .unwrap();
+
+        let got = store.get_range("a", 2, 5).await.unwrap().unwrap();
+        assert_eq!(collect(got).await, b"2345");
+    }
+
+    #[tokio::test]
+    async fn get_range_of_a_missing_key_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsBlobStore::new(dir.path()).await.unwrap();
+        assert!(store.get_range("nope", 0, 3).await.unwrap().is_none());
     }
 }

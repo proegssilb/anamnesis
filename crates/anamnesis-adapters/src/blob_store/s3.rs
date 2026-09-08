@@ -18,12 +18,14 @@
 //! endpoint (`{bucket}.s3.example.com`) is not configurable here; add it
 //! when something actually needs it.
 
-use anamnesis_app::{BlobStore, RepoError};
+use anamnesis_app::{BlobStore, ByteStream, RepoError};
 use async_trait::async_trait;
+use futures_util::StreamExt as _;
 use object_store::aws::{AmazonS3, AmazonS3Builder};
 use object_store::path::Path;
 use object_store::{
-    Attribute, AttributeValue, Attributes, ObjectStore, ObjectStoreExt, PutOptions,
+    Attribute, AttributeValue, Attributes, GetOptions, GetRange, ObjectStore, ObjectStoreExt,
+    PutMultipartOptions, PutOptions, WriteMultipart,
 };
 
 /// The connection details [`S3BlobStore`] needs beyond its
@@ -103,9 +105,21 @@ impl S3BlobStore {
     }
 }
 
+/// The peek-ahead buffer size for [`S3BlobStore::put`]: small enough to
+/// keep peak memory bounded and independent of attachment size, large
+/// enough to comfortably clear S3's 5 MiB minimum part size so an object
+/// that turns out to need multipart upload never has to redo its first
+/// part smaller than that minimum.
+const PEEK_AHEAD_BYTES: usize = 8 * 1024 * 1024;
+
+/// How many in-flight `UploadPart` requests [`S3BlobStore::put`] allows at
+/// once, applying backpressure to the incoming stream past that point
+/// rather than buffering unboundedly many parts in memory.
+const MAX_CONCURRENT_PARTS: usize = 4;
+
 #[async_trait]
 impl BlobStore for S3BlobStore {
-    async fn put(&self, key: &str, bytes: Vec<u8>, mime: &str) -> Result<(), RepoError> {
+    async fn put(&self, key: &str, mut data: ByteStream<'_>, mime: &str) -> Result<u64, RepoError> {
         let location = self.location(key)?;
         // The MIME type is recorded on the object so that anything reading
         // the bucket directly (a backup tool, a browser hitting a presigned
@@ -117,31 +131,74 @@ impl BlobStore for S3BlobStore {
             Attribute::ContentType,
             AttributeValue::from(mime.to_string()),
         );
-        let options = PutOptions {
-            attributes,
-            ..Default::default()
-        };
-        self.inner
-            .put_opts(&location, bytes.into(), options)
-            .await
-            .map(|_| ())
-            .map_err(|e| RepoError::from_source("failed to write blob", e))
+
+        // Buffer only the first `PEEK_AHEAD_BYTES`: if the object ends
+        // within that, a single plain PUT is one API call instead of three
+        // (create-multipart, one part, complete) -- worth it because most
+        // attachments in real use are small. Only a stream that turns out
+        // larger than the buffer pays for multipart upload.
+        let (prefix, exhausted) = buffer_up_to(&mut data, PEEK_AHEAD_BYTES).await?;
+        if exhausted {
+            let options = PutOptions {
+                attributes,
+                ..Default::default()
+            };
+            let len = prefix.len() as u64;
+            self.inner
+                .put_opts(&location, prefix.into(), options)
+                .await
+                .map(|_| len)
+                .map_err(|e| RepoError::from_source("failed to write blob", e))
+        } else {
+            let options = PutMultipartOptions {
+                attributes,
+                ..Default::default()
+            };
+            let upload = self
+                .inner
+                .put_multipart_opts(&location, options)
+                .await
+                .map_err(|e| RepoError::from_source("failed to start blob upload", e))?;
+            let mut writer = WriteMultipart::new(upload);
+            let already_read = prefix.len() as u64;
+            writer.put(prefix.into());
+            write_multipart(writer, data, already_read).await
+        }
     }
 
-    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, RepoError> {
+    async fn get(&self, key: &str) -> Result<Option<ByteStream<'static>>, RepoError> {
         let location = self.location(key)?;
         let result = match self.inner.get(&location).await {
             Ok(result) => result,
             Err(object_store::Error::NotFound { .. }) => return Ok(None),
             Err(e) => return Err(RepoError::from_source("failed to read blob", e)),
         };
-        // The whole object, resident: that is what the port asks for. See
-        // the module doc comment on `super` for the ceiling this implies.
-        let bytes = result
-            .bytes()
-            .await
-            .map_err(|e| RepoError::from_source("failed to read blob", e))?;
-        Ok(Some(bytes.to_vec()))
+        let stream = result
+            .into_stream()
+            .map(|r| r.map_err(std::io::Error::other));
+        Ok(Some(Box::pin(stream)))
+    }
+
+    async fn get_range(
+        &self,
+        key: &str,
+        start: u64,
+        end: u64,
+    ) -> Result<Option<ByteStream<'static>>, RepoError> {
+        let location = self.location(key)?;
+        let opts = GetOptions {
+            range: Some(GetRange::Bounded(start..end + 1)),
+            ..Default::default()
+        };
+        let result = match self.inner.get_opts(&location, opts).await {
+            Ok(result) => result,
+            Err(object_store::Error::NotFound { .. }) => return Ok(None),
+            Err(e) => return Err(RepoError::from_source("failed to read blob", e)),
+        };
+        let stream = result
+            .into_stream()
+            .map(|r| r.map_err(std::io::Error::other));
+        Ok(Some(Box::pin(stream)))
     }
 
     async fn delete(&self, key: &str) -> Result<(), RepoError> {
@@ -155,6 +212,62 @@ impl BlobStore for S3BlobStore {
             Err(e) => Err(RepoError::from_source("failed to delete blob", e)),
         }
     }
+}
+
+/// Reads up to `cap` bytes off the front of `data`, without reading past
+/// the first chunk that reaches or exceeds it. Returns the bytes read and
+/// whether the stream was exhausted before reaching `cap` -- `true` means
+/// the whole object fit in the buffer and [`S3BlobStore::put`] can do one
+/// plain PUT; `false` means `data` has more to give and multipart upload is
+/// needed, with `buf` becoming that upload's first part.
+async fn buffer_up_to(data: &mut ByteStream<'_>, cap: usize) -> Result<(Vec<u8>, bool), RepoError> {
+    let mut buf = Vec::new();
+    while buf.len() < cap {
+        match data.next().await {
+            Some(Ok(chunk)) => buf.extend_from_slice(&chunk),
+            Some(Err(e)) => {
+                return Err(RepoError::from_source("failed to read upload stream", e));
+            }
+            None => return Ok((buf, true)),
+        }
+    }
+    Ok((buf, false))
+}
+
+/// Streams the rest of `data` into an in-progress multipart upload,
+/// continuing the running size count from `size` (the bytes already read
+/// into the upload's first part by the caller). A failed read or a failed
+/// part upload aborts the multipart upload before returning -- the
+/// S3-shaped equivalent of `FsBlobStore::write_atomically`'s temp-file
+/// cleanup: a partial upload must never become a visible object, nor linger
+/// as a dangling incomplete one any longer than this can help.
+async fn write_multipart(
+    mut writer: WriteMultipart,
+    mut data: ByteStream<'_>,
+    mut size: u64,
+) -> Result<u64, RepoError> {
+    loop {
+        match data.next().await {
+            Some(Ok(chunk)) => {
+                size += chunk.len() as u64;
+                writer.put(chunk);
+                if let Err(e) = writer.wait_for_capacity(MAX_CONCURRENT_PARTS).await {
+                    let _ = writer.abort().await;
+                    return Err(RepoError::from_source("failed to write blob", e));
+                }
+            }
+            Some(Err(e)) => {
+                let _ = writer.abort().await;
+                return Err(RepoError::from_source("failed to read upload stream", e));
+            }
+            None => break,
+        }
+    }
+    writer
+        .finish()
+        .await
+        .map(|_| size)
+        .map_err(|e| RepoError::from_source("failed to publish blob", e))
 }
 
 /// Splits `s3://bucket/prefix` into its bucket and its (optional) prefix.
@@ -302,6 +415,22 @@ mod tests {
         }
     }
 
+    /// Wraps a byte slice as the single-chunk [`ByteStream`] most of these
+    /// tests need — well under `PEEK_AHEAD_BYTES`, so `put` always takes the
+    /// plain-PUT path here unless a test says otherwise.
+    fn once(bytes: &[u8]) -> ByteStream<'static> {
+        let bytes = bytes::Bytes::copy_from_slice(bytes);
+        Box::pin(futures_util::stream::once(async move { Ok(bytes) }))
+    }
+
+    async fn collect(mut stream: ByteStream<'static>) -> Vec<u8> {
+        let mut out = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            out.extend_from_slice(&chunk.unwrap());
+        }
+        out
+    }
+
     #[tokio::test]
     async fn put_sends_the_bytes_and_the_declared_content_type() {
         let server = MockServer::start().await;
@@ -313,10 +442,11 @@ mod tests {
             .mount(&server)
             .await;
 
-        store_for(&server)
-            .put("a.png", b"hello".to_vec(), "image/png")
+        let written = store_for(&server)
+            .put("a.png", once(b"hello"), "image/png")
             .await
             .unwrap();
+        assert_eq!(written, 5);
     }
 
     #[tokio::test]
@@ -333,8 +463,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = store_for(&server).get("a.png").await.unwrap();
-        assert_eq!(got, Some(b"hello".to_vec()));
+        let got = store_for(&server).get("a.png").await.unwrap().unwrap();
+        assert_eq!(collect(got).await, b"hello");
     }
 
     #[tokio::test]
@@ -346,7 +476,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        assert_eq!(store_for(&server).get("gone.png").await.unwrap(), None);
+        assert!(store_for(&server).get("gone.png").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -361,8 +491,72 @@ mod tests {
             .mount(&server)
             .await;
 
-        let err = store_for(&server).get("a.png").await.unwrap_err();
+        let err = store_for(&server).get("a.png").await.err().unwrap();
         assert!(err.to_string().contains("failed to read blob"));
+    }
+
+    #[tokio::test]
+    async fn get_range_sends_a_bounded_range_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/blobs/att/a.png"))
+            .and(header("range", "bytes=2-4"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .append_header("ETag", ETAG)
+                    .append_header("Last-Modified", LAST_MODIFIED)
+                    .append_header("Content-Range", "bytes 2-4/5")
+                    .set_body_bytes(b"llo".to_vec()),
+            )
+            .mount(&server)
+            .await;
+
+        let got = store_for(&server)
+            .get_range("a.png", 2, 4)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(collect(got).await, b"llo");
+    }
+
+    #[tokio::test]
+    async fn put_larger_than_the_peek_ahead_buffer_uses_multipart_upload() {
+        // Anything past `PEEK_AHEAD_BYTES` must take the create/upload-part/
+        // complete path rather than a single PUT -- this is the whole point
+        // of streaming a large attachment instead of buffering it whole.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/blobs/att/big.bin"))
+            .and(wiremock::matchers::query_param("uploads", ""))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?><InitiateMultipartUploadResult><Bucket>blobs</Bucket><Key>att/big.bin</Key><UploadId>up-1</UploadId></InitiateMultipartUploadResult>",
+                ),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/blobs/att/big.bin"))
+            .respond_with(ResponseTemplate::new(200).append_header("ETag", ETAG))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/blobs/att/big.bin"))
+            .and(wiremock::matchers::query_param("uploadId", "up-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><CompleteMultipartUploadResult><Bucket>blobs</Bucket><Key>att/big.bin</Key><ETag>\"whole\"</ETag></CompleteMultipartUploadResult>",
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let big = vec![0u8; PEEK_AHEAD_BYTES + 1024];
+        let written = store_for(&server)
+            .put("big.bin", once(&big), "application/octet-stream")
+            .await
+            .unwrap();
+        assert_eq!(written, big.len() as u64);
     }
 
     #[tokio::test]

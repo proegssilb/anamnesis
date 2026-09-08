@@ -10,6 +10,10 @@ publish = false
 anamnesis-app = { version = "1.4.0", path = "../anamnesis-app" }
 anamnesis-core = { version = "1.4.0", path = "../anamnesis-core" }
 async-trait = "0.1.92"
+bytes = "1.12.1"
+# `BlobStore::put` reads its caller's `ByteStream`; `FsBlobStore` bridges it
+# to `tokio::io::copy` via `StreamReader`, `S3BlobStore` polls it directly.
+futures-util = "0.3.34"
 job-lease = { version = "0.1.0", path = "../job-lease" }
 # Only the "aws" backend: `S3BlobStore` is the one consumer, and the Azure,
 # GCP and generic-HTTP backends would be dead weight in the binary.
@@ -25,6 +29,9 @@ time-tz = "2.0.0"
 # lives in `anamnesis-web`. "io-util" is for `FsBlobStore`'s atomic write,
 # which needs a handle to flush rather than a fire-and-forget `fs::write`.
 tokio = { version = "1.53.1", features = ["fs", "io-util", "rt", "time"] }
+# `ReaderStream`/`StreamReader`: the two adapters bridging `ByteStream` to
+# `tokio::io::{AsyncRead, AsyncWrite}` for `FsBlobStore`.
+tokio-util = { version = "0.7.19", features = ["io"] }
 # Only for startup: a migration that waits on another instance, or a lease
 # renewal that fails, must not do so silently.
 tracing = "0.1.44"
