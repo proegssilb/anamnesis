@@ -5,6 +5,8 @@
 
 mod support;
 
+use std::time::Duration;
+
 use axum::http::StatusCode;
 
 use anamnesis_app::TangleRepository;
@@ -199,14 +201,18 @@ async fn viewing_the_board_does_not_run_tangle_detection() {
 }
 
 /// The event path, pinned from the other side: closing the knot through the
-/// relationship route detects it there and then -- no board GET, no explicit
-/// pass, nothing waiting on a timer.
+/// relationship route schedules a background pass that converges shortly
+/// after -- no board GET, no explicit pass, nothing waiting on a timer, but
+/// also no guarantee the pass has finished by the time the response comes
+/// back (`anamnesis_web::tangles::refresh_after_graph_change` spawns it
+/// rather than completing it inline; see its doc comment).
 ///
-/// This is the immediate consistency that moving detection off the read path
-/// gave up and event-driving it gets back, so it is worth asserting without
-/// any HTTP read in between to blur where the work happened.
+/// This polls for the eventual result instead of asserting on it
+/// immediately, so it still proves the spawned path itself actually runs and
+/// updates stored state, without depending on exactly when the runtime
+/// happens to schedule it.
 #[tokio::test]
-async fn creating_the_blocking_edge_detects_the_tangle_immediately() {
+async fn creating_the_blocking_edge_eventually_detects_the_tangle() {
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None;
 
@@ -214,7 +220,10 @@ async fn creating_the_blocking_edge_detects_the_tangle_immediately() {
 
     // Half a knot: A blocks B is not a cycle, so the first edit must detect
     // nothing. Pinning this separately keeps the test honest about detecting
-    // a *tangle* rather than merely reacting to a write.
+    // a *tangle* rather than merely reacting to a write. A negative can't be
+    // proven by polling for a positive, so this gives a background pass a
+    // moment to run (it would find nothing to report even if it did) and
+    // checks once.
     support::create_blocking_edge(
         &app,
         &task_a_path,
@@ -223,6 +232,7 @@ async fn creating_the_blocking_edge_detects_the_tangle_immediately() {
         cookie,
     )
     .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
         app.store.list_active().await.unwrap().is_empty(),
         "one blocking edge is not a cycle and must not be a tangle"
@@ -236,25 +246,30 @@ async fn creating_the_blocking_edge_detects_the_tangle_immediately() {
         cookie,
     )
     .await;
-    let active = app.store.list_active().await.unwrap();
-    assert_eq!(
-        active.len(),
-        1,
-        "closing the cycle through the relationship route must detect the \
-         tangle in that same request"
+    let active = support::wait_for(Duration::from_secs(2), || async {
+        let active = app.store.list_active().await.unwrap();
+        (!active.is_empty()).then_some(active)
+    })
+    .await
+    .expect(
+        "closing the cycle through the relationship route must eventually detect the tangle",
     );
+    assert_eq!(active.len(), 1);
     assert_eq!(active[0].task_ids.len(), 2);
 }
 
-/// The delete half of the event path: removing a `blocks` edge re-derives the
-/// tangle set in that same request too.
+/// The delete half of the event path: removing a `blocks` edge schedules a
+/// background pass that re-derives the tangle set shortly after, the same
+/// way creating one does.
 ///
 /// `relationship_removal.rs` covers what removal does to a *placed* tangle
 /// (`resolve_frozen_tangles` closes it into Done). This covers the simpler
 /// unfrozen case, and covers it specifically as an event: detection has to
-/// run on the delete route, not only the create one.
+/// run on the delete route too, not only the create one. Polled for here
+/// rather than asserted immediately, for the same reason as the create-side
+/// test above: the route only schedules the pass, it doesn't wait for it.
 #[tokio::test]
-async fn deleting_the_blocking_edge_resolves_the_tangle_immediately() {
+async fn deleting_the_blocking_edge_eventually_resolves_the_tangle() {
     let app = TestApp::new(true).await;
     let cookie: Option<&str> = None;
 
@@ -277,10 +292,18 @@ async fn deleting_the_blocking_edge_resolves_the_tangle_immediately() {
         .await;
     assert_eq!(removed.status(), StatusCode::SEE_OTHER);
 
+    let resolved = support::wait_for(Duration::from_secs(2), || async {
+        app.store
+            .list_active()
+            .await
+            .unwrap()
+            .is_empty()
+            .then_some(())
+    })
+    .await;
     assert!(
-        app.store.list_active().await.unwrap().is_empty(),
-        "breaking the cycle through the delete route must resolve the tangle \
-         in that same request"
+        resolved.is_some(),
+        "breaking the cycle through the delete route must eventually resolve the tangle"
     );
 }
 
