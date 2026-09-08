@@ -94,11 +94,21 @@ clippy:
 # PR #17's own annotations, which named two functions at exactly the 55 and
 # 89 this invocation reports. `-T nloc=50` is the knob that matches it;
 # `-L 50` is not (it thresholds raw length, counting blank and comment
-# lines, and over-flags by about a fifth). A fail here is a prompt to look
-# at the actual function, not to restructure around this tool's counting
-# behavior.
+# lines, and over-flags by about a fifth).
+#
+# `-C 10` matches Codacy's cyclomatic complexity limit — learned from PR
+# #49's own annotation, which named a function at exactly CCN 11 this
+# invocation reports for it. Lizard's own default CCN threshold is 15,
+# which is looser than Codacy's actual 10 and had let a real complexity
+# problem through this gate once already; `-C 10` closes that gap rather
+# than leaving it to the PR round trip to catch. Note lizard counts each
+# `?` in Rust as a branch alongside `if`/`for`/`match`, so a chain of
+# fallible calls adds up faster than the visible branching suggests.
+#
+# A fail here is a prompt to look at the actual function, not to
+# restructure around this tool's counting behavior.
 lizard:
-    python3 -m lizard -l rust crates -T nloc=50 -w
+    python3 -m lizard -l rust crates -T nloc=50 -C 10 -w
 
 # The two static-analysis proxies for what Codacy checks on a PR.
 quality: clippy lizard
