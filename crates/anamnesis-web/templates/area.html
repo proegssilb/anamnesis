@@ -38,6 +38,16 @@
           <textarea id="description" name="description"></textarea>
           <button type="submit">Create project</button>
         </form>
+
+        <details class="bulk-add">
+          <summary>Add multiple projects at once</summary>
+          <form class="panel-form" method="post" action="/areas/{{ area.id }}/projects/bulk#new-project">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label for="bulk-project-titles">One title per line</label>
+            <textarea id="bulk-project-titles" name="titles" required placeholder="Repaint the shed&#10;Clean the gutters"></textarea>
+            <button type="submit">Create projects</button>
+          </form>
+        </details>
       </div>
     </div>
 

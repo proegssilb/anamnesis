@@ -16,7 +16,8 @@ use crate::handlers::{
     accept_suggestion_handler, accept_tangle_offer_handler, add_checklist_item_handler,
     add_comment_handler, add_field_definition_handler, add_file_attachment_handler,
     add_link_attachment_handler, archive_all_handler, archive_project_handler,
-    archive_task_handler, callback_handler, create_area_handler, create_project_handler,
+    archive_task_handler, bulk_create_areas_handler, bulk_create_projects_handler,
+    bulk_create_tasks_handler, callback_handler, create_area_handler, create_project_handler,
     create_relationship_handler, create_task_handler, delete_relationship_handler,
     download_attachment_handler, drop_project_task_handler, drop_tangle_handler, drop_task_handler,
     edit_area_handler, edit_project_description_handler, edit_project_title_handler,
@@ -57,11 +58,16 @@ pub fn build_router(state: AppState) -> Router {
 fn area_routes() -> Router<AppState> {
     Router::new()
         .route("/areas", get(list_areas_handler).post(create_area_handler))
+        .route("/areas/bulk", post(bulk_create_areas_handler))
         .route(
             "/areas/{id}",
             get(view_area_handler).post(edit_area_handler),
         )
         .route("/areas/{id}/projects", post(create_project_handler))
+        .route(
+            "/areas/{id}/projects/bulk",
+            post(bulk_create_projects_handler),
+        )
         .route("/areas/{id}/members", post(grant_area_member_handler))
         .route(
             "/areas/{id}/members/revoke",
@@ -107,6 +113,7 @@ fn project_routes() -> Router<AppState> {
         .route("/projects/{id}/unarchive", post(unarchive_project_handler))
         .route("/projects/{id}/fields", post(add_field_definition_handler))
         .route("/projects/{id}/tasks", post(create_task_handler))
+        .route("/projects/{id}/tasks/bulk", post(bulk_create_tasks_handler))
         .route(
             "/projects/{id}/tasks/{task_id}/raise",
             post(raise_project_task_handler),

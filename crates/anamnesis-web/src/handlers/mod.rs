@@ -21,7 +21,8 @@ mod settings;
 mod tasks;
 
 pub use areas::{
-    create_area_handler, create_project_handler, edit_area_handler, list_areas_handler,
+    bulk_create_areas_handler, bulk_create_projects_handler, create_area_handler,
+    create_project_handler, edit_area_handler, list_areas_handler,
     transition_project_status_handler, view_area_handler,
 };
 pub use board::{
@@ -40,10 +41,10 @@ pub use membership::{
 };
 pub use misc::{healthz_handler, root_handler};
 pub use projects::{
-    add_field_definition_handler, archive_project_handler, create_task_handler,
-    drop_project_task_handler, edit_project_description_handler, edit_project_title_handler,
-    list_projects_handler, raise_project_task_handler, unarchive_project_handler,
-    view_project_handler,
+    add_field_definition_handler, archive_project_handler, bulk_create_tasks_handler,
+    create_task_handler, drop_project_task_handler, edit_project_description_handler,
+    edit_project_title_handler, list_projects_handler, raise_project_task_handler,
+    unarchive_project_handler, view_project_handler,
 };
 pub use search::search_handler;
 pub use settings::{update_settings_handler, view_settings_handler};
@@ -71,6 +72,31 @@ pub(super) fn render_oob_fragments(
     }
     Ok(Html(body).into_response())
 }
+
+/// The error banner for a "bulk add" route (issue #34) whose titles weren't
+/// all accepted — `None` when every one of them was, since a fully
+/// successful bulk add has nothing to report. Shared by the areas/projects/
+/// tasks bulk-create handlers so a partial failure reads the same way in
+/// each: how many went in, and why the rest didn't.
+pub(super) fn bulk_failure_message<T>(
+    attempted: usize,
+    outcome: &anamnesis_app::BulkCreateOutcome<T>,
+) -> Option<String> {
+    if outcome.failures.is_empty() {
+        return None;
+    }
+    let details: Vec<String> = outcome
+        .failures
+        .iter()
+        .map(|(title, err)| format!("{title:?}: {err}"))
+        .collect();
+    Some(format!(
+        "Added {} of {attempted}. Rejected: {}",
+        outcome.created.len(),
+        details.join("; ")
+    ))
+}
+
 pub use tasks::{
     add_checklist_item_handler, add_comment_handler, add_file_attachment_handler,
     add_link_attachment_handler, archive_task_handler, create_relationship_handler,

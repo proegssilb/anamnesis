@@ -29,6 +29,7 @@ use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
 use crate::ports::{BoardQuery, Clock, IdGen, SearchIndex, TaskAggregate, TaskRepository};
 
+use super::bulk::{BulkCreateOutcome, bulk_create};
 use super::indexing::log_index_failure;
 
 /// Creates a new task, below the horizon, with no parent, then indexes it
@@ -62,6 +63,28 @@ pub async fn create_task(
         log_index_failure("create_task", err);
     }
     Ok(task)
+}
+
+/// Bulk-creates tasks under `project_id`, one per `titles` entry, each below
+/// the horizon with no parent — the task-level counterpart of
+/// `crate::use_cases::area::bulk_create_areas` /
+/// `crate::use_cases::project::bulk_create_projects` (issue #34); see
+/// `super::bulk`'s module doc comment for how a per-title rule violation is
+/// handled.
+#[allow(clippy::too_many_arguments)]
+pub async fn bulk_create_tasks(
+    repo: &dyn TaskRepository,
+    ids: &dyn IdGen,
+    clock: &dyn Clock,
+    search: &dyn SearchIndex,
+    role: Option<Role>,
+    project_id: ProjectId,
+    titles: &[&str],
+) -> Result<BulkCreateOutcome<Task>, AppError> {
+    bulk_create(titles, |_, title| {
+        create_task(repo, ids, clock, search, role, project_id, title, "")
+    })
+    .await
 }
 
 /// Loads a task together with its field values (`docs/DOMAIN.md` §7).

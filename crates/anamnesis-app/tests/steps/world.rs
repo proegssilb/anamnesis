@@ -93,6 +93,13 @@ pub struct AppWorld {
     /// A project-local custom `RelationshipKind`'s id, keyed by its forward
     /// label.
     domain_kinds: HashMap<String, KindId>,
+
+    // --- bulk_add.feature (issue #34) ---
+    /// How many titles the most recent bulk-create call rejected (a
+    /// per-title rule violation, per `anamnesis_app::BulkCreateOutcome`) —
+    /// distinct from [`Self::last_domain_error`], which only ever holds a
+    /// batch-aborting failure, not a partial one.
+    pub last_bulk_rejected: usize,
 }
 
 impl AppWorld {

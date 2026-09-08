@@ -30,5 +30,16 @@
       <textarea id="description" name="description"></textarea>
       <button type="submit">Create area</button>
     </form>
+
+    <details class="bulk-add">
+      <summary>Add multiple areas at once</summary>
+      <form class="panel-form" method="post" action="/areas/bulk">
+        <h2>Bulk add areas</h2>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="bulk-area-titles">One title per line</label>
+        <textarea id="bulk-area-titles" name="titles" required placeholder="Home&#10;Health&#10;Finances"></textarea>
+        <button type="submit">Create areas</button>
+      </form>
+    </details>
   {% endif %}
 {% endblock %}

@@ -17,6 +17,7 @@ use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
 use crate::ports::{Clock, IdGen, ProjectAggregate, ProjectRepository, SearchIndex};
 
+use super::bulk::{BulkCreateOutcome, bulk_create};
 use super::indexing::log_index_failure;
 
 /// Creates a new project (in `Pending` status) within an area, then indexes
@@ -52,6 +53,26 @@ pub async fn create_project(
         log_index_failure("create_project", err);
     }
     Ok(project)
+}
+
+/// Bulk-creates projects within `area_id`, one per `titles` entry — the
+/// project-level counterpart of `crate::use_cases::area::bulk_create_areas`
+/// (issue #34); see `super::bulk`'s module doc comment for how a per-title
+/// rule violation is handled.
+#[allow(clippy::too_many_arguments)]
+pub async fn bulk_create_projects(
+    repo: &dyn ProjectRepository,
+    ids: &dyn IdGen,
+    clock: &dyn Clock,
+    search: &dyn SearchIndex,
+    role: Option<Role>,
+    area_id: AreaId,
+    titles: &[&str],
+) -> Result<BulkCreateOutcome<Project>, AppError> {
+    bulk_create(titles, |_, title| {
+        create_project(repo, ids, clock, search, role, area_id, title, "")
+    })
+    .await
 }
 
 /// Loads a project together with its field definitions and relationship

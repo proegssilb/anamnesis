@@ -10,8 +10,8 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
 
 use anamnesis_app::{
-    AppError, create_area, create_project, edit_area, list_areas, list_projects_in_area,
-    transition_project_status, view_area,
+    AppError, bulk_create_areas, bulk_create_projects, create_area, create_project, edit_area,
+    list_areas, list_projects_in_area, transition_project_status, view_area,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{AreaId, Project, ProjectId, ProjectStatus};
@@ -23,7 +23,9 @@ use crate::session::csrf_tokens_match;
 use crate::state::AppState;
 
 use super::access;
-use super::forms::{CreateAreaForm, CreateProjectForm, EditAreaForm, TransitionProjectStatusForm};
+use super::forms::{
+    BulkTitlesForm, CreateAreaForm, CreateProjectForm, EditAreaForm, TransitionProjectStatusForm,
+};
 use super::group_membership::{self, AccessPanel};
 
 /// Rebuilds the area page from scratch — the four reads `render_area_page`
@@ -142,6 +144,73 @@ async fn create_area_impl(
             .await
         }
         Err(err) => Err(WebError::from(err)),
+    }
+}
+
+/// Bulk-creates areas, one per pasted line (issue #34: "Everything is added
+/// one at a time... not nice when for initial setup") — a thin transport
+/// wrapper around `anamnesis_app::bulk_create_areas`, which does the actual
+/// looping and per-title failure handling.
+pub async fn bulk_create_areas_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Form(form): Form<BulkTitlesForm>,
+) -> Response {
+    match bulk_create_areas_impl(&state, &user, form).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn bulk_create_areas_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    form: BulkTitlesForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let admin = access::is_system_admin(state, &user.user_id).await?;
+    let role = admin.then_some(Role::SystemAdmin);
+    let titles = form.titles();
+
+    if titles.is_empty() {
+        let areas = state.areas.list().await?;
+        return render_areas_page(
+            state,
+            user,
+            &areas,
+            admin,
+            Some("Enter at least one title, one per line."),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        )
+        .await;
+    }
+
+    let outcome = bulk_create_areas(
+        state.areas.as_ref(),
+        state.id_gen.as_ref(),
+        state.clock.as_ref(),
+        state.search_index.as_ref(),
+        role,
+        &titles,
+    )
+    .await?;
+
+    match super::bulk_failure_message(titles.len(), &outcome) {
+        None => Ok(Redirect::to("/areas").into_response()),
+        Some(message) => {
+            let areas = state.areas.list().await?;
+            render_areas_page(
+                state,
+                user,
+                &areas,
+                admin,
+                Some(&message),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            )
+            .await
+        }
     }
 }
 
@@ -293,6 +362,66 @@ async fn create_project_impl(
             )
         }
         Err(err) => Err(WebError::from(err)),
+    }
+}
+
+/// Bulk-creates projects within `area_id`, one per pasted line — the same
+/// paste-many-things flow as [`bulk_create_areas_impl`], scoped to one area
+/// instead of the whole system, since a project always needs one.
+pub async fn bulk_create_projects_handler(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<uuid::Uuid>,
+    Form(form): Form<BulkTitlesForm>,
+) -> Response {
+    match bulk_create_projects_impl(&state, &user, AreaId::new(id), form).await {
+        Ok(response) => response,
+        Err(err) => err.into_response_with(&state.templates),
+    }
+}
+
+async fn bulk_create_projects_impl(
+    state: &AppState,
+    user: &CurrentUser,
+    area_id: AreaId,
+    form: BulkTitlesForm,
+) -> Result<Response, WebError> {
+    if !csrf_tokens_match(&user.csrf_token, &form.csrf_token) {
+        return Err(WebError::CsrfMismatch);
+    }
+    let role = access::area_role(state, &user.user_id, area_id).await?;
+    let titles = form.titles();
+    let can_manage = matches!(role, Some(Role::SystemAdmin) | Some(Role::ProjectAdmin));
+
+    let message = if titles.is_empty() {
+        Some("Enter at least one title, one per line.".to_string())
+    } else {
+        let outcome = bulk_create_projects(
+            state.projects.as_ref(),
+            state.id_gen.as_ref(),
+            state.clock.as_ref(),
+            state.search_index.as_ref(),
+            role,
+            area_id,
+            &titles,
+        )
+        .await?;
+        super::bulk_failure_message(titles.len(), &outcome)
+    };
+    match message {
+        None => Ok(Redirect::to(&format!("/areas/{area_id}")).into_response()),
+        Some(message) => {
+            render_area_page_reloaded(
+                state,
+                user,
+                role,
+                area_id,
+                can_manage,
+                Some(&message),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            )
+            .await
+        }
     }
 }
 
