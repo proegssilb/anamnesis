@@ -7,7 +7,12 @@
    dragged element. #}
 {% if item.kind == "task" %}
   <div class="card" id="card-task-{{ item.id }}" data-item-kind="task" data-item-id="{{ item.id }}">
-    <a class="card-title" href="/tasks/{{ item.id }}">{{ item.title }}</a>
+    <h4 class="card-title"><a href="/tasks/{{ item.id }}">{{ item.title }}</a></h4>
+    {% if item.project_title %}
+      <p class="card-breadcrumb">
+        {% if item.area_title %}{{ item.area_title }} / {% endif %}{{ item.project_title }}
+      </p>
+    {% endif %}
     {% if item.card_fields %}
       <p class="card-fields">
         {% for f in item.card_fields %}<span class="badge">{{ f.name }}: {{ f.value }}</span>{% endfor %}

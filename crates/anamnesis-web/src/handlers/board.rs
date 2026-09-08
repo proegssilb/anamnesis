@@ -515,68 +515,126 @@ fn blockage_message(blockage: Blockage) -> &'static str {
 /// from — factored out so a reposition's fragment response reflects the
 /// exact same card content (including `show_on_card` fields) as a full
 /// board load, not a stripped-down copy of it.
-/// A per-request memo of each project's field definitions. One board load
-/// shows many tasks drawn from few projects, so without this the
-/// `show_on_card` lookup would re-load the same project aggregate once per
-/// card.
-struct FieldDefCache(HashMap<ProjectId, Vec<anamnesis_core::FieldDefinition>>);
+/// A per-request memo of one project's field definitions, title, and area —
+/// everything a card needs beyond what the columns query already returns.
+/// One board load shows many tasks drawn from few projects, so without this
+/// each card would re-load the same project aggregate from scratch.
+struct ProjectCardData {
+    field_definitions: Vec<anamnesis_core::FieldDefinition>,
+    title: String,
+    area_id: Option<anamnesis_core::AreaId>,
+}
 
-impl FieldDefCache {
+struct ProjectCardCache(HashMap<ProjectId, ProjectCardData>);
+
+impl ProjectCardCache {
     fn new() -> Self {
-        FieldDefCache(HashMap::new())
+        ProjectCardCache(HashMap::new())
     }
 
-    async fn defs_for(
+    async fn get(
         &mut self,
         state: &AppState,
         project_id: ProjectId,
-    ) -> Result<&[anamnesis_core::FieldDefinition], WebError> {
+    ) -> Result<&ProjectCardData, WebError> {
         if let std::collections::hash_map::Entry::Vacant(slot) = self.0.entry(project_id) {
-            let defs = state
-                .projects
-                .load(project_id)
-                .await?
-                .map(|a| a.field_definitions)
-                .unwrap_or_default();
-            slot.insert(defs);
+            let data = match state.projects.load(project_id).await? {
+                Some(a) => ProjectCardData {
+                    field_definitions: a.field_definitions,
+                    title: a.project.title.as_str().to_string(),
+                    area_id: Some(a.project.area_id),
+                },
+                None => ProjectCardData {
+                    field_definitions: Vec::new(),
+                    title: String::new(),
+                    area_id: None,
+                },
+            };
+            slot.insert(data);
         }
         Ok(&self.0[&project_id])
     }
 }
 
+/// A per-request memo of each area's title, keyed off [`ProjectCardData`]'s
+/// `area_id` — a board load's few projects tend to share even fewer areas.
+struct AreaTitleCache(HashMap<anamnesis_core::AreaId, String>);
+
+impl AreaTitleCache {
+    fn new() -> Self {
+        AreaTitleCache(HashMap::new())
+    }
+
+    async fn get(
+        &mut self,
+        state: &AppState,
+        area_id: anamnesis_core::AreaId,
+    ) -> Result<&str, WebError> {
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.0.entry(area_id) {
+            let title = state
+                .areas
+                .load(area_id)
+                .await?
+                .map(|a| a.title.as_str().to_string())
+                .unwrap_or_default();
+            slot.insert(title);
+        }
+        Ok(&self.0[&area_id])
+    }
+}
+
 /// One task's board card. The task's own aggregate is loaded only when its
 /// project actually marks some field `show_on_card` — the columns query
-/// already carries everything else the card shows.
+/// already carries everything else the card shows. The project and area
+/// names (issue #35) come from `projects`/`areas`, not the task itself.
 async fn task_card_view(
     state: &AppState,
     task: &anamnesis_core::Task,
-    cache: &mut FieldDefCache,
+    projects: &mut ProjectCardCache,
+    areas: &mut AreaTitleCache,
 ) -> Result<minijinja::Value, WebError> {
-    let defs = cache.defs_for(state, task.project_id).await?;
-    let card_fields = if defs.iter().any(|d| d.show_on_card) {
+    let data = projects.get(state, task.project_id).await?;
+    let show_on_card: Vec<anamnesis_core::FieldDefinition> = data
+        .field_definitions
+        .iter()
+        .filter(|d| d.show_on_card)
+        .cloned()
+        .collect();
+    let project_title = data.title.clone();
+    let area_id = data.area_id;
+
+    let card_fields = if show_on_card.is_empty() {
+        Vec::new()
+    } else {
         let values = state
             .tasks
             .load(task.id)
             .await?
             .map(|a| a.field_values)
             .unwrap_or_default();
-        defs.iter()
-            .filter(|d| d.show_on_card)
+        show_on_card
+            .iter()
             .filter_map(|def| {
                 values.iter().find(|v| v.field_id == def.id).map(
                     |v| context! { name => def.name.as_str(), value => format_field_data(&v.data) },
                 )
             })
             .collect::<Vec<_>>()
-    } else {
-        Vec::new()
     };
+
+    let area_title = match area_id {
+        Some(id) => areas.get(state, id).await?.to_string(),
+        None => String::new(),
+    };
+
     Ok(context! {
         kind => "task",
         id => task.id.to_string(),
         title => task.title.as_str(),
         bounce_count => task.bounce_count,
         card_fields => card_fields,
+        project_title => project_title,
+        area_title => area_title,
     })
 }
 
@@ -596,7 +654,8 @@ async fn build_column_views(
     state: &AppState,
     columns: &[anamnesis_app::BoardColumn],
 ) -> Result<Vec<minijinja::Value>, WebError> {
-    let mut cache = FieldDefCache::new();
+    let mut projects = ProjectCardCache::new();
+    let mut areas = AreaTitleCache::new();
     let mut column_views = Vec::with_capacity(columns.len());
     for bc in columns {
         // Tasks and placed tangles interleaved by position, in one list —
@@ -606,7 +665,9 @@ async fn build_column_views(
         let mut item_views = Vec::with_capacity(bc.items.len());
         for item in &bc.items {
             item_views.push(match item {
-                BoardItem::Task(task) => task_card_view(state, task, &mut cache).await?,
+                BoardItem::Task(task) => {
+                    task_card_view(state, task, &mut projects, &mut areas).await?
+                }
                 BoardItem::Tangle(tangle) => tangle_card_view(tangle),
             });
         }
