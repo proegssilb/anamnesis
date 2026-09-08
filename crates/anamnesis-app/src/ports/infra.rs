@@ -153,6 +153,65 @@ pub trait JobLease: Send + Sync {
     async fn release(&self, job: &str, owner: &str) -> Result<(), RepoError>;
 }
 
+/// One successfully uploaded part of a chunked upload
+/// (`crate::ports::infra::ChunkedUpload`), as returned by
+/// [`ChunkedUpload::put_part`] and later handed back — verbatim, in part
+/// order — to [`ChunkedUpload::complete`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartInfo {
+    /// 1-based; the caller (not this port) is responsible for numbering
+    /// parts contiguously and passing them to `complete` in order.
+    pub number: u32,
+    /// An opaque per-backend identifier for this part — an S3-compatible
+    /// backend's real per-part ETag, meaningless (and unused) for
+    /// `FsBlobStore`. Never interpreted by anything but the same backend
+    /// that produced it.
+    pub content_id: String,
+    pub size: u64,
+}
+
+/// A multi-request (chunked) upload: begin once, upload any number of
+/// parts — each an ordinary, independently-sized request, typically one
+/// per HTTP `PUT` — then complete once. This is what lets a file larger
+/// than any single request's practical size reach the blob store at all,
+/// complementing [`BlobStore`]'s single-request streaming `put`.
+///
+/// **Stateless by design.** An upload's `begin` may happen on one instance
+/// and its `put_part`/`complete` calls on others (`docs/DEPLOYMENT.md` §12:
+/// S3 exists specifically for separate-machine instances) — so no method
+/// here relies on anything an adapter remembered privately from a previous
+/// call. `key` and the opaque `token` `begin` returns are together enough
+/// to resume `put_part`/`complete`/`abort` from anywhere, and `complete`'s
+/// `parts` argument is the *caller's* durable record (a database row per
+/// part — see `crate::ports::AttachmentUploadRepository`) rather than
+/// anything this port's implementor tracked itself. `S3BlobStore`'s
+/// implementation is exactly `object_store::MultipartStore` (already
+/// designed this way, upstream) — a real, protocol-level guarantee that
+/// this shape is possible, not just convenient. `FsBlobStore`'s staging
+/// directory works the same way as long as every instance shares the blob
+/// root filesystem, which is already the precondition for any same-machine
+/// multi-instance `FsBlobStore` deployment.
+#[async_trait]
+pub trait ChunkedUpload: Send + Sync {
+    /// Begins a new chunked upload for `key`, returning the opaque token
+    /// every later call needs.
+    async fn begin(&self, key: &str, mime: &str) -> Result<String, RepoError>;
+    /// Uploads one part, `part_number` starting at 1. Parts may be sent in
+    /// any order — the caller assembles them in order at `complete` time.
+    async fn put_part(
+        &self,
+        key: &str,
+        token: &str,
+        part_number: u32,
+        data: ByteStream<'_>,
+    ) -> Result<PartInfo, RepoError>;
+    /// Assembles `parts` (given in the order they should be concatenated)
+    /// into the finished object at `key`, returning its total size.
+    async fn complete(&self, key: &str, token: &str, parts: &[PartInfo]) -> Result<u64, RepoError>;
+    /// Aborts the upload, discarding whatever parts have been received.
+    async fn abort(&self, key: &str, token: &str) -> Result<(), RepoError>;
+}
+
 /// Converts between UTC instants and local wall-clock calendar values in a
 /// named IANA time zone (e.g. `"America/New_York"`), for whatever real tzdb
 /// an adapter embeds.
