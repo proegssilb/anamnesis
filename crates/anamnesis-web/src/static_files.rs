@@ -33,6 +33,18 @@ pub async fn app_js() -> impl IntoResponse {
     )
 }
 
+/// The chunked (multi-request) attachment upload flow's client-side driver
+/// (issue #21) — see its own doc comment for the full design.
+pub async fn chunked_upload_js() -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        include_str!("../static/chunked-upload.js"),
+    )
+}
+
 /// Vendored `htmx` (`docs/DOMAIN.md` §8) — see the module doc comment.
 pub async fn htmx_js() -> impl IntoResponse {
     (

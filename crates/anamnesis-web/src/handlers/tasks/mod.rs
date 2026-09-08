@@ -13,6 +13,7 @@
 
 mod attachments;
 mod candidates;
+mod chunked_attachments;
 mod comments;
 mod edit;
 mod fields;
@@ -24,6 +25,9 @@ mod view;
 
 pub use attachments::{
     add_file_attachment_handler, add_link_attachment_handler, download_attachment_handler,
+};
+pub use chunked_attachments::{
+    abort_upload_handler, begin_upload_handler, complete_upload_handler, upload_part_handler,
 };
 pub use comments::add_comment_handler;
 pub use edit::{edit_task_description_handler, edit_task_title_handler};

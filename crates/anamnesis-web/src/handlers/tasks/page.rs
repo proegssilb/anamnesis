@@ -54,30 +54,77 @@ pub(super) async fn render_task_page(
         .templates
         .get_template("task.html")
         .map_err(WebError::template)?;
-    let body = tmpl
-        .render(context! {
-            task => task,
-            description_html => description_html,
-            project_title => project_title,
-            mentionable_users => mentionable_users,
-            is_on_board => task.placement.is_on_board(),
-            current_column_is_done => current_column_is_done,
-            current_column_title => current_column_title,
-            open_hint => open_hint,
-            relationship_prefill => relationship_prefill,
-            parent => parent,
-            children => children_ctx,
-            comments => comments_ctx,
-            attachments => attachments,
-            relationships => relationships,
-            column_options => column_options,
-            fields => fields,
-            csrf_token => user.csrf_token,
-            current_user => user.display_name,
-            error => error,
-        })
-        .map_err(WebError::template)?;
+    let ctx = task_page_context(
+        task,
+        description_html,
+        project_title,
+        mentionable_users,
+        current_column_is_done,
+        current_column_title,
+        open_hint,
+        relationship_prefill,
+        parent,
+        children_ctx,
+        comments_ctx,
+        attachments,
+        relationships,
+        column_options,
+        fields,
+        user,
+        error,
+        state.max_body_bytes,
+    );
+    let body = tmpl.render(ctx).map_err(WebError::template)?;
     Ok((status, Html(body)).into_response())
+}
+
+/// Assembles `task.html`'s template context — split out of
+/// [`render_task_page`] purely so that function's own async data-gathering
+/// stays under `just lizard`'s length budget; this half does no I/O of its
+/// own, just enumeration.
+#[allow(clippy::too_many_arguments)]
+fn task_page_context(
+    task: &anamnesis_core::Task,
+    description_html: minijinja::Value,
+    project_title: Option<String>,
+    mentionable_users: minijinja::Value,
+    current_column_is_done: Option<bool>,
+    current_column_title: Option<String>,
+    open_hint: Option<&str>,
+    relationship_prefill: Option<minijinja::Value>,
+    parent: Option<minijinja::Value>,
+    children_ctx: Vec<minijinja::Value>,
+    comments_ctx: Vec<minijinja::Value>,
+    attachments: Vec<Attachment>,
+    relationships: Vec<minijinja::Value>,
+    column_options: Vec<minijinja::Value>,
+    fields: Vec<minijinja::Value>,
+    user: &CurrentUser,
+    error: Option<&str>,
+    max_body_bytes: usize,
+) -> minijinja::Value {
+    context! {
+        task => task,
+        description_html => description_html,
+        project_title => project_title,
+        mentionable_users => mentionable_users,
+        is_on_board => task.placement.is_on_board(),
+        current_column_is_done => current_column_is_done,
+        current_column_title => current_column_title,
+        open_hint => open_hint,
+        relationship_prefill => relationship_prefill,
+        parent => parent,
+        children => children_ctx,
+        comments => comments_ctx,
+        attachments => attachments,
+        relationships => relationships,
+        column_options => column_options,
+        fields => fields,
+        csrf_token => user.csrf_token,
+        current_user => user.display_name,
+        error => error,
+        max_body_bytes => max_body_bytes,
+    }
 }
 
 /// Builds the "Relationships" section's context: each edge's label (forward

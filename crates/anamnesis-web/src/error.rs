@@ -107,28 +107,51 @@ fn app_status_and_message(err: &AppError) -> (StatusCode, String) {
     }
 }
 
-/// Recovers a `MultipartError` from deep inside a `RepoError`'s cause
-/// chain, if `.status() == PAYLOAD_TOO_LARGE` names one.
+/// Marks a stream aborted by [`crate::handlers::tasks::chunked_attachments`]'s
+/// own body-size enforcement — see that module's doc comment on
+/// `limited_body_stream` for why a raw-streamed `axum::body::Body` route
+/// needs its own check at all (axum's `DefaultBodyLimit` only wraps
+/// `Bytes`-based extractors, never a body consumed directly as a stream).
+/// Recognised by [`payload_too_large_message`] exactly like a `MultipartError`
+/// is — both name the same 413 to the caller, just from different routes.
+#[derive(Debug)]
+pub(crate) struct BodyTooLarge;
+
+impl std::fmt::Display for BodyTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("request body exceeded the configured limit")
+    }
+}
+
+impl StdError for BodyTooLarge {}
+
+/// Recovers a `MultipartError` or a [`BodyTooLarge`] from deep inside a
+/// `RepoError`'s cause chain, if either names a payload-too-large failure.
 ///
 /// Streaming moved where a multipart read actually happens: it used to be
 /// this crate's own `field.bytes()` call, so a body-limit overrun surfaced
 /// right here as an ordinary `MultipartError`. Now the read happens inside
 /// `BlobStore::put`, two crates away — the error arrives instead as
-/// `io::Error` (wrapping the original `MultipartError`, via
-/// `io::Error::other`) boxed inside a `RepoError`. Left unhandled, that
-/// would silently regress every over-limit upload from 413 to 500. This
-/// walks `RepoError`'s `.source()` chain to find it.
+/// `io::Error` (wrapping the original cause, via `io::Error::other`) boxed
+/// inside a `RepoError`. Left unhandled, that would silently regress every
+/// over-limit upload from 413 to 500. This walks `RepoError`'s `.source()`
+/// chain to find it.
 fn payload_too_large_message(err: &RepoError) -> Option<&'static str> {
     let mut cause: Option<&(dyn StdError + 'static)> = err.source();
     while let Some(e) = cause {
         if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
             // `io::Error::source()` delegates to *its own* custom payload's
             // source rather than returning the payload itself, so the
-            // `MultipartError` has to be recovered via `get_ref()`, not by
+            // inner cause has to be recovered via `get_ref()`, not by
             // continuing the `.source()` walk through this node.
-            let multipart_err = io_err
-                .get_ref()
-                .and_then(|inner| inner.downcast_ref::<MultipartError>());
+            let Some(inner) = io_err.get_ref() else {
+                cause = e.source();
+                continue;
+            };
+            if inner.downcast_ref::<BodyTooLarge>().is_some() {
+                return Some("that upload is larger than this server accepts");
+            }
+            let multipart_err = inner.downcast_ref::<MultipartError>();
             if let Some(multipart_err) = multipart_err
                 && multipart_err.status() == StatusCode::PAYLOAD_TOO_LARGE
             {

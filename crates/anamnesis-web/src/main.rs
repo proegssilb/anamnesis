@@ -21,10 +21,12 @@ use anamnesis_adapters::{
     FsBlobStore, OidcIdentityProvider, S3BlobStore, S3Settings, SqlStore, SystemClock,
     TzTimezoneResolver, UuidIdGen,
 };
-use anamnesis_app::{BlobStore, Clock, IdentityProvider, JobLease, TimezoneResolver};
+use anamnesis_app::{
+    BlobStore, ChunkedUpload, Clock, IdentityProvider, JobLease, TimezoneResolver,
+};
 use anamnesis_web::config::Config;
 use anamnesis_web::state::AppState;
-use anamnesis_web::{bootstrap, health, routes, session, sweep, tangles, templates};
+use anamnesis_web::{bootstrap, health, routes, session, sweep, tangles, templates, upload_gc};
 
 #[tokio::main]
 async fn main() {
@@ -52,8 +54,8 @@ async fn main() {
     let store = open_store(&config).await;
     let leases = open_job_lease(&store).await;
     let identity = resolve_identity(&config).await;
-    let blobs = open_blob_store(&config).await;
-    let state = build_state(&config, store, blobs, identity, leases);
+    let (blobs, chunked) = open_blob_store(&config).await;
+    let state = build_state(&config, store, blobs, chunked, identity, leases);
 
     // The two background tickers: the archive sweep (`docs/DOMAIN.md` §6) and
     // the tangle-detection backstop. Both are deliberately started only here,
@@ -67,18 +69,22 @@ async fn main() {
     // lease around their own detection passes.
     let sweep_handle = sweep::spawn_ticker(state.clone());
     let tangle_handle = tangles::spawn_backstop(state.clone());
+    let upload_gc_handle = upload_gc::spawn_ticker(state.clone());
 
     serve(routes::build_router(state), config.bind_addr).await;
 
-    // Both tickers are detached background tasks with nothing left to flush.
-    // A sweep either committed or it didn't, and `sweep_done` is idempotent,
-    // so an abort mid-sweep is safe to resume on the next boot (see `sweep`'s
-    // module doc comment); a detection pass recomputes its whole answer from
-    // the graph on the next run, so an abort mid-pass leaves nothing partial
-    // behind either. `abort()` returns immediately rather than waiting for
-    // the next wake-up, so neither delays process exit.
+    // All three tickers are detached background tasks with nothing left to
+    // flush. A sweep either committed or it didn't, and `sweep_done` is
+    // idempotent, so an abort mid-sweep is safe to resume on the next boot
+    // (see `sweep`'s module doc comment); a detection pass recomputes its
+    // whole answer from the graph on the next run, so an abort mid-pass
+    // leaves nothing partial behind either; an upload GC pass just deletes
+    // rows one at a time, so an abort mid-pass leaves at most one upload
+    // uncollected until the next hourly tick. `abort()` returns immediately
+    // rather than waiting for the next wake-up, so none delay process exit.
     sweep_handle.abort();
     tangle_handle.abort();
+    upload_gc_handle.abort();
 }
 
 /// Probes an already-running server and exits 0 (healthy) or 1 (not),
@@ -203,17 +209,26 @@ async fn resolve_identity(config: &Config) -> Option<Arc<dyn IdentityProvider>> 
 /// from the value's scheme exactly as [`open_store`] picks a database driver
 /// from `ANAMNESIS_DATABASE_URL`: an `s3://bucket/prefix` URL is an object
 /// store, and anything else is a filesystem path.
-async fn open_blob_store(config: &Config) -> Arc<dyn BlobStore> {
+///
+/// Returns the same underlying adapter erased two ways — `BlobStore` and
+/// `ChunkedUpload` are both implemented by `FsBlobStore`/`S3BlobStore`, and
+/// `AppState` (`crate::state`'s module doc comment) wants each as its own
+/// port field. Building one `Arc<Concrete>` and coercing it twice (rather
+/// than opening two separate stores) is what keeps them backed by the same
+/// instance.
+async fn open_blob_store(config: &Config) -> (Arc<dyn BlobStore>, Arc<dyn ChunkedUpload>) {
     let Some(s3) = &config.s3 else {
-        let store = FsBlobStore::new(&config.blob_root)
-            .await
-            .unwrap_or_else(|err| {
-                fail(format!(
-                    "failed to prepare the blob store root {:?}: {err}",
-                    config.blob_root
-                ))
-            });
-        return Arc::new(store);
+        let store = Arc::new(
+            FsBlobStore::new(&config.blob_root)
+                .await
+                .unwrap_or_else(|err| {
+                    fail(format!(
+                        "failed to prepare the blob store root {:?}: {err}",
+                        config.blob_root
+                    ))
+                }),
+        );
+        return (store.clone(), store);
     };
 
     // `Config` only populates `s3` for an `s3://` root, and it fails at
@@ -225,16 +240,18 @@ async fn open_blob_store(config: &Config) -> Arc<dyn BlobStore> {
         access_key_id: s3.access_key_id.clone(),
         secret_access_key: s3.secret_access_key.expose().to_string(),
     };
-    let store = S3BlobStore::new(&config.blob_root, settings).unwrap_or_else(|err| {
-        fail(format!(
-            "failed to open the blob store at {:?}: {err}",
-            config.blob_root
-        ))
-    });
+    let store = Arc::new(
+        S3BlobStore::new(&config.blob_root, settings).unwrap_or_else(|err| {
+            fail(format!(
+                "failed to open the blob store at {:?}: {err}",
+                config.blob_root
+            ))
+        }),
+    );
     // Nothing has been contacted yet: unlike the database, an S3 endpoint has
     // no connection to open, so a wrong endpoint or credential first shows up
     // on an attachment upload rather than here.
-    Arc::new(store)
+    (store.clone(), store)
 }
 
 /// Assembles the shared application state.
@@ -243,10 +260,12 @@ async fn open_blob_store(config: &Config) -> Arc<dyn BlobStore> {
 /// structs with nothing to configure, so they are built here rather than
 /// threaded in as parameters — they are not startup *inputs*, only the
 /// concrete adapters this binary happens to pick.
+#[allow(clippy::too_many_arguments)]
 fn build_state(
     config: &Config,
     store: Arc<SqlStore>,
     blobs: Arc<dyn BlobStore>,
+    chunked: Arc<dyn ChunkedUpload>,
     identity: Option<Arc<dyn IdentityProvider>>,
     leases: Arc<dyn JobLease>,
 ) -> AppState {
@@ -259,6 +278,8 @@ fn build_state(
         comments: store.clone(),
         attachments: store.clone(),
         blobs,
+        attachment_uploads: store.clone(),
+        chunked,
         board: store.clone(),
         search: store.clone(),
         search_index: store.clone(),
@@ -279,6 +300,7 @@ fn build_state(
         dev_csrf_token: session::generate_csrf_token(),
         secure_cookies: config.base_url_is_https(),
         max_body_bytes: config.max_body_bytes,
+        max_attachment_bytes: config.max_attachment_bytes,
         settings: store,
         timezone_name: config.timezone.clone(),
     }

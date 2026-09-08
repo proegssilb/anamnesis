@@ -15,11 +15,11 @@
 use std::sync::Arc;
 
 use anamnesis_app::{
-    AreaRepository, AttachmentRepository, BlobStore, BoardQuery, Clock, CommentRepository,
-    GroupMembershipQuery, GroupMembershipRepository, IdGen, IdentityProvider, JobLease,
-    MembershipQuery, MembershipRepository, ProjectRepository, RelationshipRepository, SearchIndex,
-    SearchQuery, SettingsRepository, TangleRepository, TaskRepository, TimezoneResolver,
-    UserDirectoryQuery, UserDirectoryRepository,
+    AreaRepository, AttachmentRepository, AttachmentUploadRepository, BlobStore, BoardQuery,
+    ChunkedUpload, Clock, CommentRepository, GroupMembershipQuery, GroupMembershipRepository,
+    IdGen, IdentityProvider, JobLease, MembershipQuery, MembershipRepository, ProjectRepository,
+    RelationshipRepository, SearchIndex, SearchQuery, SettingsRepository, TangleRepository,
+    TaskRepository, TimezoneResolver, UserDirectoryQuery, UserDirectoryRepository,
 };
 use axum::extract::FromRef;
 use axum_extra::extract::cookie::Key;
@@ -45,6 +45,15 @@ pub struct AppState {
     /// nothing about this port is backend-specific the way `SqlStore`'s other
     /// fields are.
     pub blobs: Arc<dyn BlobStore>,
+    /// The multi-request (chunked) upload half of file attachments (issue
+    /// #21): `attachment_uploads` tracks a `PendingUpload`'s progress,
+    /// `chunked` is what actually streams each part into storage. Backed by
+    /// the *same* concrete adapter as [`Self::blobs`] — `FsBlobStore`/
+    /// `S3BlobStore` implement both `BlobStore` and `ChunkedUpload` — but
+    /// kept as separate port fields, matching every other split in this
+    /// struct.
+    pub attachment_uploads: Arc<dyn AttachmentUploadRepository>,
+    pub chunked: Arc<dyn ChunkedUpload>,
     pub board: Arc<dyn BoardQuery>,
     /// The read side of global search (`docs/DOMAIN.md` §8). `search_index`
     /// is the write side — kept as a separate field (rather than one
@@ -125,6 +134,13 @@ pub struct AppState {
     /// [`crate::routes::build_router`] as a second argument so it reaches the
     /// router the same way `secure_cookies` and `dev_auth_bypass` already do.
     pub max_body_bytes: usize,
+    /// The largest a finished attachment may be, from
+    /// `ANAMNESIS_MAX_ATTACHMENT_BYTES` — enforced by
+    /// `crate::handlers::tasks::chunked_attachments` as a chunked upload's
+    /// parts accumulate, independent of [`Self::max_body_bytes`] (see
+    /// `crate::config::Config::max_attachment_bytes`'s doc comment for why
+    /// the two are separate knobs).
+    pub max_attachment_bytes: u64,
     /// The runtime-editable knobs `docs/DOMAIN.md` §3 assigns to a
     /// `Settings` entity: the active-project limit, the suggestion engine's
     /// tunables, and the sweep schedule. A live port, not a cached snapshot
