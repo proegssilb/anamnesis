@@ -69,21 +69,32 @@ async fn collect_mentionable_ids(
     project: ProjectId,
     area: AreaId,
 ) -> Result<Vec<UserId>, AppError> {
-    let mut ids: HashSet<UserId> = HashSet::new();
-    for (user, _) in membership.list_project_members(project).await? {
-        ids.insert(user);
-    }
-    for (user, _) in membership.list_area_members(area).await? {
-        ids.insert(user);
-    }
-    for (group, _) in groups.list_project_groups(project).await? {
-        ids.extend(groups.list_users_in_group(&group).await?);
-    }
-    for (group, _) in groups.list_area_groups(area).await? {
-        ids.extend(groups.list_users_in_group(&group).await?);
-    }
+    let project_direct = membership.list_project_members(project).await?;
+    let project_groups = groups.list_project_groups(project).await?;
+    let area_direct = membership.list_area_members(area).await?;
+    let area_groups = groups.list_area_groups(area).await?;
+
+    let mut ids = collect_scope_ids(project_direct, project_groups, groups).await?;
+    ids.extend(collect_scope_ids(area_direct, area_groups, groups).await?);
+
     let mut ids: Vec<UserId> = ids.into_iter().collect();
     ids.sort();
+    Ok(ids)
+}
+
+/// Every user id reachable through one scope's (a project's, or an area's)
+/// own direct members and its mapped groups — the one shape
+/// [`collect_mentionable_ids`] needs twice (once per scope), so it exists
+/// once instead of twice.
+async fn collect_scope_ids(
+    direct: Vec<(UserId, Role)>,
+    mapped_groups: Vec<(String, Role)>,
+    groups: &dyn GroupMembershipQuery,
+) -> Result<HashSet<UserId>, AppError> {
+    let mut ids: HashSet<UserId> = direct.into_iter().map(|(user, _)| user).collect();
+    for (group, _) in mapped_groups {
+        ids.extend(groups.list_users_in_group(&group).await?);
+    }
     Ok(ids)
 }
 
