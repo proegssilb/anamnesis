@@ -291,6 +291,7 @@
 
       function close() {
         active = null;
+        currentMatches = [];
         menu.hidden = true;
         menu.textContent = "";
       }
@@ -309,16 +310,23 @@
         textarea.focus();
       }
 
+      // The matches `render()` most recently drew, in display order --
+      // keydown reads this instead of re-filtering `candidates` itself, so
+      // Enter/Tab always picks the same "first match" the menu is actually
+      // showing, by construction rather than by recomputing and indexing
+      // back into a freshly rebuilt array.
+      var currentMatches = [];
+
       function render() {
-        var matches = candidates.filter(function (u) {
+        currentMatches = candidates.filter(function (u) {
           return u.name.toLowerCase().indexOf(active.query.toLowerCase()) !== -1;
         });
-        if (matches.length === 0) {
+        if (currentMatches.length === 0) {
           close();
           return;
         }
         menu.textContent = "";
-        matches.slice(0, 8).forEach(function (user, index) {
+        currentMatches.slice(0, 8).forEach(function (user, index) {
           var item = document.createElement("li");
           item.textContent = user.name;
           item.className = index === 0 ? "mention-menu-active" : "";
@@ -353,15 +361,11 @@
         if (event.key !== "Enter" && event.key !== "Tab") {
           return;
         }
-        var first = menu.querySelector("li");
-        if (!first) {
+        if (currentMatches.length === 0) {
           return;
         }
         event.preventDefault();
-        var index = Array.prototype.indexOf.call(menu.children, first);
-        choose(candidates.filter(function (u) {
-          return u.name.toLowerCase().indexOf(active.query.toLowerCase()) !== -1;
-        })[index]);
+        choose(currentMatches[0]);
       });
 
       textarea.addEventListener("blur", close);
