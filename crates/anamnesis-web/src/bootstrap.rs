@@ -154,6 +154,73 @@ async fn acquire_lease(leases: &dyn JobLease, owner: &str) -> Result<(), RepoErr
 }
 
 /// Grants `bootstrap_admin` System Admin if nobody by that name already
+/// holds it.
+async fn grant_bootstrap_admin_if_missing(
+    store: &SqlStore,
+    bootstrap_admin: &str,
+) -> Result<(), RepoError> {
+    let admin = UserId::new(bootstrap_admin);
+    if !store.is_system_admin(&admin).await? {
+        store.grant_system_admin(&admin).await?;
+        tracing::info!(
+            user = %admin,
+            "bootstrap: granted System Admin (ANAMNESIS_BOOTSTRAP_ADMIN)"
+        );
+    }
+    Ok(())
+}
+
+/// Maps `admin_group` to System Admin if it is not mapped already.
+async fn map_admin_group_if_missing(store: &SqlStore, admin_group: &str) -> Result<(), RepoError> {
+    // `list_admin_groups` rather than a "does this one group hold it" query:
+    // the port has no such method, and there is no reason to add one for a
+    // list that is a handful of rows and is already read by the admin UI.
+    if store
+        .list_admin_groups()
+        .await?
+        .iter()
+        .any(|g| g == admin_group)
+    {
+        return Ok(());
+    }
+    store.grant_admin_group(admin_group).await?;
+    tracing::info!(
+        group = admin_group,
+        "bootstrap: mapped group to System Admin (ANAMNESIS_OIDC_ADMIN_GROUP)"
+    );
+    Ok(())
+}
+
+/// Seeds the three default board columns if none exist yet.
+async fn seed_default_columns_if_missing(
+    store: &SqlStore,
+    ids: &dyn IdGen,
+) -> Result<(), RepoError> {
+    let existing: Vec<_> = store.columns_with_items().await?;
+    if !existing.is_empty() {
+        return Ok(());
+    }
+    let columns = [
+        ("To-Do", Some(DEFAULT_TODO_WIP_LIMIT), false),
+        ("Doing", None, false),
+        ("Done", None, true),
+    ];
+    for (position, (title, wip_limit, is_done)) in columns.into_iter().enumerate() {
+        let column = create_column(
+            ColumnId::new(ids.next()),
+            title,
+            position as u32,
+            wip_limit,
+            is_done,
+        )
+        .map_err(|e| RepoError::from_source("failed to build a default board column", e))?;
+        store.seed_board_column(&column).await?;
+    }
+    tracing::info!("bootstrap: seeded default board columns (To-Do, Doing, Done)");
+    Ok(())
+}
+
+/// Grants `bootstrap_admin` System Admin if nobody by that name already
 /// holds it, maps `admin_group` to System Admin if it is not mapped already,
 /// seeds the three default board columns if none exist yet, and seeds a
 /// default [`Settings`] row if none exists yet (`timezone` is stored on that
@@ -167,48 +234,13 @@ async fn seed(
     admin_group: Option<&str>,
     timezone: &str,
 ) -> Result<(), RepoError> {
-    let admin = UserId::new(bootstrap_admin);
-    if !store.is_system_admin(&admin).await? {
-        store.grant_system_admin(&admin).await?;
-        tracing::info!(
-            user = %admin,
-            "bootstrap: granted System Admin (ANAMNESIS_BOOTSTRAP_ADMIN)"
-        );
+    grant_bootstrap_admin_if_missing(store, bootstrap_admin).await?;
+
+    if let Some(group) = admin_group {
+        map_admin_group_if_missing(store, group).await?;
     }
 
-    // `list_admin_groups` rather than a "does this one group hold it" query:
-    // the port has no such method, and there is no reason to add one for a
-    // list that is a handful of rows and is already read by the admin UI.
-    if let Some(group) = admin_group
-        && !store.list_admin_groups().await?.iter().any(|g| g == group)
-    {
-        store.grant_admin_group(group).await?;
-        tracing::info!(
-            group,
-            "bootstrap: mapped group to System Admin (ANAMNESIS_OIDC_ADMIN_GROUP)"
-        );
-    }
-
-    let existing: Vec<_> = store.columns_with_items().await?;
-    if existing.is_empty() {
-        let columns = [
-            ("To-Do", Some(DEFAULT_TODO_WIP_LIMIT), false),
-            ("Doing", None, false),
-            ("Done", None, true),
-        ];
-        for (position, (title, wip_limit, is_done)) in columns.into_iter().enumerate() {
-            let column = create_column(
-                ColumnId::new(ids.next()),
-                title,
-                position as u32,
-                wip_limit,
-                is_done,
-            )
-            .map_err(|e| RepoError::from_source("failed to build a default board column", e))?;
-            store.seed_board_column(&column).await?;
-        }
-        tracing::info!("bootstrap: seeded default board columns (To-Do, Doing, Done)");
-    }
+    seed_default_columns_if_missing(store, ids).await?;
 
     store
         .seed_settings_if_missing(&Settings::default(), timezone)

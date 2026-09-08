@@ -33,6 +33,27 @@ fn encode_recurrence(
     }
 }
 
+/// Decodes the `every_n_weeks` variant from its stored `n`/`weekday` columns.
+fn decode_every_n_weeks(n: Option<i64>, weekday: Option<String>) -> Result<Recurrence, RepoError> {
+    let n = n.ok_or_else(|| RepoError::new("stored every_n_weeks recurrence missing n"))?;
+    let n =
+        u8::try_from(n).map_err(|e| RepoError::from_source("invalid stored recurrence n", e))?;
+    let weekday = weekday_from_text(
+        weekday
+            .as_deref()
+            .ok_or_else(|| RepoError::new("stored every_n_weeks recurrence missing weekday"))?,
+    )?;
+    Ok(Recurrence::EveryNWeeks { n, weekday })
+}
+
+/// Decodes the `day_of_month` variant from its stored `day` column.
+fn decode_day_of_month(day: Option<i64>) -> Result<Recurrence, RepoError> {
+    let day = day.ok_or_else(|| RepoError::new("stored day_of_month recurrence missing day"))?;
+    let day = u8::try_from(day)
+        .map_err(|e| RepoError::from_source("invalid stored recurrence day", e))?;
+    Ok(Recurrence::DayOfMonth { day })
+}
+
 fn decode_recurrence(
     kind: &str,
     n: Option<i64>,
@@ -41,22 +62,8 @@ fn decode_recurrence(
 ) -> Result<Recurrence, RepoError> {
     match kind {
         "never" => Ok(Recurrence::Never),
-        "every_n_weeks" => {
-            let n = n.ok_or_else(|| RepoError::new("stored every_n_weeks recurrence missing n"))?;
-            let n = u8::try_from(n)
-                .map_err(|e| RepoError::from_source("invalid stored recurrence n", e))?;
-            let weekday = weekday_from_text(weekday.as_deref().ok_or_else(|| {
-                RepoError::new("stored every_n_weeks recurrence missing weekday")
-            })?)?;
-            Ok(Recurrence::EveryNWeeks { n, weekday })
-        }
-        "day_of_month" => {
-            let day =
-                day.ok_or_else(|| RepoError::new("stored day_of_month recurrence missing day"))?;
-            let day = u8::try_from(day)
-                .map_err(|e| RepoError::from_source("invalid stored recurrence day", e))?;
-            Ok(Recurrence::DayOfMonth { day })
-        }
+        "every_n_weeks" => decode_every_n_weeks(n, weekday),
+        "day_of_month" => decode_day_of_month(day),
         other => Err(RepoError::new(format!(
             "invalid stored sweep_recurrence_kind {other:?}"
         ))),

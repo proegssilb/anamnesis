@@ -222,13 +222,11 @@ impl Config {
     /// without touching real process environment (which is global, mutable,
     /// and shared across test threads).
     pub fn from_source(get: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
-        let dev_auth_bypass = match get("ANAMNESIS_DEV_AUTH_BYPASS").as_deref() {
-            None => false,
-            Some(raw) => parse_bool(raw),
-        };
+        let dev_auth_bypass = get("ANAMNESIS_DEV_AUTH_BYPASS")
+            .as_deref()
+            .is_some_and(parse_bool);
 
-        let database_url = require(&get, "ANAMNESIS_DATABASE_URL")?;
-        let base_url = require(&get, "ANAMNESIS_BASE_URL")?;
+        let required = resolve_required_strings(&get)?;
         let bind_addr = resolve_bind_addr(&get)?;
         let cookie_key = resolve_cookie_key(&get)?;
         let oidc_scopes = resolve_oidc_scopes(&get);
@@ -237,17 +235,15 @@ impl Config {
         let oidc_user_id_claim = get("ANAMNESIS_OIDC_USER_ID_CLAIM");
         let oidc_display_name_claim = get("ANAMNESIS_OIDC_DISPLAY_NAME_CLAIM");
         let (oidc_groups_claim, oidc_admin_group) = resolve_oidc_groups(&get)?;
-        let timezone = require(&get, "ANAMNESIS_TIMEZONE")?;
-        let bootstrap_admin = require(&get, "ANAMNESIS_BOOTSTRAP_ADMIN")?;
         let blob_root = get("ANAMNESIS_BLOB_ROOT").unwrap_or_else(|| DEFAULT_BLOB_ROOT.to_string());
         let s3 = resolve_s3(&get, &blob_root)?;
         let tls_ca_bundle = get("ANAMNESIS_TLS_CA_BUNDLE").filter(|v| !v.is_empty());
         let max_body_bytes = resolve_max_body_bytes(&get)?;
 
         Ok(Config {
-            database_url,
+            database_url: required.database_url,
             bind_addr,
-            base_url,
+            base_url: required.base_url,
             oidc_issuer_url,
             oidc_client_id,
             oidc_client_secret,
@@ -258,8 +254,8 @@ impl Config {
             oidc_admin_group,
             cookie_key,
             dev_auth_bypass,
-            timezone,
-            bootstrap_admin,
+            timezone: required.timezone,
+            bootstrap_admin: required.bootstrap_admin,
             blob_root,
             s3,
             tls_ca_bundle,
@@ -293,6 +289,26 @@ fn require(
     get(name)
         .filter(|v| !v.is_empty())
         .ok_or(ConfigError::Missing(name))
+}
+
+/// The [`Config`] fields that are plain required strings, with no parsing,
+/// defaulting, or further validation beyond [`require`] itself.
+struct RequiredStrings {
+    database_url: String,
+    base_url: String,
+    timezone: String,
+    bootstrap_admin: String,
+}
+
+fn resolve_required_strings(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<RequiredStrings, ConfigError> {
+    Ok(RequiredStrings {
+        database_url: require(get, "ANAMNESIS_DATABASE_URL")?,
+        base_url: require(get, "ANAMNESIS_BASE_URL")?,
+        timezone: require(get, "ANAMNESIS_TIMEZONE")?,
+        bootstrap_admin: require(get, "ANAMNESIS_BOOTSTRAP_ADMIN")?,
+    })
 }
 
 /// `ANAMNESIS_BIND_ADDR`, defaulting to [`DEFAULT_BIND_ADDR`] when unset.

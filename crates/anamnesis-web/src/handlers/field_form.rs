@@ -25,15 +25,19 @@ fn bad(message: impl Into<String>) -> WebError {
 /// the integer `(units, scale)` pair `NumberValue`/`CurrencyAmount` store —
 /// `units * 10^-scale`. The integer and fractional digits are concatenated
 /// and parsed as one integer; no float is ever constructed.
-fn parse_scaled_decimal(raw: &str, max_scale: u8) -> Result<(i64, u8), WebError> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Err(bad("a number is required"));
-    }
-    let (negative, raw) = match raw.strip_prefix('-') {
+/// Splits a decimal string on its optional `-` sign, returning whether it
+/// was negative and the remaining unsigned text.
+fn strip_sign(raw: &str) -> (bool, &str) {
+    match raw.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, raw),
-    };
+    }
+}
+
+/// Splits unsigned decimal text into its `(int_part, frac_part)` digit
+/// strings, rejecting anything that isn't plain digits either side of an
+/// optional `.` (and isn't just a bare `.` with nothing on both sides).
+fn split_decimal_digits(raw: &str) -> Result<(&str, &str), WebError> {
     let (int_part, frac_part) = match raw.split_once('.') {
         Some((a, b)) => (a, b),
         None => (raw, ""),
@@ -46,6 +50,16 @@ fn parse_scaled_decimal(raw: &str, max_scale: u8) -> Result<(i64, u8), WebError>
     {
         return Err(bad("not a valid number"));
     }
+    Ok((int_part, frac_part))
+}
+
+fn parse_scaled_decimal(raw: &str, max_scale: u8) -> Result<(i64, u8), WebError> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(bad("a number is required"));
+    }
+    let (negative, raw) = strip_sign(raw);
+    let (int_part, frac_part) = split_decimal_digits(raw)?;
     let scale = frac_part.len();
     if scale > max_scale as usize {
         return Err(bad(format!(

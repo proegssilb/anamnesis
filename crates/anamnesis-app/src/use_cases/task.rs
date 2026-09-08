@@ -24,6 +24,7 @@ use anamnesis_core::{
     TaskId,
 };
 
+use super::board::check_wip_limit;
 use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
 use crate::ports::{BoardQuery, Clock, IdGen, SearchIndex, TaskAggregate, TaskRepository};
@@ -171,14 +172,7 @@ pub async fn raise_task(
     let aggregate = task_repo.load(task_id).await?.ok_or(AppError::NotFound)?;
     let already_in_column =
         matches!(aggregate.task.placement, Placement::OnBoard { column: c, .. } if c == column);
-    if !already_in_column {
-        let state = board.board_state(column).await?;
-        if let Some(limit) = state.wip_limit
-            && state.current_count >= limit
-        {
-            return Err(AppError::WipLimitExceeded);
-        }
-    }
+    check_wip_limit(board, column, already_in_column).await?;
     let now = clock.now();
     let moved = core::move_placement(
         &aggregate.task,

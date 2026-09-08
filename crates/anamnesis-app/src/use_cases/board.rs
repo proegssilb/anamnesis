@@ -18,7 +18,7 @@
 //! comment already gives for tangle detection's own system-wide rewrites.
 
 use anamnesis_core::policy::Role;
-use anamnesis_core::{self as core, ColumnId, Placement};
+use anamnesis_core::{self as core, ColumnId, Placement, TangleId, TaskId};
 
 use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
@@ -131,8 +131,9 @@ fn plan_column_order(
 /// genuine new arrival there. Skipped entirely when `already_in_dest` —
 /// reordering within a column already at its limit must still work, exactly
 /// like `crate::use_cases::task::raise_task`'s own exemption, since it does
-/// not change `current_count`.
-async fn check_wip_limit(
+/// not change `current_count`. Shared by both use cases for exactly that
+/// reason.
+pub(crate) async fn check_wip_limit(
     board: &dyn BoardQuery,
     column: ColumnId,
     already_in_dest: bool,
@@ -166,6 +167,42 @@ async fn renumber_column(
     Ok(())
 }
 
+/// Writes a task's placement to `target` if it is not already exactly there.
+async fn write_task_position(
+    task_repo: &dyn TaskRepository,
+    clock: &dyn Clock,
+    id: TaskId,
+    target: Placement,
+) -> Result<(), AppError> {
+    let aggregate = task_repo.load(id).await?.ok_or(AppError::NotFound)?;
+    if aggregate.task.placement == target {
+        return Ok(());
+    }
+    let moved = core::move_placement(&aggregate.task, target, clock.now())?;
+    task_repo
+        .update(&moved, aggregate.task.last_touched_at)
+        .await?;
+    Ok(())
+}
+
+/// Writes a tangle's placement to `column`/`position` if it is not already
+/// exactly there.
+async fn write_tangle_position(
+    tangle_repo: &dyn TangleRepository,
+    id: TangleId,
+    column: ColumnId,
+    position: u32,
+    target: Placement,
+) -> Result<(), AppError> {
+    let tangle = tangle_repo.load(id).await?.ok_or(AppError::NotFound)?;
+    if tangle.placement == target {
+        return Ok(());
+    }
+    let moved = core::place_tangle(&tangle, column, position)?;
+    tangle_repo.update(&moved).await?;
+    Ok(())
+}
+
 /// Writes `item`'s placement to `column`/`position` if it is not already
 /// exactly there — the no-op skip is what keeps [`reposition_board_item`]
 /// from re-touching (and re-stamping `last_touched_at` on) every untouched
@@ -180,24 +217,9 @@ async fn write_position(
 ) -> Result<(), AppError> {
     let target = Placement::OnBoard { column, position };
     match item {
-        BoardItemKind::Task(id) => {
-            let aggregate = task_repo.load(id).await?.ok_or(AppError::NotFound)?;
-            if aggregate.task.placement == target {
-                return Ok(());
-            }
-            let moved = core::move_placement(&aggregate.task, target, clock.now())?;
-            task_repo
-                .update(&moved, aggregate.task.last_touched_at)
-                .await?;
-        }
+        BoardItemKind::Task(id) => write_task_position(task_repo, clock, id, target).await,
         BoardItemKind::Tangle(id) => {
-            let tangle = tangle_repo.load(id).await?.ok_or(AppError::NotFound)?;
-            if tangle.placement == target {
-                return Ok(());
-            }
-            let moved = core::place_tangle(&tangle, column, position)?;
-            tangle_repo.update(&moved).await?;
+            write_tangle_position(tangle_repo, id, column, position, target).await
         }
     }
-    Ok(())
 }

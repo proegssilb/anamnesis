@@ -8,6 +8,26 @@ use sqlx::{PgPool, Row, SqlitePool};
 
 use super::{Backend, SqlStore, parse_uuid, timestamp_from_seconds};
 
+fn missing_attachment_column(col: &str) -> RepoError {
+    RepoError::new(format!("stored attachment missing {col}"))
+}
+
+/// Decodes the `file` variant from its stored `blob_key`/`filename`/`mime`/`size` columns.
+fn decode_file_attachment(
+    blob_key: Option<String>,
+    filename: Option<String>,
+    mime: Option<String>,
+    size: Option<i64>,
+) -> Result<AttachmentKind, RepoError> {
+    Ok(AttachmentKind::File {
+        blob_key: blob_key.ok_or_else(|| missing_attachment_column("blob_key"))?,
+        filename: filename.ok_or_else(|| missing_attachment_column("filename"))?,
+        mime: mime.unwrap_or_default(),
+        size: u64::try_from(size.ok_or_else(|| missing_attachment_column("size"))?)
+            .map_err(|e| RepoError::from_source("stored attachment size out of range", e))?,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn assemble(
     id: uuid::Uuid,
@@ -20,18 +40,11 @@ fn assemble(
     size: Option<i64>,
     created_at: i64,
 ) -> Result<Attachment, RepoError> {
-    let missing = |col: &str| RepoError::new(format!("stored attachment missing {col}"));
     let kind = match kind.as_str() {
         "link" => AttachmentKind::Link {
-            url: url.ok_or_else(|| missing("url"))?,
+            url: url.ok_or_else(|| missing_attachment_column("url"))?,
         },
-        "file" => AttachmentKind::File {
-            blob_key: blob_key.ok_or_else(|| missing("blob_key"))?,
-            filename: filename.ok_or_else(|| missing("filename"))?,
-            mime: mime.unwrap_or_default(),
-            size: u64::try_from(size.ok_or_else(|| missing("size"))?)
-                .map_err(|e| RepoError::from_source("stored attachment size out of range", e))?,
-        },
+        "file" => decode_file_attachment(blob_key, filename, mime, size)?,
         other => {
             return Err(RepoError::new(format!(
                 "invalid stored attachment kind {other:?}"
