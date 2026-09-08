@@ -57,8 +57,8 @@
                 <span class="badge">{{ p.status }}</span>
                 {% if p.archived %}<span class="badge">archived</span>{% endif %}
               </td>
-              <td>{{ p.created_at }}</td>
-              <td>{{ p.updated_at }}</td>
+              <td><time class="local-timestamp" data-epoch="{{ p.created_at }}">{{ p.created_at }}</time></td>
+              <td><time class="local-timestamp" data-epoch="{{ p.updated_at }}">{{ p.updated_at }}</time></td>
             </tr>
           {% endfor %}
         </tbody>

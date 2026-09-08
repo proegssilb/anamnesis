@@ -373,4 +373,35 @@
 
     document.querySelectorAll("textarea[data-mentions]").forEach(initMentionPicker);
   });
+
+  // Timestamp formatting (issue #35): the server renders each `<time>` with
+  // a raw `data-epoch` (Unix seconds, timezone-free) and its fallback text
+  // equal to that same number, since it has no idea which timezone the
+  // visitor is in. This formats it using the browser's own notion of
+  // "local" -- whatever `Intl`/`Date` resolve that to, including a browser
+  // like LibreWolf that deliberately reports UTC to resist fingerprinting;
+  // there is no more-correct answer to defer to than what the browser itself
+  // reports. Without JavaScript, the raw fallback number still renders.
+  ready(function () {
+    var formatter =
+      window.Intl && Intl.DateTimeFormat
+        ? new Intl.DateTimeFormat(undefined, {
+            dateStyle: "medium",
+            timeStyle: "short",
+          })
+        : null;
+    if (!formatter) {
+      return;
+    }
+    document.querySelectorAll("time.local-timestamp[data-epoch]").forEach(function (el) {
+      var epochSeconds = Number(el.getAttribute("data-epoch"));
+      if (!Number.isFinite(epochSeconds)) {
+        return;
+      }
+      var date = new Date(epochSeconds * 1000);
+      el.dateTime = date.toISOString();
+      el.textContent = formatter.format(date);
+      el.title = date.toISOString();
+    });
+  });
 })();
