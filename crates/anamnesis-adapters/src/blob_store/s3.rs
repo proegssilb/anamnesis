@@ -18,10 +18,11 @@
 //! endpoint (`{bucket}.s3.example.com`) is not configurable here; add it
 //! when something actually needs it.
 
-use anamnesis_app::{BlobStore, ByteStream, RepoError};
+use anamnesis_app::{BlobStore, ByteStream, ChunkedUpload, PartInfo, RepoError};
 use async_trait::async_trait;
 use futures_util::StreamExt as _;
 use object_store::aws::{AmazonS3, AmazonS3Builder};
+use object_store::multipart::{MultipartStore, PartId};
 use object_store::path::Path;
 use object_store::{
     Attribute, AttributeValue, Attributes, GetOptions, GetRange, ObjectStore, ObjectStoreExt,
@@ -211,6 +212,91 @@ impl BlobStore for S3BlobStore {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
             Err(e) => Err(RepoError::from_source("failed to delete blob", e)),
         }
+    }
+}
+
+/// Built on `object_store`'s [`MultipartStore`] — the real S3 multipart
+/// upload protocol, already stateless by design: a [`MultipartId`] plus
+/// `path` addresses an in-progress upload from any client, any process,
+/// indefinitely, exactly the property [`ChunkedUpload`] needs to let one
+/// instance handle `begin` and a completely different one handle `put_part`
+/// or `complete` (`docs/DEPLOYMENT.md` §12). Each part's `content_id`
+/// carries the real per-part identifier `complete_multipart` requires back,
+/// via [`PartInfo::content_id`] — recorded durably by the caller
+/// (`anamnesis_app::AttachmentUploadRepository`), not remembered here.
+///
+/// [`MultipartId`]: object_store::MultipartId
+#[async_trait]
+impl ChunkedUpload for S3BlobStore {
+    async fn begin(&self, key: &str, mime: &str) -> Result<String, RepoError> {
+        let location = self.location(key)?;
+        let mut attributes = Attributes::new();
+        attributes.insert(
+            Attribute::ContentType,
+            AttributeValue::from(mime.to_string()),
+        );
+        let opts = PutMultipartOptions {
+            attributes,
+            ..Default::default()
+        };
+        self.inner
+            .create_multipart_opts(&location, opts)
+            .await
+            .map_err(|e| RepoError::from_source("failed to start upload", e))
+    }
+
+    async fn put_part(
+        &self,
+        key: &str,
+        token: &str,
+        part_number: u32,
+        mut data: ByteStream<'_>,
+    ) -> Result<PartInfo, RepoError> {
+        let location = self.location(key)?;
+        // One part is one HTTP request's whole body, already bounded by
+        // `ANAMNESIS_MAX_BODY_BYTES` well below what's safe to buffer --
+        // `MultipartStore::put_part` needs the complete part as one
+        // `PutPayload` regardless, unlike `BlobStore::put`'s own streaming.
+        let mut buf = Vec::new();
+        while let Some(chunk) = data.next().await {
+            let chunk = chunk.map_err(|e| RepoError::from_source("failed to read part", e))?;
+            buf.extend_from_slice(&chunk);
+        }
+        let size = buf.len() as u64;
+        let part_idx = (part_number.saturating_sub(1)) as usize;
+        let part_id = self
+            .inner
+            .put_part(&location, &token.to_string(), part_idx, buf.into())
+            .await
+            .map_err(|e| RepoError::from_source("failed to upload part", e))?;
+        Ok(PartInfo {
+            number: part_number,
+            content_id: part_id.content_id,
+            size,
+        })
+    }
+
+    async fn complete(&self, key: &str, token: &str, parts: &[PartInfo]) -> Result<u64, RepoError> {
+        let location = self.location(key)?;
+        let part_ids = parts
+            .iter()
+            .map(|p| PartId {
+                content_id: p.content_id.clone(),
+            })
+            .collect();
+        self.inner
+            .complete_multipart(&location, &token.to_string(), part_ids)
+            .await
+            .map_err(|e| RepoError::from_source("failed to complete upload", e))?;
+        Ok(parts.iter().map(|p| p.size).sum())
+    }
+
+    async fn abort(&self, key: &str, token: &str) -> Result<(), RepoError> {
+        let location = self.location(key)?;
+        self.inner
+            .abort_multipart(&location, &token.to_string())
+            .await
+            .map_err(|e| RepoError::from_source("failed to abort upload", e))
     }
 }
 

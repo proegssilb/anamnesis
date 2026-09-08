@@ -6,6 +6,7 @@
 mod archive;
 mod area;
 mod attachment;
+mod attachment_upload;
 mod board;
 mod bulk;
 mod comment;
@@ -25,6 +26,9 @@ pub use archive::{ArchiveOutcome, archive_done_tasks};
 pub use area::{bulk_create_areas, create_area, edit_area, list_areas, reposition_area, view_area};
 pub use attachment::{
     add_file_attachment, add_link_attachment, delete_attachment, list_attachments,
+};
+pub use attachment_upload::{
+    abort_file_upload, begin_file_upload, complete_file_upload, upload_file_part,
 };
 pub use board::{BoardItemKind, reposition_board_item};
 pub use bulk::BulkCreateOutcome;

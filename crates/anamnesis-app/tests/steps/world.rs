@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use anamnesis_app::{AppError, AttachmentId, Clock, CommentId, IdGen};
+use anamnesis_app::{AppError, AttachmentId, AttachmentUploadId, Clock, CommentId, IdGen};
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
     AreaId, ColumnId, DetectedTangle, KindId, ProjectId, ProjectStatus, Reconciliation,
@@ -93,6 +93,13 @@ pub struct AppWorld {
     /// A project-local custom `RelationshipKind`'s id, keyed by its forward
     /// label.
     domain_kinds: HashMap<String, KindId>,
+
+    // --- chunked_attachment_upload.feature (issue #21's multi-request half) ---
+    /// A chunked upload's id, keyed by the scenario's label for it (a
+    /// filename) — the multi-request counterpart of
+    /// [`Self::domain_attachments`], which only ever names a *finished*
+    /// attachment.
+    domain_uploads: HashMap<String, AttachmentUploadId>,
 
     // --- bulk_add.feature (issue #34) ---
     /// How many titles the most recent bulk-create call rejected (a
@@ -437,5 +444,18 @@ impl AppWorld {
             .domain_kinds
             .get(label)
             .unwrap_or_else(|| panic!("no relationship kind was ever recorded as {label:?}"))
+    }
+
+    /// Records a chunked upload's id under `label` (its filename).
+    pub fn set_domain_upload(&mut self, label: &str, id: AttachmentUploadId) {
+        self.domain_uploads.insert(label.to_string(), id);
+    }
+
+    /// The upload id recorded under `label`.
+    pub fn domain_upload_id(&self, label: &str) -> AttachmentUploadId {
+        *self
+            .domain_uploads
+            .get(label)
+            .unwrap_or_else(|| panic!("no upload was ever begun as {label:?}"))
     }
 }

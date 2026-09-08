@@ -6,6 +6,7 @@
 mod access_control;
 mod archive_sweep;
 mod bulk_add;
+mod chunked_attachment_upload;
 mod collaboration;
 mod placement;
 mod project_lifecycle;

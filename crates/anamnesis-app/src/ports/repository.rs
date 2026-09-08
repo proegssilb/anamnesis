@@ -18,8 +18,11 @@ use anamnesis_core::{
     RelationshipId, RelationshipKind, Tangle, TangleId, Task, TaskId, Timestamp,
 };
 
-use crate::entities::{Attachment, AttachmentId, Comment, CommentId};
+use crate::entities::{
+    Attachment, AttachmentId, AttachmentUploadId, Comment, CommentId, PendingUpload,
+};
 use crate::error::RepoError;
+use crate::ports::infra::PartInfo;
 use crate::settings::Settings;
 
 /// Loads, lists, and writes [`Area`]s. Tiny aggregate, no children, no
@@ -204,6 +207,27 @@ pub trait AttachmentRepository: Send + Sync {
     async fn load(&self, id: AttachmentId) -> Result<Option<Attachment>, RepoError>;
     async fn insert(&self, attachment: &Attachment) -> Result<(), RepoError>;
     async fn delete(&self, id: AttachmentId) -> Result<(), RepoError>;
+}
+
+/// Tracks [`PendingUpload`]s — chunked, multi-request file uploads in
+/// progress (`crate::ports::infra::ChunkedUpload`) — from `begin_file_upload`
+/// until `complete_file_upload`/`abort_file_upload` (or the abandoned-upload
+/// sweep) removes the row.
+#[async_trait]
+pub trait AttachmentUploadRepository: Send + Sync {
+    async fn create(&self, upload: &PendingUpload) -> Result<(), RepoError>;
+    async fn load(&self, id: AttachmentUploadId) -> Result<Option<PendingUpload>, RepoError>;
+    /// Records `part` and returns the upload's new running total of bytes
+    /// received (including this part) — the caller uses this to enforce
+    /// `ANAMNESIS_MAX_ATTACHMENT_BYTES` without a second query.
+    async fn record_part(&self, id: AttachmentUploadId, part: PartInfo) -> Result<u64, RepoError>;
+    /// Every part recorded so far, in ascending `part_number` order — what
+    /// `complete_file_upload` hands to [`crate::ports::ChunkedUpload::complete`].
+    async fn list_parts(&self, id: AttachmentUploadId) -> Result<Vec<PartInfo>, RepoError>;
+    async fn delete(&self, id: AttachmentUploadId) -> Result<(), RepoError>;
+    /// Every upload still open (never completed or aborted) with `created_at`
+    /// before `before` — the abandoned-upload GC sweep's input.
+    async fn list_stale(&self, before: Timestamp) -> Result<Vec<PendingUpload>, RepoError>;
 }
 
 /// Loads and writes the singleton [`Settings`] row (`docs/DOMAIN.md` §3).

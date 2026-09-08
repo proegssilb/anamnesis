@@ -20,6 +20,7 @@
 
 mod area;
 mod attachment;
+mod attachment_upload;
 mod board_query;
 mod comment;
 mod group_membership;

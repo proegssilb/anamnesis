@@ -15,12 +15,14 @@ mod user_directory;
 pub use common::{Clock, IdGen};
 pub use group_membership::{GroupMembershipQuery, GroupMembershipRepository};
 pub use identity::{AuthenticatedIdentity, IdentityProvider, LoginCallback, LoginRedirect};
-pub use infra::{BlobStore, ByteStream, JobLease, SearchIndex, TimezoneResolver};
+pub use infra::{
+    BlobStore, ByteStream, ChunkedUpload, JobLease, PartInfo, SearchIndex, TimezoneResolver,
+};
 pub use membership::{MembershipQuery, MembershipRepository};
 pub use query::{BoardColumn, BoardItem, BoardQuery, SearchHit, SearchQuery};
 pub use repository::{
-    AreaRepository, AttachmentRepository, CommentRepository, ProjectAggregate, ProjectRepository,
-    RelationshipRepository, SettingsRepository, TangleRepository, TaskAggregate, TaskRepository,
-    TaskUpdateError,
+    AreaRepository, AttachmentRepository, AttachmentUploadRepository, CommentRepository,
+    ProjectAggregate, ProjectRepository, RelationshipRepository, SettingsRepository,
+    TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
 };
 pub use user_directory::{UserDirectoryQuery, UserDirectoryRepository};

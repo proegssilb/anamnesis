@@ -13,9 +13,10 @@ use std::time::Duration;
 
 use anamnesis_adapters::SqlStore;
 use anamnesis_app::{
-    AreaRepository, Attachment, AttachmentId, AttachmentKind, AttachmentRepository, BoardQuery,
-    Comment, CommentId, CommentRepository, GroupMembershipQuery, GroupMembershipRepository,
-    JobLease, MembershipQuery, MembershipRepository, ProjectAggregate, ProjectRepository,
+    AreaRepository, Attachment, AttachmentId, AttachmentKind, AttachmentRepository,
+    AttachmentUploadId, AttachmentUploadRepository, BoardQuery, Comment, CommentId,
+    CommentRepository, GroupMembershipQuery, GroupMembershipRepository, JobLease, MembershipQuery,
+    MembershipRepository, PartInfo, PendingUpload, ProjectAggregate, ProjectRepository,
     RelationshipRepository, SearchHit, SearchIndex, SearchQuery, Settings, SettingsRepository,
     TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError, UserDirectoryQuery,
     UserDirectoryRepository,
@@ -130,6 +131,7 @@ async fn contract(store: &SqlStore) {
     tangle_on_board_contract(store, task_contract_project).await;
     comment_contract(store, &task_a).await;
     attachment_contract(store, &task_a).await;
+    attachment_upload_contract(store, &task_a).await;
     membership_contract(store).await;
     group_membership_contract(store).await;
     user_directory_contract(store).await;
@@ -1098,6 +1100,102 @@ async fn attachment_contract(store: &SqlStore, owner: &Task) {
         AttachmentRepository::load(store, link.id).await.unwrap(),
         None
     );
+}
+
+// --- AttachmentUpload (chunked upload tracking, issue #21) ---
+
+fn pending_upload(owner: &Task, created_at: Timestamp) -> PendingUpload {
+    PendingUpload {
+        id: AttachmentUploadId::new(Uuid::new_v4()),
+        task_id: owner.id,
+        blob_key: "blobs/chunked-abc".to_string(),
+        storage_token: "upload-token-1".to_string(),
+        filename: "video.mp4".to_string(),
+        mime: "video/mp4".to_string(),
+        bytes_received: 0,
+        created_by: UserId::new("alice"),
+        created_at,
+    }
+}
+
+async fn attachment_upload_contract(store: &SqlStore, owner: &Task) {
+    let upload = pending_upload(owner, ts(20_000));
+    AttachmentUploadRepository::create(store, &upload)
+        .await
+        .unwrap();
+    assert_eq!(
+        AttachmentUploadRepository::load(store, upload.id)
+            .await
+            .unwrap(),
+        Some(upload.clone())
+    );
+
+    attachment_upload_parts_contract(store, upload.id).await;
+    attachment_upload_stale_contract(store, owner).await;
+
+    AttachmentUploadRepository::delete(store, upload.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        AttachmentUploadRepository::load(store, upload.id)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+/// `record_part`'s running total (both its own return value and what a
+/// following `load` reflects) and `list_parts`' ordering.
+async fn attachment_upload_parts_contract(store: &SqlStore, upload_id: AttachmentUploadId) {
+    let part1 = PartInfo {
+        number: 1,
+        content_id: "etag-1".to_string(),
+        size: 1024,
+    };
+    let total_after_1 = AttachmentUploadRepository::record_part(store, upload_id, part1.clone())
+        .await
+        .unwrap();
+    assert_eq!(total_after_1, 1024);
+
+    let part2 = PartInfo {
+        number: 2,
+        content_id: "etag-2".to_string(),
+        size: 2048,
+    };
+    let total_after_2 = AttachmentUploadRepository::record_part(store, upload_id, part2.clone())
+        .await
+        .unwrap();
+    assert_eq!(total_after_2, 1024 + 2048);
+
+    let reloaded = AttachmentUploadRepository::load(store, upload_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reloaded.bytes_received, 1024 + 2048);
+
+    let parts = AttachmentUploadRepository::list_parts(store, upload_id)
+        .await
+        .unwrap();
+    assert_eq!(parts, vec![part1, part2]);
+}
+
+/// A second upload, old enough to be "stale", proves `list_stale` finds it
+/// (and does not also return a fresh one).
+async fn attachment_upload_stale_contract(store: &SqlStore, owner: &Task) {
+    let stale = pending_upload(owner, ts(1));
+    AttachmentUploadRepository::create(store, &stale)
+        .await
+        .unwrap();
+    let found_stale = AttachmentUploadRepository::list_stale(store, ts(10_000))
+        .await
+        .unwrap();
+    assert_eq!(
+        found_stale.into_iter().map(|u| u.id).collect::<Vec<_>>(),
+        vec![stale.id]
+    );
+    AttachmentUploadRepository::delete(store, stale.id)
+        .await
+        .unwrap();
 }
 
 // --- Membership: system admin, area/project roles, inheritance + override ---

@@ -13,7 +13,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use anamnesis_app::{BlobStore, ByteStream, RepoError};
+use anamnesis_app::{BlobStore, ByteStream, ChunkedUpload, PartInfo, RepoError};
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
@@ -83,6 +83,18 @@ impl FsBlobStore {
         }
         Ok(resolved)
     }
+
+    /// The staging directory for a chunked upload's parts, named by its
+    /// opaque token. Tokens are always minted by [`ChunkedUpload::begin`]
+    /// (a fresh UUID), never user-supplied, but this still rejects a path
+    /// separator outright rather than trusting that — the same
+    /// defense-in-depth spirit as [`Self::resolve`].
+    fn staging_dir(&self, token: &str) -> Result<PathBuf, RepoError> {
+        if token.is_empty() || token.contains('/') || token.contains('\\') {
+            return Err(RepoError::new(format!("invalid upload token {token:?}")));
+        }
+        Ok(self.root.join(".uploads").join(token))
+    }
 }
 
 #[async_trait]
@@ -133,6 +145,116 @@ impl BlobStore for FsBlobStore {
             Err(e) => Err(RepoError::from_source("failed to delete blob", e)),
         }
     }
+}
+
+/// A chunked upload's parts are staged as `part-<number>` files under a
+/// per-upload directory, and [`ChunkedUpload::complete`] concatenates them
+/// (in the order the caller's `parts` names, not filesystem order) into the
+/// final blob via the same publish-by-rename discipline [`BlobStore::put`]
+/// uses — a reader can never observe a partially assembled blob.
+/// `content_id` is unused (always empty): `FsBlobStore` orders parts purely
+/// by the caller-supplied `parts` list, needing no backend-side manifest.
+#[async_trait]
+impl ChunkedUpload for FsBlobStore {
+    async fn begin(&self, _key: &str, _mime: &str) -> Result<String, RepoError> {
+        let token = uuid::Uuid::new_v4().to_string();
+        let dir = self.staging_dir(&token)?;
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| RepoError::from_source("failed to start upload", e))?;
+        Ok(token)
+    }
+
+    async fn put_part(
+        &self,
+        _key: &str,
+        token: &str,
+        part_number: u32,
+        data: ByteStream<'_>,
+    ) -> Result<PartInfo, RepoError> {
+        let dir = self.staging_dir(token)?;
+        let path = dir.join(format!("part-{part_number:08}"));
+        // Atomically published, exactly like a single-request blob: a part
+        // upload interrupted mid-transfer must not leave a truncated
+        // `part-*` file for `complete` to silently assemble into the blob.
+        let size = write_atomically(&path, data).await?;
+        Ok(PartInfo {
+            number: part_number,
+            content_id: String::new(),
+            size,
+        })
+    }
+
+    async fn complete(&self, key: &str, token: &str, parts: &[PartInfo]) -> Result<u64, RepoError> {
+        let dest = self.resolve(key)?;
+        if let Some(parent) = dest.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| RepoError::from_source("failed to create blob parent directory", e))?;
+        }
+        let dir = self.staging_dir(token)?;
+        let size = concatenate_parts(&dir, &dest, parts).await?;
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        Ok(size)
+    }
+
+    async fn abort(&self, _key: &str, token: &str) -> Result<(), RepoError> {
+        let dir = self.staging_dir(token)?;
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+}
+
+/// Streams each `part-<number>` file named by `parts`, in that order, into
+/// a temporary file next to `dest`, then publishes it the same
+/// atomically-by-rename way [`write_atomically`] does for a single-request
+/// upload.
+async fn concatenate_parts(
+    staging_dir: &Path,
+    dest: &Path,
+    parts: &[PartInfo],
+) -> Result<u64, RepoError> {
+    let parent = dest
+        .parent()
+        .ok_or_else(|| RepoError::new(format!("blob path {dest:?} has no parent directory")))?;
+    let tmp = parent.join(format!(".tmp-{}", uuid::Uuid::new_v4()));
+
+    let result = concatenate_into(staging_dir, &tmp, parts).await;
+    let published = match result {
+        Ok(size) => tokio::fs::rename(&tmp, dest)
+            .await
+            .map(|()| size)
+            .map_err(|e| RepoError::from_source("failed to publish blob", e)),
+        Err(e) => Err(e),
+    };
+    if published.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    published
+}
+
+async fn concatenate_into(
+    staging_dir: &Path,
+    tmp: &Path,
+    parts: &[PartInfo],
+) -> Result<u64, RepoError> {
+    let mut out = tokio::fs::File::create(tmp)
+        .await
+        .map_err(|e| RepoError::from_source("failed to create temporary blob", e))?;
+    let mut total = 0u64;
+    for part in parts {
+        let part_path = staging_dir.join(format!("part-{:08}", part.number));
+        let mut part_file = tokio::fs::File::open(&part_path)
+            .await
+            .map_err(|e| RepoError::from_source("failed to read upload part", e))?;
+        total += tokio::io::copy(&mut part_file, &mut out)
+            .await
+            .map_err(|e| RepoError::from_source("failed to assemble blob", e))?;
+    }
+    out.sync_all()
+        .await
+        .map_err(|e| RepoError::from_source("failed to flush blob", e))?;
+    Ok(total)
 }
 
 /// Writes `bytes` to `path` by publishing it under its final name only once

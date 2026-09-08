@@ -21,10 +21,11 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 
 use anamnesis_app::{
-    AreaRepository, Attachment, AttachmentId, AttachmentRepository, BlobStore, BoardColumn,
-    BoardItem, BoardQuery, ByteStream, Comment, CommentId, CommentRepository, MembershipQuery,
-    MembershipRepository, ProjectAggregate, ProjectRepository, RelationshipRepository, RepoError,
-    SearchHit, SearchIndex, SearchQuery, Settings, SettingsRepository, TangleRepository,
+    AreaRepository, Attachment, AttachmentId, AttachmentRepository, AttachmentUploadId,
+    AttachmentUploadRepository, BlobStore, BoardColumn, BoardItem, BoardQuery, ByteStream,
+    ChunkedUpload, Comment, CommentId, CommentRepository, MembershipQuery, MembershipRepository,
+    PartInfo, PendingUpload, ProjectAggregate, ProjectRepository, RelationshipRepository,
+    RepoError, SearchHit, SearchIndex, SearchQuery, Settings, SettingsRepository, TangleRepository,
     TaskAggregate, TaskRepository, TaskUpdateError,
 };
 use anamnesis_core::policy::Role;
@@ -46,6 +47,18 @@ pub struct Fakes {
     attachments: Mutex<HashMap<AttachmentId, Attachment>>,
     columns: Mutex<Vec<Column>>,
     blobs: Mutex<HashMap<String, (Vec<u8>, String)>>,
+    /// Chunked-upload staging: opaque token -> part number -> that part's
+    /// bytes, mirroring `FsBlobStore`'s staging directory / `S3BlobStore`'s
+    /// real multipart upload closely enough for `ChunkedUpload`'s contract
+    /// to mean the same thing here as in production.
+    chunked_uploads: Mutex<HashMap<String, HashMap<u32, Vec<u8>>>>,
+    /// Mints unique staging tokens for [`ChunkedUpload::begin`] — a plain
+    /// counter rather than a real UUID, since this test double has no
+    /// `IdGen` of its own to call and needs only uniqueness, not the real
+    /// shape a production token has.
+    next_upload_token: std::sync::atomic::AtomicU64,
+    pending_uploads: Mutex<HashMap<AttachmentUploadId, PendingUpload>>,
+    upload_parts: Mutex<HashMap<AttachmentUploadId, Vec<PartInfo>>>,
     system_admins: Mutex<HashMap<UserId, bool>>,
     area_roles: Mutex<HashMap<(UserId, AreaId), Role>>,
     project_roles: Mutex<HashMap<(UserId, ProjectId), Role>>,
@@ -613,6 +626,137 @@ impl BlobStore for Fakes {
 impl Fakes {
     fn blob_bytes(&self, key: &str) -> Option<Vec<u8>> {
         self.blobs.lock().unwrap().get(key).map(|(b, _)| b.clone())
+    }
+}
+
+#[async_trait]
+impl ChunkedUpload for Fakes {
+    async fn begin(&self, _key: &str, _mime: &str) -> Result<String, RepoError> {
+        let token = self
+            .next_upload_token
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .to_string();
+        self.chunked_uploads
+            .lock()
+            .unwrap()
+            .insert(token.clone(), HashMap::new());
+        Ok(token)
+    }
+
+    async fn put_part(
+        &self,
+        _key: &str,
+        token: &str,
+        part_number: u32,
+        mut data: ByteStream<'_>,
+    ) -> Result<PartInfo, RepoError> {
+        let mut bytes = Vec::new();
+        while let Some(chunk) = data.next().await {
+            let chunk = chunk.map_err(|e| RepoError::from_source("failed to read part", e))?;
+            bytes.extend_from_slice(&chunk);
+        }
+        let size = bytes.len() as u64;
+        self.chunked_uploads
+            .lock()
+            .unwrap()
+            .entry(token.to_string())
+            .or_default()
+            .insert(part_number, bytes);
+        Ok(PartInfo {
+            number: part_number,
+            content_id: String::new(),
+            size,
+        })
+    }
+
+    async fn complete(&self, key: &str, token: &str, parts: &[PartInfo]) -> Result<u64, RepoError> {
+        let staging = self
+            .chunked_uploads
+            .lock()
+            .unwrap()
+            .remove(token)
+            .unwrap_or_default();
+        let mut assembled = Vec::new();
+        for part in parts {
+            if let Some(bytes) = staging.get(&part.number) {
+                assembled.extend_from_slice(bytes);
+            }
+        }
+        let size = assembled.len() as u64;
+        self.blobs
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), (assembled, String::new()));
+        Ok(size)
+    }
+
+    async fn abort(&self, _key: &str, token: &str) -> Result<(), RepoError> {
+        self.chunked_uploads.lock().unwrap().remove(token);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl AttachmentUploadRepository for Fakes {
+    async fn create(&self, upload: &PendingUpload) -> Result<(), RepoError> {
+        self.pending_uploads
+            .lock()
+            .unwrap()
+            .insert(upload.id, upload.clone());
+        self.upload_parts
+            .lock()
+            .unwrap()
+            .insert(upload.id, Vec::new());
+        Ok(())
+    }
+
+    async fn load(&self, id: AttachmentUploadId) -> Result<Option<PendingUpload>, RepoError> {
+        Ok(self.pending_uploads.lock().unwrap().get(&id).cloned())
+    }
+
+    async fn record_part(&self, id: AttachmentUploadId, part: PartInfo) -> Result<u64, RepoError> {
+        let total = {
+            let mut uploads = self.pending_uploads.lock().unwrap();
+            let upload = uploads
+                .get_mut(&id)
+                .ok_or_else(|| RepoError::new("no such pending upload"))?;
+            upload.bytes_received += part.size;
+            upload.bytes_received
+        };
+        self.upload_parts
+            .lock()
+            .unwrap()
+            .entry(id)
+            .or_default()
+            .push(part);
+        Ok(total)
+    }
+
+    async fn list_parts(&self, id: AttachmentUploadId) -> Result<Vec<PartInfo>, RepoError> {
+        Ok(self
+            .upload_parts
+            .lock()
+            .unwrap()
+            .get(&id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn delete(&self, id: AttachmentUploadId) -> Result<(), RepoError> {
+        self.pending_uploads.lock().unwrap().remove(&id);
+        self.upload_parts.lock().unwrap().remove(&id);
+        Ok(())
+    }
+
+    async fn list_stale(&self, before: Timestamp) -> Result<Vec<PendingUpload>, RepoError> {
+        Ok(self
+            .pending_uploads
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|u| u.created_at < before)
+            .cloned()
+            .collect())
     }
 }
 

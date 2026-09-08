@@ -52,6 +52,7 @@ macro_rules! app_id {
 
 app_id!(CommentId);
 app_id!(AttachmentId);
+app_id!(AttachmentUploadId);
 
 /// A remark on a task, attributed to its author.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +162,32 @@ pub fn attach_file(
         },
         created_at: now,
     })
+}
+
+/// A file upload in progress across multiple requests
+/// (`crate::ports::infra::ChunkedUpload`, `crate::use_cases::attachment_upload`):
+/// begun by `begin_file_upload`, grown by `upload_file_part`, and either
+/// turned into a real [`Attachment`] by `complete_file_upload` or discarded
+/// by `abort_file_upload` (or the abandoned-upload sweep). `blob_key` is
+/// minted once, at `begin_file_upload` time, and becomes the finished
+/// `Attachment`'s own `blob_key` — the same pattern
+/// [`attach_file`]/`add_file_attachment` already use for a single-shot
+/// upload, just decided earlier since here it has to be known before any
+/// bytes exist to size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingUpload {
+    pub id: AttachmentUploadId,
+    pub task_id: TaskId,
+    pub blob_key: String,
+    /// Whatever opaque token the configured `BlobStore` needs to resume
+    /// this upload (a real S3 multipart upload id, or an `FsBlobStore`
+    /// staging directory name) — meaningless to anything but that backend.
+    pub storage_token: String,
+    pub filename: String,
+    pub mime: String,
+    pub bytes_received: u64,
+    pub created_by: UserId,
+    pub created_at: Timestamp,
 }
 
 fn non_blank(raw: impl AsRef<str>, what: &str) -> Result<String, AppError> {
