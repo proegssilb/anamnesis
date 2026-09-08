@@ -251,9 +251,7 @@ async fn creating_the_blocking_edge_eventually_detects_the_tangle() {
         (!active.is_empty()).then_some(active)
     })
     .await
-    .expect(
-        "closing the cycle through the relationship route must eventually detect the tangle",
-    );
+    .expect("closing the cycle through the relationship route must eventually detect the tangle");
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].task_ids.len(), 2);
 }
