@@ -13,12 +13,16 @@
 //! dispatches on the database URL: an `s3://` URL selects the object store,
 //! anything else is a filesystem path.
 //!
-//! Both are whole-object stores because the port is — `put` takes a `Vec<u8>`
-//! and `get` returns one — so the S3 backend buffers each object in memory
-//! rather than streaming it, and cannot use multipart uploads or range GETs.
-//! That is a property of the port, not of this adapter: moving to a streaming
-//! shape is a decision about the attachment size to support, and is out of
-//! scope here (`docs/DEPLOYMENT.md` §5 sizes the resulting ceiling).
+//! Both stream, in both directions: `BlobStore::put` takes a `ByteStream`
+//! rather than a whole `Vec<u8>`, and `get`/`get_range` return one back. An
+//! attachment's bytes are never fully resident in either adapter — `fs.rs`
+//! bridges the stream straight to `tokio::io::copy`, and `s3.rs` uses
+//! `object_store`'s real multipart upload (buffering only a small,
+//! fixed-size peek-ahead prefix so most attachments still cost one API call
+//! rather than three — see `S3BlobStore::put`'s own doc comment) and ranged
+//! `GET`s. This is what makes a large `ANAMNESIS_MAX_BODY_BYTES` ceiling
+//! (`docs/DEPLOYMENT.md` §5) safe to raise: peak memory per upload no
+//! longer scales with it.
 
 mod fs;
 mod s3;

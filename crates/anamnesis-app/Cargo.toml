@@ -9,6 +9,11 @@ publish = false
 [dependencies]
 anamnesis-core = { version = "1.4.0", path = "../anamnesis-core" }
 async-trait = "0.1.92"
+bytes = "1.12.1"
+# Just the `Stream` trait for `ports::infra::ByteStream` -- `BlobStore`'s
+# adapters (and the web layer's multipart field) provide the actual streams;
+# this crate never runs an executor.
+futures-core = "0.3.34"
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.20"
 time = "0.3.55"
@@ -16,6 +21,7 @@ uuid = "1.25.0"
 
 [dev-dependencies]
 cucumber = "0.23.0"
+futures-util = "0.3.34"
 rstest = "0.26.1"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
 

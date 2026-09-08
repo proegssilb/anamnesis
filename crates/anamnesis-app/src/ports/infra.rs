@@ -6,14 +6,34 @@
 //! structural reason rather than a use-case one — again, see its own doc
 //! comment.
 
+use std::pin::Pin;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::Bytes;
+use futures_core::Stream;
 
 use anamnesis_core::Timestamp;
 use time::{Date, Time};
 
 use crate::error::RepoError;
+
+/// A boxed stream of blob bytes, read front-to-back one chunk (never the
+/// whole object) at a time.
+///
+/// [`BlobStore::put`] takes a `ByteStream<'_>` rather than `ByteStream<'static>`
+/// because its one real caller — an HTTP multipart file field — structurally
+/// borrows the request's `Multipart` extractor and is not `'static`.
+/// `#[async_trait]` already threads a borrowed argument's lifetime into the
+/// generated future, so a stream consumed entirely within one `.await`
+/// (which `put` always does) needs no `'static` bound; forcing one would
+/// require an owned intermediate (a buffer, a channel, a spawned task) that
+/// would defeat the point of streaming. [`BlobStore::get`] and
+/// [`BlobStore::get_range`] return `ByteStream<'static>` because their
+/// stream outlives the call that produced it and can only own what `self`
+/// owns (an open file handle, an `object_store` stream) — both adapters
+/// satisfy that trivially.
+pub type ByteStream<'a> = Pin<Box<dyn Stream<Item = std::io::Result<Bytes>> + Send + 'a>>;
 
 /// Stores and retrieves attachment file bytes (`docs/DOMAIN.md` §3: "Files
 /// need a new `BlobStore` port (local filesystem first, S3-shaped later)").
@@ -21,10 +41,30 @@ use crate::error::RepoError;
 /// [`crate::entities::AttachmentKind::File`]'s `blob_key` — this port does
 /// not know or care what that string means to a given adapter (a filesystem
 /// path, an S3 object key, ...).
+///
+/// Both `put` and `get`/`get_range` are streaming: no adapter buffers a
+/// whole attachment in memory (`crates/anamnesis-adapters/src/blob_store/mod.rs`'s
+/// module doc comment has the adapter-side detail).
 #[async_trait]
 pub trait BlobStore: Send + Sync {
-    async fn put(&self, key: &str, bytes: Vec<u8>, mime: &str) -> Result<(), RepoError>;
-    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, RepoError>;
+    /// Streams `data` into storage under `key`, returning the total number
+    /// of bytes written. Multipart form data carries no reliable
+    /// `Content-Length` per field, so the caller cannot know the size
+    /// upfront — the store, the only party that sees every byte, reports it
+    /// back so the caller can record it on the `Attachment`.
+    async fn put(&self, key: &str, data: ByteStream<'_>, mime: &str) -> Result<u64, RepoError>;
+    async fn get(&self, key: &str) -> Result<Option<ByteStream<'static>>, RepoError>;
+    /// Bytes `start..=end` (inclusive) of the blob at `key`, or `None` if
+    /// `key` does not exist. The caller is responsible for validating the
+    /// range against the attachment's already-known size before calling
+    /// this — an out-of-bounds range is the caller's bug, not this method's
+    /// to police.
+    async fn get_range(
+        &self,
+        key: &str,
+        start: u64,
+        end: u64,
+    ) -> Result<Option<ByteStream<'static>>, RepoError>;
     async fn delete(&self, key: &str) -> Result<(), RepoError>;
 }
 

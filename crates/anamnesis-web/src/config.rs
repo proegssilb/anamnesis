@@ -190,11 +190,15 @@ impl std::fmt::Debug for Config {
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
 const DEFAULT_OIDC_SCOPES: &str = "openid profile email";
 const DEFAULT_BLOB_ROOT: &str = "./data/blobs";
-/// 40 MiB. Chosen as a deliberate ceiling for file attachments rather than
-/// inherited from axum's 2 MiB `DefaultBodyLimit`, which rejects most real
-/// documents. Raising it raises peak memory too: an upload is read fully
-/// into a `Vec<u8>` (`Multipart::bytes`, then `BlobStore::put`), so the
-/// worst case is roughly this figure times the number of concurrent uploads.
+/// 40 MiB. This is the ceiling on any single HTTP request body — ordinary
+/// forms and a file upload alike — chosen as a deliberate value for file
+/// attachments rather than inherited from axum's 2 MiB `DefaultBodyLimit`,
+/// which rejects most real documents. Unlike before streaming
+/// (`anamnesis_adapters::blob_store`'s module doc comment), raising this no
+/// longer raises peak memory in proportion: an upload's bytes are streamed
+/// straight from the socket into `BlobStore::put` as they arrive, never held
+/// whole in a `Vec<u8>`, so peak memory per upload is bounded by a small,
+/// roughly constant amount regardless of this figure.
 const DEFAULT_MAX_BODY_BYTES: usize = 40 * 1024 * 1024;
 /// The floor `axum_extra`'s `Key::from` accepts without panicking. Enforced
 /// on `ANAMNESIS_SESSION_SECRET` so a short secret is a named configuration

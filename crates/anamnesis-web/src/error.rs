@@ -4,7 +4,10 @@
 //! `axum`; neither is local to this crate, so this wrapper is what lets the
 //! orphan rule be satisfied.
 
+use std::error::Error as StdError;
+
 use anamnesis_app::{AppError, IdentityError, RepoError};
+use axum::extract::multipart::MultipartError;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use minijinja::{Environment, context};
@@ -28,6 +31,16 @@ pub enum WebError {
     /// answered by uploading a smaller file or raising the limit, the other
     /// by fixing the client.
     PayloadTooLarge(String),
+    /// A `Range` request header named a byte range this attachment's size
+    /// cannot satisfy at all (`crate::handlers::tasks::attachments::parse_single_range`).
+    /// Carries the attachment's real size, for the `Content-Range: bytes
+    /// */{size}` header a 416 response is expected to carry — most call
+    /// sites build that response directly rather than going through
+    /// [`WebError::into_response_with`], since the generic error page has
+    /// nowhere to put a header; this variant exists mainly so
+    /// [`WebError::status_and_message`] has a defined answer if one ever
+    /// does.
+    RangeNotSatisfiable(u64),
     /// A template failed to render. Always a bug (a missing context
     /// variable, a broken template), never something a request caused — but
     /// it still has to become *some* response rather than a panic.
@@ -82,6 +95,9 @@ fn app_status_and_message(err: &AppError) -> (StatusCode, String) {
             "That is the last System Admin — grant someone else System Admin first.".to_string(),
         ),
         AppError::Repo(e) => {
+            if let Some(message) = payload_too_large_message(e) {
+                return (StatusCode::PAYLOAD_TOO_LARGE, message.to_string());
+            }
             tracing::error!(error = %e, "repository error");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -89,6 +105,39 @@ fn app_status_and_message(err: &AppError) -> (StatusCode, String) {
             )
         }
     }
+}
+
+/// Recovers a `MultipartError` from deep inside a `RepoError`'s cause
+/// chain, if `.status() == PAYLOAD_TOO_LARGE` names one.
+///
+/// Streaming moved where a multipart read actually happens: it used to be
+/// this crate's own `field.bytes()` call, so a body-limit overrun surfaced
+/// right here as an ordinary `MultipartError`. Now the read happens inside
+/// `BlobStore::put`, two crates away — the error arrives instead as
+/// `io::Error` (wrapping the original `MultipartError`, via
+/// `io::Error::other`) boxed inside a `RepoError`. Left unhandled, that
+/// would silently regress every over-limit upload from 413 to 500. This
+/// walks `RepoError`'s `.source()` chain to find it.
+fn payload_too_large_message(err: &RepoError) -> Option<&'static str> {
+    let mut cause: Option<&(dyn StdError + 'static)> = err.source();
+    while let Some(e) = cause {
+        if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+            // `io::Error::source()` delegates to *its own* custom payload's
+            // source rather than returning the payload itself, so the
+            // `MultipartError` has to be recovered via `get_ref()`, not by
+            // continuing the `.source()` walk through this node.
+            let multipart_err = io_err
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<MultipartError>());
+            if let Some(multipart_err) = multipart_err
+                && multipart_err.status() == StatusCode::PAYLOAD_TOO_LARGE
+            {
+                return Some("that upload is larger than this server accepts");
+            }
+        }
+        cause = e.source();
+    }
+    None
 }
 
 impl WebError {
@@ -108,6 +157,10 @@ impl WebError {
             }
             WebError::BadRequest(message) => (StatusCode::BAD_REQUEST, message.clone()),
             WebError::PayloadTooLarge(message) => (StatusCode::PAYLOAD_TOO_LARGE, message.clone()),
+            WebError::RangeNotSatisfiable(_) => (
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                "that range is not satisfiable".to_string(),
+            ),
             WebError::Template(message) => {
                 tracing::error!(error = %message, "template render failed");
                 (

@@ -17,10 +17,12 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use bytes::Bytes;
+use futures_util::StreamExt;
 
 use anamnesis_app::{
     AreaRepository, Attachment, AttachmentId, AttachmentRepository, BlobStore, BoardColumn,
-    BoardItem, BoardQuery, Comment, CommentId, CommentRepository, MembershipQuery,
+    BoardItem, BoardQuery, ByteStream, Comment, CommentId, CommentRepository, MembershipQuery,
     MembershipRepository, ProjectAggregate, ProjectRepository, RelationshipRepository, RepoError,
     SearchHit, SearchIndex, SearchQuery, Settings, SettingsRepository, TangleRepository,
     TaskAggregate, TaskRepository, TaskUpdateError,
@@ -572,27 +574,55 @@ impl SettingsRepository for Fakes {
 
 #[async_trait]
 impl BlobStore for Fakes {
-    async fn put(&self, key: &str, bytes: Vec<u8>, mime: &str) -> Result<(), RepoError> {
+    async fn put(&self, key: &str, mut data: ByteStream<'_>, mime: &str) -> Result<u64, RepoError> {
+        let mut bytes = Vec::new();
+        while let Some(chunk) = data.next().await {
+            let chunk = chunk.map_err(|e| RepoError::from_source("failed to read stream", e))?;
+            bytes.extend_from_slice(&chunk);
+        }
+        let size = bytes.len() as u64;
         self.blobs
             .lock()
             .unwrap()
             .insert(key.to_string(), (bytes, mime.to_string()));
-        Ok(())
+        Ok(size)
     }
 
-    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, RepoError> {
-        Ok(self
-            .blobs
-            .lock()
-            .unwrap()
-            .get(key)
-            .map(|(bytes, _)| bytes.clone()))
+    async fn get(&self, key: &str) -> Result<Option<ByteStream<'static>>, RepoError> {
+        Ok(self.blob_bytes(key).map(fake_stream))
+    }
+
+    async fn get_range(
+        &self,
+        key: &str,
+        start: u64,
+        end: u64,
+    ) -> Result<Option<ByteStream<'static>>, RepoError> {
+        Ok(self.blob_bytes(key).map(|bytes| {
+            let (start, end) = (start as usize, end as usize);
+            fake_stream(bytes[start..=end.min(bytes.len().saturating_sub(1))].to_vec())
+        }))
     }
 
     async fn delete(&self, key: &str) -> Result<(), RepoError> {
         self.blobs.lock().unwrap().remove(key);
         Ok(())
     }
+}
+
+impl Fakes {
+    fn blob_bytes(&self, key: &str) -> Option<Vec<u8>> {
+        self.blobs.lock().unwrap().get(key).map(|(b, _)| b.clone())
+    }
+}
+
+/// Wraps already-owned bytes as the single-chunk `ByteStream` the `BlobStore`
+/// port expects back from a read — fine for a test double, which never needs
+/// the real multi-chunk laziness a production adapter streams for.
+fn fake_stream(bytes: Vec<u8>) -> ByteStream<'static> {
+    Box::pin(futures_util::stream::once(
+        async move { Ok(Bytes::from(bytes)) },
+    ))
 }
 
 #[async_trait]

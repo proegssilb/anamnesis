@@ -238,10 +238,10 @@ number is what limits attachment size, and raising it raises that. Over-limit
 uploads are answered with `413 Payload Too Large`.
 
 It is a plain byte count (`41943040`, not `40MB`).
-Uploads are buffered in memory before being written to the blob store, so
-peak memory is roughly *limit × concurrent uploads*: at the default, a
-container memory limit below ~256 MiB is asking for an OOM kill under a
-handful of simultaneous uploads.
+Uploads and downloads are streamed straight between the socket and the blob
+store, never held whole in memory, so peak memory per transfer is bounded by
+a small, roughly constant amount — not by this limit — and raising it does
+not raise peak memory in proportion the way it used to.
 
 **Watch the units when you set the proxy's matching limit.** Most proxies read
 `MB` as decimal, so a literal `40MB` is 40,000,000 — 1.9 MB *below* the app's
@@ -520,9 +520,13 @@ Four things worth knowing before you switch:
 - **Requests are path-style** (`{endpoint}/{bucket}/{key}`), which is what
   self-hosted endpoints expect and what AWS still accepts. A virtual-hosted
   endpoint is not configurable.
-- **Memory is unchanged.** Attachments are still read and written whole, so
-  §5's *limit × concurrent uploads* ceiling applies exactly as before — an
-  object store buys shared storage, not streaming.
+- **Attachments stream through here too.** `S3BlobStore` uses a real
+  multipart upload for anything past a small peek-ahead buffer, and ranged
+  `GET`s for downloads — an object store buys shared storage *and*
+  streaming, not shared storage instead of it. An upload large enough to use
+  multipart leaves an incomplete upload behind if the process is killed
+  mid-transfer; set a bucket lifecycle rule to abort incomplete multipart
+  uploads after a day or so as cleanup.
 
 **Every instance needs an identical `ANAMNESIS_SESSION_SECRET`.** Sessions are
 signed cookies with no server-side state, so nothing needs sharing and no
