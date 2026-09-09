@@ -23,7 +23,7 @@ use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 
 use anamnesis_app::{
-    AppError, ByteStream, PendingUpload, abort_file_upload, begin_file_upload,
+    AppError, ByteStream, NewUpload, PendingUpload, abort_file_upload, begin_file_upload,
     complete_file_upload, upload_file_part,
 };
 use anamnesis_core::TaskId;
@@ -118,10 +118,12 @@ async fn begin_upload_impl(
         state.id_gen.as_ref(),
         state.clock.as_ref(),
         role,
-        task_id,
-        user.user_id.clone(),
-        &body.filename,
-        &mime,
+        NewUpload {
+            task_id,
+            created_by: user.user_id.clone(),
+            filename: &body.filename,
+            mime: &mime,
+        },
     )
     .await?;
     Ok(Json(BeginUploadResponse {

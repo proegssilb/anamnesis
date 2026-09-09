@@ -19,36 +19,42 @@ use crate::ports::{
     AttachmentRepository, AttachmentUploadRepository, ByteStream, ChunkedUpload, Clock, IdGen,
 };
 
-/// Begins a chunked upload for `task_id`, minting the `blob_key` its parts
-/// will eventually be assembled under (the same pattern
+/// The caller-supplied fields of a [`PendingUpload`] — everything about it
+/// that isn't derived by [`begin_file_upload`] itself (its id, `blob_key`,
+/// `storage_token`, `bytes_received`, and `created_at`).
+pub struct NewUpload<'a> {
+    pub task_id: TaskId,
+    pub created_by: anamnesis_core::UserId,
+    pub filename: &'a str,
+    pub mime: &'a str,
+}
+
+/// Begins a chunked upload for `new_upload.task_id`, minting the `blob_key`
+/// its parts will eventually be assembled under (the same pattern
 /// [`crate::use_cases::add_file_attachment`] uses, just decided earlier —
 /// here nothing about the file's bytes exists yet to size or hash).
-#[allow(clippy::too_many_arguments)]
 pub async fn begin_file_upload(
     uploads: &dyn AttachmentUploadRepository,
     chunked: &dyn ChunkedUpload,
     ids: &dyn IdGen,
     clock: &dyn Clock,
     role: Option<Role>,
-    task_id: TaskId,
-    created_by: anamnesis_core::UserId,
-    filename: &str,
-    mime: &str,
+    new_upload: NewUpload<'_>,
 ) -> Result<PendingUpload, AppError> {
     if !is_allowed(role, Action::CreateAttachment) {
         return Err(AppError::Forbidden);
     }
     let blob_key = ids.next().to_string();
-    let storage_token = chunked.begin(&blob_key, mime).await?;
+    let storage_token = chunked.begin(&blob_key, new_upload.mime).await?;
     let upload = PendingUpload {
         id: AttachmentUploadId::new(ids.next()),
-        task_id,
+        task_id: new_upload.task_id,
         blob_key,
         storage_token,
-        filename: filename.to_string(),
-        mime: mime.to_string(),
+        filename: new_upload.filename.to_string(),
+        mime: new_upload.mime.to_string(),
         bytes_received: 0,
-        created_by,
+        created_by: new_upload.created_by,
         created_at: clock.now(),
     };
     uploads.create(&upload).await?;

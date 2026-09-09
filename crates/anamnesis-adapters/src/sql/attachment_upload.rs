@@ -12,8 +12,12 @@ use sqlx::{PgPool, Row, SqlitePool};
 
 use super::{Backend, SqlStore, parse_uuid, timestamp_from_seconds};
 
-#[allow(clippy::too_many_arguments)]
-fn assemble(
+/// The `attachment_uploads` row, straight off either backend's `SELECT id,
+/// task_id, blob_key, storage_token, filename, mime, bytes_received,
+/// created_by, created_at` (each backend still reads its own `id`/`task_id`
+/// column differently — SQLite stores them as text, Postgres natively — so
+/// callers parse those two before filling this in).
+struct UploadRow {
     id: uuid::Uuid,
     task_id: uuid::Uuid,
     blob_key: String,
@@ -23,18 +27,20 @@ fn assemble(
     bytes_received: i64,
     created_by: String,
     created_at: i64,
-) -> Result<PendingUpload, RepoError> {
+}
+
+fn assemble(row: UploadRow) -> Result<PendingUpload, RepoError> {
     Ok(PendingUpload {
-        id: AttachmentUploadId::new(id),
-        task_id: TaskId::new(task_id),
-        blob_key,
-        storage_token,
-        filename,
-        mime,
-        bytes_received: u64::try_from(bytes_received)
+        id: AttachmentUploadId::new(row.id),
+        task_id: TaskId::new(row.task_id),
+        blob_key: row.blob_key,
+        storage_token: row.storage_token,
+        filename: row.filename,
+        mime: row.mime,
+        bytes_received: u64::try_from(row.bytes_received)
             .map_err(|e| RepoError::from_source("stored bytes_received out of range", e))?,
-        created_by: UserId::new(created_by),
-        created_at: timestamp_from_seconds(created_at)?,
+        created_by: UserId::new(row.created_by),
+        created_at: timestamp_from_seconds(row.created_at)?,
     })
 }
 
@@ -76,17 +82,17 @@ mod sqlite_impl {
         else {
             return Ok(None);
         };
-        Ok(Some(assemble(
-            parse_uuid(&row.get::<String, _>("id"))?,
-            parse_uuid(&row.get::<String, _>("task_id"))?,
-            row.get("blob_key"),
-            row.get("storage_token"),
-            row.get("filename"),
-            row.get("mime"),
-            row.get("bytes_received"),
-            row.get("created_by"),
-            row.get::<i64, _>("created_at"),
-        )?))
+        Ok(Some(assemble(UploadRow {
+            id: parse_uuid(&row.get::<String, _>("id"))?,
+            task_id: parse_uuid(&row.get::<String, _>("task_id"))?,
+            blob_key: row.get("blob_key"),
+            storage_token: row.get("storage_token"),
+            filename: row.get("filename"),
+            mime: row.get("mime"),
+            bytes_received: row.get("bytes_received"),
+            created_by: row.get("created_by"),
+            created_at: row.get("created_at"),
+        })?))
     }
 
     pub(super) async fn record_part(
@@ -176,17 +182,17 @@ mod sqlite_impl {
         .map_err(|e| RepoError::from_source("failed to list stale uploads", e))?;
         rows.into_iter()
             .map(|row| {
-                assemble(
-                    parse_uuid(&row.get::<String, _>("id"))?,
-                    parse_uuid(&row.get::<String, _>("task_id"))?,
-                    row.get("blob_key"),
-                    row.get("storage_token"),
-                    row.get("filename"),
-                    row.get("mime"),
-                    row.get("bytes_received"),
-                    row.get("created_by"),
-                    row.get::<i64, _>("created_at"),
-                )
+                assemble(UploadRow {
+                    id: parse_uuid(&row.get::<String, _>("id"))?,
+                    task_id: parse_uuid(&row.get::<String, _>("task_id"))?,
+                    blob_key: row.get("blob_key"),
+                    storage_token: row.get("storage_token"),
+                    filename: row.get("filename"),
+                    mime: row.get("mime"),
+                    bytes_received: row.get("bytes_received"),
+                    created_by: row.get("created_by"),
+                    created_at: row.get("created_at"),
+                })
             })
             .collect()
     }
@@ -230,17 +236,17 @@ mod postgres_impl {
         else {
             return Ok(None);
         };
-        Ok(Some(assemble(
-            row.get::<uuid::Uuid, _>("id"),
-            row.get::<uuid::Uuid, _>("task_id"),
-            row.get("blob_key"),
-            row.get("storage_token"),
-            row.get("filename"),
-            row.get("mime"),
-            row.get("bytes_received"),
-            row.get("created_by"),
-            row.get::<i64, _>("created_at"),
-        )?))
+        Ok(Some(assemble(UploadRow {
+            id: row.get("id"),
+            task_id: row.get("task_id"),
+            blob_key: row.get("blob_key"),
+            storage_token: row.get("storage_token"),
+            filename: row.get("filename"),
+            mime: row.get("mime"),
+            bytes_received: row.get("bytes_received"),
+            created_by: row.get("created_by"),
+            created_at: row.get("created_at"),
+        })?))
     }
 
     pub(super) async fn record_part(
@@ -330,17 +336,17 @@ mod postgres_impl {
         .map_err(|e| RepoError::from_source("failed to list stale uploads", e))?;
         rows.into_iter()
             .map(|row| {
-                assemble(
-                    row.get::<uuid::Uuid, _>("id"),
-                    row.get::<uuid::Uuid, _>("task_id"),
-                    row.get("blob_key"),
-                    row.get("storage_token"),
-                    row.get("filename"),
-                    row.get("mime"),
-                    row.get("bytes_received"),
-                    row.get("created_by"),
-                    row.get::<i64, _>("created_at"),
-                )
+                assemble(UploadRow {
+                    id: row.get("id"),
+                    task_id: row.get("task_id"),
+                    blob_key: row.get("blob_key"),
+                    storage_token: row.get("storage_token"),
+                    filename: row.get("filename"),
+                    mime: row.get("mime"),
+                    bytes_received: row.get("bytes_received"),
+                    created_by: row.get("created_by"),
+                    created_at: row.get("created_at"),
+                })
             })
             .collect()
     }

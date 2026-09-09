@@ -41,7 +41,7 @@ pub use settings::{
     DEFAULT_SUGGESTION_COOLDOWN_SECONDS, Settings,
 };
 pub use use_cases::{
-    ArchiveOutcome, BoardItemKind, BulkCreateOutcome, abort_file_upload, add_comment,
+    ArchiveOutcome, BoardItemKind, BulkCreateOutcome, NewUpload, abort_file_upload, add_comment,
     add_field_definition, add_file_attachment, add_link_attachment, add_relationship_kind,
     archive_done_tasks, archive_project, archive_task, begin_file_upload, bulk_create_areas,
     bulk_create_projects, bulk_create_tasks, complete_file_upload, create_area, create_project,

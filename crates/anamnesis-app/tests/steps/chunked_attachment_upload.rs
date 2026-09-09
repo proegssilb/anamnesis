@@ -8,8 +8,8 @@
 use cucumber::{then, when};
 
 use anamnesis_app::{
-    AppError, AttachmentKind, abort_file_upload, begin_file_upload, complete_file_upload,
-    upload_file_part,
+    AppError, AttachmentKind, NewUpload, abort_file_upload, begin_file_upload,
+    complete_file_upload, upload_file_part,
 };
 
 use crate::support::byte_stream;
@@ -29,10 +29,12 @@ async fn begins_uploading(world: &mut AppWorld, user: String, filename: String, 
         &world.ids,
         &world.clock,
         role,
-        task_id,
-        created_by,
-        &filename,
-        "application/octet-stream",
+        NewUpload {
+            task_id,
+            created_by,
+            filename: &filename,
+            mime: "application/octet-stream",
+        },
     )
     .await
     {

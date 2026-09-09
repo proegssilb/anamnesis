@@ -114,7 +114,9 @@
               method: "DELETE",
               headers: { "X-Csrf-Token": csrf },
             })
-            .catch(function () {});
+            .catch(function (cleanupErr) {
+              console.error("failed to free the abandoned upload", cleanupErr);
+            });
         }
         throw err;
       });
