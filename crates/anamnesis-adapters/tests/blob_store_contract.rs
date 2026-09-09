@@ -97,6 +97,41 @@ async fn contract(store: &dyn BlobStore, keyspace: &str) {
     multi_chunk_round_trip(store, keyspace).await;
     mid_stream_failure_leaves_no_partial_blob(store, keyspace).await;
     get_range_round_trip(store, keyspace).await;
+    list_contract(store, keyspace).await;
+}
+
+/// Every key `list` reports, filtered to this run's `keyspace` — a shared
+/// bucket (the S3 contract) may hold objects from other runs or backends
+/// entirely, so an unfiltered listing would make this assertion depend on
+/// what else happens to be in the bucket.
+async fn list_keys(store: &dyn BlobStore, keyspace: &str) -> Vec<String> {
+    store
+        .list()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|b| b.key)
+        .filter(|k| k.starts_with(keyspace))
+        .collect()
+}
+
+/// `list` reflects a write immediately and a delete immediately — the
+/// orphan blob GC sweep's whole premise.
+async fn list_contract(store: &dyn BlobStore, keyspace: &str) {
+    let key = format!("{keyspace}/listed.bin");
+    let before = list_keys(store, keyspace).await;
+    assert!(!before.contains(&key), "{before:?}");
+
+    store
+        .put(&key, once(b"x"), "application/octet-stream")
+        .await
+        .unwrap();
+    let after_put = list_keys(store, keyspace).await;
+    assert!(after_put.contains(&key), "{after_put:?}");
+
+    store.delete(&key).await.unwrap();
+    let after_delete = list_keys(store, keyspace).await;
+    assert!(!after_delete.contains(&key), "{after_delete:?}");
 }
 
 /// A larger, multi-chunk upload — several distinct `Bytes` chunks totalling

@@ -1307,6 +1307,10 @@ impl TaskRepository for Contended<'_> {
         self.inner.list_by_project(project_id).await
     }
 
+    async fn list_all(&self) -> Result<Vec<Task>, RepoError> {
+        TaskRepository::list_all(self.inner).await
+    }
+
     async fn insert(&self, task: &Task) -> Result<(), RepoError> {
         TaskRepository::insert(self.inner, task).await
     }
@@ -1857,6 +1861,182 @@ async fn archive_done_tasks_removes_every_swept_task_from_the_index() {
     );
 }
 
+// ============================== Reindex sweep ==============================
+
+/// One area, one active project and one archived project, one active task
+/// and one archived task — the mixed archived/not-archived population a
+/// reindex sweep needs to prove it gets right per kind.
+async fn seed_mixed_population(fakes: &Fakes, ids: &SequentialIdGen, clock: &FixedClock) {
+    seed_active_and_archived_project(fakes, ids, clock).await;
+    seed_active_and_archived_task(fakes, ids, clock).await;
+}
+
+/// One area with one active project and one archived project in it.
+async fn seed_active_and_archived_project(
+    fakes: &Fakes,
+    ids: &SequentialIdGen,
+    clock: &FixedClock,
+) {
+    let area = create_area(fakes, ids, clock, fakes, admin(), "Home", "", 0)
+        .await
+        .unwrap();
+    create_project(
+        fakes,
+        ids,
+        clock,
+        fakes,
+        project_admin(),
+        area.id,
+        "Active saga",
+        "",
+    )
+    .await
+    .unwrap();
+    let archived_project = create_project(
+        fakes,
+        ids,
+        clock,
+        fakes,
+        project_admin(),
+        area.id,
+        "Retired saga",
+        "",
+    )
+    .await
+    .unwrap();
+    archive_project(fakes, clock, fakes, project_admin(), archived_project.id)
+        .await
+        .unwrap();
+}
+
+/// One active task and one archived task, both in the same project.
+async fn seed_active_and_archived_task(fakes: &Fakes, ids: &SequentialIdGen, clock: &FixedClock) {
+    let project_id = some_project_id(ids);
+    create_task(
+        fakes,
+        ids,
+        clock,
+        fakes,
+        member(),
+        project_id,
+        "Active task",
+        "",
+    )
+    .await
+    .unwrap();
+    let archived_task = create_task(
+        fakes,
+        ids,
+        clock,
+        fakes,
+        member(),
+        project_id,
+        "Retired task",
+        "",
+    )
+    .await
+    .unwrap();
+    archive_task(fakes, clock, fakes, member(), archived_task.id)
+        .await
+        .unwrap();
+}
+
+/// `Fakes::search_entries` sorted by `(kind, id)` so two passes over the same
+/// population can be compared for equality regardless of the order each
+/// pass happened to (re)insert entries in.
+fn sorted_entries(fakes: &Fakes) -> Vec<(&'static str, String, String, bool)> {
+    let mut entries = fakes.search_entries();
+    entries.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+    entries
+}
+
+#[tokio::test]
+async fn reindex_all_rebuilds_a_wiped_index_from_scratch() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    seed_mixed_population(&fakes, &ids, &clock).await;
+
+    // Simulate the stale-or-empty index a reindex sweep exists to repair —
+    // ordinary create/archive already indexed everything correctly, so
+    // wiping it first is what makes this test actually exercise the sweep
+    // rather than just re-observe what the write paths already did.
+    fakes.clear_search_entries();
+    assert!(fakes.search_entries().is_empty());
+
+    let outcome = reindex_all(&fakes, &fakes, &fakes, &fakes).await.unwrap();
+    assert_eq!(
+        outcome,
+        ReindexOutcome {
+            areas: 1,
+            projects: 2,
+            tasks: 2,
+        }
+    );
+
+    assert_rebuilt_entries_have_the_right_archived_flags(&fakes);
+}
+
+/// After a full rebuild: five entries total, exactly the archived project
+/// and archived task flagged archived, and the still-active project not.
+fn assert_rebuilt_entries_have_the_right_archived_flags(fakes: &Fakes) {
+    let entries = fakes.search_entries();
+    assert_eq!(entries.len(), 5, "{entries:?}");
+    let archived_count = entries
+        .iter()
+        .filter(|(_, _, _, archived)| *archived)
+        .count();
+    assert_eq!(
+        archived_count, 2,
+        "exactly the archived project and archived task must come back flagged \
+         archived: {entries:?}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|(kind, _, title, archived)| *kind == "project"
+                && title == "Retired saga"
+                && *archived),
+        "{entries:?}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|(kind, _, title, archived)| *kind == "task"
+                && title == "Retired task"
+                && *archived),
+        "{entries:?}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|(kind, _, title, archived)| *kind == "project"
+                && title == "Active saga"
+                && !*archived),
+        "{entries:?}"
+    );
+}
+
+#[tokio::test]
+async fn reindex_all_is_idempotent() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(0);
+    seed_mixed_population(&fakes, &ids, &clock).await;
+
+    reindex_all(&fakes, &fakes, &fakes, &fakes).await.unwrap();
+    let first_pass = sorted_entries(&fakes);
+
+    reindex_all(&fakes, &fakes, &fakes, &fakes).await.unwrap();
+    let second_pass = sorted_entries(&fakes);
+
+    assert_eq!(
+        first_pass, second_pass,
+        "a second reindex pass over an unchanged population must converge to \
+         exactly the same indexed state, not merely an equivalent-looking one"
+    );
+}
+
 // ============================== Comments ==============================
 
 #[tokio::test]
@@ -2403,6 +2583,95 @@ async fn add_link_and_file_attachments_and_delete_cleans_up_the_blob() {
         .await
         .unwrap();
     assert!(BlobStore::get(&fakes, &blob_key).await.unwrap().is_none());
+}
+
+// ============================== Orphan blob GC ==============================
+
+#[tokio::test]
+async fn collect_orphan_blobs_never_deletes_a_referenced_blob_regardless_of_age() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let clock = FixedClock::at(1_000_000);
+    let project_id = some_project_id(&ids);
+    let task = create_task(&fakes, &ids, &clock, &fakes, member(), project_id, "T", "")
+        .await
+        .unwrap();
+    let file = add_file_attachment(
+        &fakes,
+        &fakes,
+        &ids,
+        &clock,
+        member(),
+        task.id,
+        "photo.png",
+        "image/png",
+        byte_stream(vec![1, 2, 3]),
+    )
+    .await
+    .unwrap();
+    let blob_key = match &file.kind {
+        AttachmentKind::File { blob_key, .. } => blob_key.clone(),
+        AttachmentKind::Link { .. } => panic!("expected a file attachment"),
+    };
+    // Old enough to clear any grace period, but still referenced.
+    fakes.set_blob_last_modified(
+        &blob_key,
+        anamnesis_core::Timestamp::from_unix_seconds(0).unwrap(),
+    );
+
+    let removed = collect_orphan_blobs(&fakes, &fakes, &clock, std::time::Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert_eq!(removed, 0);
+    assert!(BlobStore::get(&fakes, &blob_key).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn collect_orphan_blobs_leaves_an_unreferenced_blob_younger_than_the_grace_period_alone() {
+    let fakes = Fakes::new();
+    let clock = FixedClock::at(1_000_000);
+    BlobStore::put(
+        &fakes,
+        "stray",
+        byte_stream(vec![9]),
+        "application/octet-stream",
+    )
+    .await
+    .unwrap();
+    fakes.set_blob_last_modified(
+        "stray",
+        anamnesis_core::Timestamp::from_unix_seconds(clock.now().unix_seconds() - 10).unwrap(),
+    );
+
+    let removed = collect_orphan_blobs(&fakes, &fakes, &clock, std::time::Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert_eq!(removed, 0);
+    assert!(BlobStore::get(&fakes, "stray").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn collect_orphan_blobs_deletes_an_unreferenced_blob_older_than_the_grace_period() {
+    let fakes = Fakes::new();
+    let clock = FixedClock::at(1_000_000);
+    BlobStore::put(
+        &fakes,
+        "stray",
+        byte_stream(vec![9]),
+        "application/octet-stream",
+    )
+    .await
+    .unwrap();
+    fakes.set_blob_last_modified(
+        "stray",
+        anamnesis_core::Timestamp::from_unix_seconds(clock.now().unix_seconds() - 120).unwrap(),
+    );
+
+    let removed = collect_orphan_blobs(&fakes, &fakes, &clock, std::time::Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert_eq!(removed, 1);
+    assert!(BlobStore::get(&fakes, "stray").await.unwrap().is_none());
 }
 
 // ============================ MembershipQuery ============================

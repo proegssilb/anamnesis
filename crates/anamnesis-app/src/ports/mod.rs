@@ -16,7 +16,8 @@ pub use common::{Clock, IdGen};
 pub use group_membership::{GroupMembershipQuery, GroupMembershipRepository};
 pub use identity::{AuthenticatedIdentity, IdentityProvider, LoginCallback, LoginRedirect};
 pub use infra::{
-    BlobStore, ByteStream, ChunkedUpload, JobLease, PartInfo, SearchIndex, TimezoneResolver,
+    BlobInfo, BlobStore, ByteStream, ChunkedUpload, JobLease, PartInfo, SearchIndex,
+    TimezoneResolver,
 };
 pub use membership::{MembershipQuery, MembershipRepository};
 pub use query::{BoardColumn, BoardItem, BoardQuery, SearchHit, SearchQuery};

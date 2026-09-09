@@ -370,6 +370,33 @@ async fn task_archive_exclusion_contract(
     child_a: &Task,
     child_b: &Task,
 ) {
+    assert_list_by_project_includes_everyone(store, project_id, a, b, child_a, child_b).await;
+
+    let archived = anamnesis_core::archive_task(b, ts(999)).unwrap();
+    TaskRepository::update(store, &archived, b.last_touched_at)
+        .await
+        .unwrap();
+    assert_list_by_project_excludes_archived(store, project_id, b.id).await;
+
+    let archived_child = anamnesis_core::archive_task(child_a, ts(998)).unwrap();
+    TaskRepository::update(store, &archived_child, child_a.last_touched_at)
+        .await
+        .unwrap();
+    assert_list_children_excludes_archived(store, a.id, child_b.id).await;
+
+    // `b` and `child_a` are both archived by this point — `list_all`, unlike
+    // `list_by_project`/`list_children` above, must still return them.
+    assert_list_all_includes_archived(store, a, b, child_a, child_b).await;
+}
+
+async fn assert_list_by_project_includes_everyone(
+    store: &SqlStore,
+    project_id: ProjectId,
+    a: &Task,
+    b: &Task,
+    child_a: &Task,
+    child_b: &Task,
+) {
     let mut in_project = TaskRepository::list_by_project(store, project_id)
         .await
         .unwrap()
@@ -383,31 +410,61 @@ async fn task_archive_exclusion_contract(
         in_project, expected,
         "list_by_project must return every task in the project, including checklist children"
     );
+}
 
-    let archived = anamnesis_core::archive_task(b, ts(999)).unwrap();
-    TaskRepository::update(store, &archived, b.last_touched_at)
-        .await
-        .unwrap();
+async fn assert_list_by_project_excludes_archived(
+    store: &SqlStore,
+    project_id: ProjectId,
+    archived_task_id: TaskId,
+) {
     let after_archive = TaskRepository::list_by_project(store, project_id)
         .await
         .unwrap();
     assert!(
-        !after_archive.iter().any(|t| t.id == b.id),
+        !after_archive.iter().any(|t| t.id == archived_task_id),
         "list_by_project must exclude archived tasks"
     );
+}
 
-    let archived_child = anamnesis_core::archive_task(child_a, ts(998)).unwrap();
-    TaskRepository::update(store, &archived_child, child_a.last_touched_at)
+async fn assert_list_children_excludes_archived(
+    store: &SqlStore,
+    parent_id: TaskId,
+    remaining_child_id: TaskId,
+) {
+    let children_after_archive = TaskRepository::list_children(store, parent_id)
         .await
         .unwrap();
-    let children_after_archive = TaskRepository::list_children(store, a.id).await.unwrap();
     assert_eq!(
         children_after_archive
             .iter()
             .map(|t| t.id)
             .collect::<Vec<_>>(),
-        vec![child_b.id],
+        vec![remaining_child_id],
         "list_children must exclude archived children"
+    );
+}
+
+/// `list_all` (the reindex sweep's input): every task in the system,
+/// archived included.
+async fn assert_list_all_includes_archived(
+    store: &SqlStore,
+    a: &Task,
+    b: &Task,
+    child_a: &Task,
+    child_b: &Task,
+) {
+    let mut all_ids = TaskRepository::list_all(store)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.id)
+        .collect::<Vec<_>>();
+    all_ids.sort_by_key(|id| id.as_uuid());
+    let mut expected_all = vec![a.id, b.id, child_a.id, child_b.id];
+    expected_all.sort_by_key(|id| id.as_uuid());
+    assert_eq!(
+        all_ids, expected_all,
+        "list_all must return every task, archived or not"
     );
 }
 
@@ -1056,6 +1113,37 @@ async fn comment_contract(store: &SqlStore, owner: &Task) {
 // --- Attachment ---
 
 async fn attachment_contract(store: &SqlStore, owner: &Task) {
+    let (link, file) = seed_link_and_file_attachment(store, owner).await;
+
+    assert_eq!(
+        AttachmentRepository::load(store, link.id).await.unwrap(),
+        Some(link.clone())
+    );
+    assert_eq!(
+        AttachmentRepository::load(store, file.id).await.unwrap(),
+        Some(file.clone())
+    );
+
+    let listed = AttachmentRepository::list_for_task(store, owner.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        listed.iter().map(|a| a.id).collect::<Vec<_>>(),
+        vec![link.id, file.id]
+    );
+
+    assert_list_all_blob_keys_excludes_links(store, &file).await;
+
+    AttachmentRepository::delete(store, link.id).await.unwrap();
+    assert_eq!(
+        AttachmentRepository::load(store, link.id).await.unwrap(),
+        None
+    );
+}
+
+/// Inserts one link attachment and one file attachment on `owner`, returning
+/// both — the shared fixture `attachment_contract`'s assertions build on.
+async fn seed_link_and_file_attachment(store: &SqlStore, owner: &Task) -> (Attachment, Attachment) {
     let link = Attachment {
         id: AttachmentId::new(Uuid::new_v4()),
         task_id: owner.id,
@@ -1077,28 +1165,23 @@ async fn attachment_contract(store: &SqlStore, owner: &Task) {
     };
     AttachmentRepository::insert(store, &link).await.unwrap();
     AttachmentRepository::insert(store, &file).await.unwrap();
+    (link, file)
+}
 
-    assert_eq!(
-        AttachmentRepository::load(store, link.id).await.unwrap(),
-        Some(link.clone())
-    );
-    assert_eq!(
-        AttachmentRepository::load(store, file.id).await.unwrap(),
-        Some(file.clone())
-    );
-
-    let listed = AttachmentRepository::list_for_task(store, owner.id)
+/// `list_all_blob_keys` (the orphan blob GC sweep's "what's referenced"
+/// half): only a file-kind attachment's `blob_key`, never a link's URL.
+async fn assert_list_all_blob_keys_excludes_links(store: &SqlStore, file: &Attachment) {
+    let AttachmentKind::File { blob_key, .. } = &file.kind else {
+        panic!("expected a file attachment");
+    };
+    let blob_keys = AttachmentRepository::list_all_blob_keys(store)
         .await
         .unwrap();
     assert_eq!(
-        listed.iter().map(|a| a.id).collect::<Vec<_>>(),
-        vec![link.id, file.id]
-    );
-
-    AttachmentRepository::delete(store, link.id).await.unwrap();
-    assert_eq!(
-        AttachmentRepository::load(store, link.id).await.unwrap(),
-        None
+        blob_keys,
+        vec![blob_key.clone()],
+        "list_all_blob_keys must return only file-kind attachments' blob keys, \
+         never a link attachment's URL"
     );
 }
 

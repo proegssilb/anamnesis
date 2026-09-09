@@ -18,7 +18,7 @@
 //! endpoint (`{bucket}.s3.example.com`) is not configurable here; add it
 //! when something actually needs it.
 
-use anamnesis_app::{BlobStore, ByteStream, ChunkedUpload, PartInfo, RepoError};
+use anamnesis_app::{BlobInfo, BlobStore, ByteStream, ChunkedUpload, PartInfo, RepoError};
 use async_trait::async_trait;
 use futures_util::StreamExt as _;
 use object_store::aws::{AmazonS3, AmazonS3Builder};
@@ -103,6 +103,23 @@ impl S3BlobStore {
         };
         Path::parse(&full)
             .map_err(|e| RepoError::from_source(format!("invalid blob key {key:?}"), e))
+    }
+
+    /// The reverse of [`Self::location`]: turns a listed object's full path
+    /// back into the caller-facing key `get`/`delete` would accept.
+    fn strip_object_prefix(&self, location: &Path) -> Result<String, RepoError> {
+        let full = location.as_ref();
+        match &self.prefix {
+            Some(prefix) => full
+                .strip_prefix(&format!("{prefix}/"))
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    RepoError::new(format!(
+                        "listed object {full:?} outside the configured prefix {prefix:?}"
+                    ))
+                }),
+            None => Ok(full.to_string()),
+        }
     }
 }
 
@@ -212,6 +229,25 @@ impl BlobStore for S3BlobStore {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
             Err(e) => Err(RepoError::from_source("failed to delete blob", e)),
         }
+    }
+
+    async fn list(&self) -> Result<Vec<BlobInfo>, RepoError> {
+        let prefix = self.prefix.as_ref().map(|p| Path::from(p.as_str()));
+        let mut stream = self.inner.list(prefix.as_ref());
+        let mut out = Vec::new();
+        while let Some(meta) = stream.next().await {
+            let meta = meta.map_err(|e| RepoError::from_source("failed to list blob store", e))?;
+            out.push(BlobInfo {
+                key: self.strip_object_prefix(&meta.location)?,
+                last_modified: anamnesis_core::Timestamp::from_unix_seconds(
+                    meta.last_modified.timestamp(),
+                )
+                .map_err(|e| {
+                    RepoError::from_source("blob store returned an out-of-range modified time", e)
+                })?,
+            });
+        }
+        Ok(out)
     }
 }
 
@@ -656,5 +692,31 @@ mod tests {
             .await;
 
         store_for(&server).delete("a.png").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_returns_keys_stripped_of_the_configured_prefix() {
+        let server = MockServer::start().await;
+        let body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
+<Name>blobs</Name><Prefix>att</Prefix><KeyCount>1</KeyCount><MaxKeys>1000</MaxKeys>\
+<IsTruncated>false</IsTruncated>\
+<Contents><Key>att/a.png</Key><LastModified>2026-09-04T12:00:00.000Z</LastModified>\
+<ETag>\"etag\"</ETag><Size>5</Size><StorageClass>STANDARD</StorageClass></Contents>\
+</ListBucketResult>";
+        Mock::given(method("GET"))
+            .and(path("/blobs"))
+            .and(wiremock::matchers::query_param("list-type", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let listed = store_for(&server).list().await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].key, "a.png",
+            "a listed object's key must be stripped of the store's own configured prefix"
+        );
     }
 }

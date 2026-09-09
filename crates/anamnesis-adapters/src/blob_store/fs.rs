@@ -13,7 +13,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use anamnesis_app::{BlobStore, ByteStream, ChunkedUpload, PartInfo, RepoError};
+use anamnesis_app::{BlobInfo, BlobStore, ByteStream, ChunkedUpload, PartInfo, RepoError};
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
@@ -145,6 +145,104 @@ impl BlobStore for FsBlobStore {
             Err(e) => Err(RepoError::from_source("failed to delete blob", e)),
         }
     }
+
+    async fn list(&self) -> Result<Vec<BlobInfo>, RepoError> {
+        let mut out = Vec::new();
+        let mut pending = vec![self.root.clone()];
+        while let Some(dir) = pending.pop() {
+            self.list_one_dir(&dir, &mut pending, &mut out).await?;
+        }
+        Ok(out)
+    }
+}
+
+impl FsBlobStore {
+    /// Reads one directory's immediate entries: subdirectories other than
+    /// the `.uploads` staging root (owned by the separate chunked-upload
+    /// GC — `crate::use_cases::expire_stale_uploads` via `anamnesis-web`'s
+    /// own ticker) are queued in `pending` for a later pass; files
+    /// (including stray `.tmp-*` ones — see [`write_atomically`]'s doc
+    /// comment) are appended to `out`.
+    async fn list_one_dir(
+        &self,
+        dir: &Path,
+        pending: &mut Vec<PathBuf>,
+        out: &mut Vec<BlobInfo>,
+    ) -> Result<(), RepoError> {
+        let mut entries = tokio::fs::read_dir(dir)
+            .await
+            .map_err(|e| RepoError::from_source("failed to list blob store", e))?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| RepoError::from_source("failed to list blob store", e))?
+        {
+            let path = entry.path();
+            if path == self.root.join(".uploads") {
+                continue;
+            }
+            let file_type = entry
+                .file_type()
+                .await
+                .map_err(|e| RepoError::from_source("failed to list blob store", e))?;
+            if file_type.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            out.push(self.blob_info(&entry, &path).await?);
+        }
+        Ok(())
+    }
+
+    /// The [`BlobInfo`] for one already-listed file entry: its key relative
+    /// to [`Self::root`] and its filesystem modified time.
+    async fn blob_info(
+        &self,
+        entry: &tokio::fs::DirEntry,
+        path: &Path,
+    ) -> Result<BlobInfo, RepoError> {
+        let key = relative_key(&self.root, path)?;
+        let metadata = entry
+            .metadata()
+            .await
+            .map_err(|e| RepoError::from_source("failed to stat blob", e))?;
+        let modified = metadata
+            .modified()
+            .map_err(|e| RepoError::from_source("failed to read blob modified time", e))?;
+        Ok(BlobInfo {
+            key,
+            last_modified: system_time_to_timestamp(modified)?,
+        })
+    }
+}
+
+/// `path`'s components below `root`, joined with `/` regardless of the host
+/// OS's own separator — so a key [`FsBlobStore::list`] returns always
+/// round-trips through [`FsBlobStore::resolve`] the same way it would if a
+/// caller had typed it, including a `.tmp-*` file staged directly next to
+/// its intended blob (its "key" is just its normal relative path —
+/// `resolve` has no special handling for a leading dot, only for `.`/`..`
+/// themselves).
+fn relative_key(root: &Path, path: &Path) -> Result<String, RepoError> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|e| RepoError::from_source("listed path outside blob store root", e))?;
+    Ok(relative
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/"))
+}
+
+fn system_time_to_timestamp(
+    t: std::time::SystemTime,
+) -> Result<anamnesis_core::Timestamp, RepoError> {
+    let seconds = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| RepoError::from_source("blob has a modified time before the Unix epoch", e))?
+        .as_secs();
+    anamnesis_core::Timestamp::from_unix_seconds(seconds as i64)
+        .map_err(|e| RepoError::from_source("blob modified time out of range", e))
 }
 
 /// A chunked upload's parts are staged as `part-<number>` files under a
@@ -504,5 +602,109 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = FsBlobStore::new(dir.path()).await.unwrap();
         assert!(store.get_range("nope", 0, 3).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn list_returns_every_key_including_nested_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsBlobStore::new(dir.path()).await.unwrap();
+        store.put("a", once(b"x"), "text/plain").await.unwrap();
+        store
+            .put("photos/deeper/b.png", once(b"y"), "image/png")
+            .await
+            .unwrap();
+
+        let mut keys: Vec<String> = store
+            .list()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|b| b.key)
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["a".to_string(), "photos/deeper/b.png".to_string()]
+        );
+
+        // Every returned key must round-trip through `get`/`delete` exactly
+        // as `put` accepted it.
+        for key in &keys {
+            assert!(store.get(key).await.unwrap().is_some(), "{key}");
+        }
+    }
+
+    #[tokio::test]
+    async fn list_excludes_the_chunked_upload_staging_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsBlobStore::new(dir.path()).await.unwrap();
+        store.put("a", once(b"x"), "text/plain").await.unwrap();
+
+        let token = ChunkedUpload::begin(&store, "big", "application/octet-stream")
+            .await
+            .unwrap();
+        ChunkedUpload::put_part(&store, "big", &token, 1, once(b"part"))
+            .await
+            .unwrap();
+
+        let keys: Vec<String> = store
+            .list()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|b| b.key)
+            .collect();
+        assert_eq!(
+            keys,
+            vec!["a".to_string()],
+            "in-progress chunked-upload staging files are owned by the separate \
+             upload GC, not this listing: {keys:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_includes_a_stray_tmp_file_and_it_is_deletable() {
+        // Simulates `write_atomically`'s documented crash case: a `.tmp-*`
+        // file left behind next to its intended destination.
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsBlobStore::new(dir.path()).await.unwrap();
+        tokio::fs::write(dir.path().join(".tmp-deadbeef"), b"partial")
+            .await
+            .unwrap();
+
+        let keys: Vec<String> = store
+            .list()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|b| b.key)
+            .collect();
+        assert_eq!(keys, vec![".tmp-deadbeef".to_string()]);
+
+        store.delete(".tmp-deadbeef").await.unwrap();
+        assert!(store.list().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_reports_a_plausible_last_modified_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsBlobStore::new(dir.path()).await.unwrap();
+        let before = anamnesis_core::Timestamp::from_unix_seconds(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+                - 5,
+        )
+        .unwrap();
+        store.put("a", once(b"x"), "text/plain").await.unwrap();
+
+        let listed = store.list().await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(
+            listed[0].last_modified >= before,
+            "a blob just written must report a last_modified at or after just before the write: {:?}",
+            listed[0]
+        );
     }
 }

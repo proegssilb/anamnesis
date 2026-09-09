@@ -365,6 +365,15 @@ mod sqlite_impl {
         rows.iter().map(task_from_row).collect()
     }
 
+    pub(super) async fn list_all(pool: &SqlitePool) -> Result<Vec<Task>, RepoError> {
+        let query = format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY created_at");
+        let rows = sqlx::query(sqlx::AssertSqlSafe(query))
+            .fetch_all(pool)
+            .await
+            .map_err(|e| RepoError::from_source("failed to list all tasks", e))?;
+        rows.iter().map(task_from_row).collect()
+    }
+
     pub(super) async fn insert(pool: &SqlitePool, task: &Task) -> Result<(), RepoError> {
         let (placement_kind, column_id, board_position) = encode_placement(&task.placement);
         sqlx::query(
@@ -595,6 +604,15 @@ mod postgres_impl {
         rows.iter().map(task_from_row).collect()
     }
 
+    pub(super) async fn list_all(pool: &PgPool) -> Result<Vec<Task>, RepoError> {
+        let query = format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY created_at");
+        let rows = sqlx::query(sqlx::AssertSqlSafe(query))
+            .fetch_all(pool)
+            .await
+            .map_err(|e| RepoError::from_source("failed to list all tasks", e))?;
+        rows.iter().map(task_from_row).collect()
+    }
+
     pub(super) async fn insert(pool: &PgPool, task: &Task) -> Result<(), RepoError> {
         let (placement_kind, column_id, board_position) = encode_placement(&task.placement);
         let board_position = board_position
@@ -753,6 +771,13 @@ impl TaskRepository for SqlStore {
         match &self.backend {
             Backend::Sqlite(pool) => sqlite_impl::list_by_project(pool, project_id).await,
             Backend::Postgres(pool) => postgres_impl::list_by_project(pool, project_id).await,
+        }
+    }
+
+    async fn list_all(&self) -> Result<Vec<Task>, RepoError> {
+        match &self.backend {
+            Backend::Sqlite(pool) => sqlite_impl::list_all(pool).await,
+            Backend::Postgres(pool) => postgres_impl::list_all(pool).await,
         }
     }
 

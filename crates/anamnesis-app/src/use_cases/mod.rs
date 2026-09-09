@@ -7,6 +7,7 @@ mod archive;
 mod area;
 mod attachment;
 mod attachment_upload;
+mod blob_gc;
 mod board;
 mod bulk;
 mod comment;
@@ -31,6 +32,7 @@ pub use attachment_upload::{
     NewUpload, abort_file_upload, begin_file_upload, complete_file_upload, expire_stale_uploads,
     upload_file_part,
 };
+pub use blob_gc::collect_orphan_blobs;
 pub use board::{BoardItemKind, reposition_board_item};
 pub use bulk::BulkCreateOutcome;
 pub use comment::{add_comment, delete_comment, edit_comment, list_comments};
@@ -39,6 +41,7 @@ pub use group_membership::{
     list_area_groups, list_known_groups, list_project_groups, revoke_admin_group,
     revoke_area_group_role, revoke_project_group_role,
 };
+pub use indexing::{ReindexOutcome, reindex_all};
 pub use membership::{
     grant_area_role, grant_project_role, grant_system_admin, list_area_members,
     list_project_members, list_system_admins, revoke_area_role, revoke_project_role,

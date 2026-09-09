@@ -140,6 +140,11 @@ pub trait TaskRepository: Send + Sync {
     /// of design-doc gap `SqlStore::seed_board_column`'s doc comment already
     /// names for column creation — so this method fills it.
     async fn list_by_project(&self, project_id: ProjectId) -> Result<Vec<Task>, RepoError>;
+    /// Every task in the system, archived included — the reindex sweep's
+    /// input (`crate::use_cases::reindex_all`). Unlike [`Self::list_by_project`]
+    /// and [`Self::list_children`], this is not scoped to any one aggregate
+    /// and excludes nothing, mirroring [`ProjectRepository::list_all`].
+    async fn list_all(&self) -> Result<Vec<Task>, RepoError>;
     async fn insert(&self, task: &Task) -> Result<(), RepoError>;
     /// Writes `task`, but only if the stored row's `last_touched_at` still
     /// equals `expected_last_touched_at` — the value the caller read `task`
@@ -207,6 +212,11 @@ pub trait AttachmentRepository: Send + Sync {
     async fn load(&self, id: AttachmentId) -> Result<Option<Attachment>, RepoError>;
     async fn insert(&self, attachment: &Attachment) -> Result<(), RepoError>;
     async fn delete(&self, id: AttachmentId) -> Result<(), RepoError>;
+    /// Every `blob_key` currently referenced by a `file`-kind attachment,
+    /// system-wide — the orphan blob GC sweep's "what's still in use" half
+    /// (`crate::use_cases::collect_orphan_blobs`). Link attachments carry no
+    /// `blob_key` and are not represented here.
+    async fn list_all_blob_keys(&self) -> Result<Vec<String>, RepoError>;
 }
 
 /// Tracks [`PendingUpload`]s — chunked, multi-request file uploads in
