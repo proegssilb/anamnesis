@@ -35,6 +35,14 @@ use crate::error::RepoError;
 /// satisfy that trivially.
 pub type ByteStream<'a> = Pin<Box<dyn Stream<Item = std::io::Result<Bytes>> + Send + 'a>>;
 
+/// One object [`BlobStore::list`] reports: the key exactly as `get`/`delete`
+/// would accept it, and when it was last written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobInfo {
+    pub key: String,
+    pub last_modified: Timestamp,
+}
+
 /// Stores and retrieves attachment file bytes (`docs/DOMAIN.md` §3: "Files
 /// need a new `BlobStore` port (local filesystem first, S3-shaped later)").
 /// Keyed by an opaque string the caller mints and records as an
@@ -66,6 +74,19 @@ pub trait BlobStore: Send + Sync {
         end: u64,
     ) -> Result<Option<ByteStream<'static>>, RepoError>;
     async fn delete(&self, key: &str) -> Result<(), RepoError>;
+    /// Every object currently in storage — the orphan blob GC sweep's input
+    /// (`crate::use_cases::collect_orphan_blobs`). Not used on any request
+    /// path, unlike every other method here; exists solely for that
+    /// background job.
+    ///
+    /// What counts as "storage" is adapter-specific: `FsBlobStore` walks its
+    /// whole root except the chunked-upload staging directory (`.uploads/`,
+    /// owned by the *other* GC — `crate::use_cases::expire_stale_uploads`)
+    /// and deliberately *includes* stray `.tmp-*` files left by an
+    /// interrupted atomic write (see `FsBlobStore::write_atomically`'s own
+    /// doc comment — this is exactly what that comment says collects them).
+    /// `S3BlobStore` lists every object under its configured prefix.
+    async fn list(&self) -> Result<Vec<BlobInfo>, RepoError>;
 }
 
 /// Keeps a [`crate::ports::SearchQuery`] index current as areas, projects,

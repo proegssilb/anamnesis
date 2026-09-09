@@ -6,12 +6,14 @@
 //! socket. See `docs/ARCHITECTURE.md` and `docs/PLAN.md` (Phase 4).
 
 pub mod auth;
+pub mod blob_gc;
 pub mod bootstrap;
 pub mod config;
 pub mod error;
 pub mod handlers;
 pub mod health;
 pub mod hx;
+pub mod reindex;
 pub mod routes;
 pub mod session;
 pub mod state;

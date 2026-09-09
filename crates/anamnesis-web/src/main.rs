@@ -26,7 +26,9 @@ use anamnesis_app::{
 };
 use anamnesis_web::config::Config;
 use anamnesis_web::state::AppState;
-use anamnesis_web::{bootstrap, health, routes, session, sweep, tangles, templates, upload_gc};
+use anamnesis_web::{
+    blob_gc, bootstrap, health, reindex, routes, session, sweep, tangles, templates, upload_gc,
+};
 
 #[tokio::main]
 async fn main() {
@@ -57,34 +59,44 @@ async fn main() {
     let (blobs, chunked) = open_blob_store(&config).await;
     let state = build_state(&config, store, blobs, chunked, identity, leases);
 
-    // The two background tickers: the archive sweep (`docs/DOMAIN.md` §6) and
-    // the tangle-detection backstop. Both are deliberately started only here,
-    // in the binary -- never from `routes::build_router`, `AppState`
-    // construction, or `bootstrap::run` -- so no integration test (which
-    // builds a `Router` directly via `routes::build_router`, per
-    // `tests/support`) can ever cause one to spawn. See each module's doc
-    // comment for the full reasoning. They take the one `JobLease` store out
-    // of `state` and coordinate on distinct job names, so neither can block
-    // the other -- or the relationship handlers, which now hold that same
-    // lease around their own detection passes.
+    // The five background tickers: the archive sweep (`docs/DOMAIN.md` §6),
+    // the tangle-detection backstop, the abandoned-upload GC, the orphan
+    // blob GC (issue #23), and the reindex sweep (issue #22). All are
+    // deliberately started only here, in the binary -- never from
+    // `routes::build_router`, `AppState` construction, or `bootstrap::run`
+    // -- so no integration test (which builds a `Router` directly via
+    // `routes::build_router`, per `tests/support`) can ever cause one to
+    // spawn. See each module's doc comment for the full reasoning. They take
+    // the one `JobLease` store out of `state` and coordinate on distinct job
+    // names, so none can block another -- or the relationship handlers,
+    // which now hold that same lease around their own detection passes.
     let sweep_handle = sweep::spawn_ticker(state.clone());
     let tangle_handle = tangles::spawn_backstop(state.clone());
     let upload_gc_handle = upload_gc::spawn_ticker(state.clone());
+    let blob_gc_handle = blob_gc::spawn_ticker(state.clone());
+    let reindex_handle = reindex::spawn_ticker(state.clone());
 
     serve(routes::build_router(state), config.bind_addr).await;
 
-    // All three tickers are detached background tasks with nothing left to
+    // All five tickers are detached background tasks with nothing left to
     // flush. A sweep either committed or it didn't, and `sweep_done` is
     // idempotent, so an abort mid-sweep is safe to resume on the next boot
     // (see `sweep`'s module doc comment); a detection pass recomputes its
     // whole answer from the graph on the next run, so an abort mid-pass
     // leaves nothing partial behind either; an upload GC pass just deletes
     // rows one at a time, so an abort mid-pass leaves at most one upload
-    // uncollected until the next hourly tick. `abort()` returns immediately
-    // rather than waiting for the next wake-up, so none delay process exit.
+    // uncollected until the next hourly tick; a blob GC pass likewise
+    // deletes blobs one at a time, so an abort mid-pass leaves at most one
+    // orphan uncollected until the next tick; a reindex pass writes each
+    // entity's search entry independently and idempotently, so an abort
+    // mid-pass leaves the index no worse than it already was. `abort()`
+    // returns immediately rather than waiting for the next wake-up, so none
+    // delay process exit.
     sweep_handle.abort();
     tangle_handle.abort();
     upload_gc_handle.abort();
+    blob_gc_handle.abort();
+    reindex_handle.abort();
 }
 
 /// Probes an already-running server and exits 0 (healthy) or 1 (not),

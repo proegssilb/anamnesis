@@ -21,12 +21,12 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 
 use anamnesis_app::{
-    AreaRepository, Attachment, AttachmentId, AttachmentRepository, AttachmentUploadId,
-    AttachmentUploadRepository, BlobStore, BoardColumn, BoardItem, BoardQuery, ByteStream,
-    ChunkedUpload, Comment, CommentId, CommentRepository, MembershipQuery, MembershipRepository,
-    PartInfo, PendingUpload, ProjectAggregate, ProjectRepository, RelationshipRepository,
-    RepoError, SearchHit, SearchIndex, SearchQuery, Settings, SettingsRepository, TangleRepository,
-    TaskAggregate, TaskRepository, TaskUpdateError,
+    AreaRepository, Attachment, AttachmentId, AttachmentKind, AttachmentRepository,
+    AttachmentUploadId, AttachmentUploadRepository, BlobInfo, BlobStore, BoardColumn, BoardItem,
+    BoardQuery, ByteStream, ChunkedUpload, Comment, CommentId, CommentRepository, MembershipQuery,
+    MembershipRepository, PartInfo, PendingUpload, ProjectAggregate, ProjectRepository,
+    RelationshipRepository, RepoError, SearchHit, SearchIndex, SearchQuery, Settings,
+    SettingsRepository, TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
@@ -47,6 +47,13 @@ pub struct Fakes {
     attachments: Mutex<HashMap<AttachmentId, Attachment>>,
     columns: Mutex<Vec<Column>>,
     blobs: Mutex<HashMap<String, (Vec<u8>, String)>>,
+    /// Each blob's last-written timestamp, for `BlobStore::list` —
+    /// `BlobStore::put`/`ChunkedUpload::complete` carry no `Clock` in their
+    /// real signature, so this defaults every write to the Unix epoch;
+    /// [`Fakes::set_blob_last_modified`] lets a GC test backdate/postdate
+    /// one deterministically against whatever `Clock` it hands
+    /// `collect_orphan_blobs`.
+    blob_last_modified: Mutex<HashMap<String, Timestamp>>,
     /// Chunked-upload staging: opaque token -> part number -> that part's
     /// bytes, mirroring `FsBlobStore`'s staging directory / `S3BlobStore`'s
     /// real multipart upload closely enough for `ChunkedUpload`'s contract
@@ -208,6 +215,24 @@ impl Fakes {
     pub fn search_entries(&self) -> Vec<(&'static str, String, String, bool)> {
         self.search_entries.lock().unwrap().clone()
     }
+
+    /// Wipes every indexed entry — simulates the stale-or-empty index a
+    /// reindex sweep exists to repair, without needing to fabricate a
+    /// realistic sequence of failed writes to get there.
+    pub fn clear_search_entries(&self) {
+        self.search_entries.lock().unwrap().clear();
+    }
+
+    /// Backdates/postdates `key`'s `last_modified` for a `BlobStore::list`
+    /// orphan-GC test, deterministically against whatever `Clock` the test
+    /// hands `collect_orphan_blobs` — real `put`/`complete` cannot do this
+    /// themselves since neither takes a `Clock`.
+    pub fn set_blob_last_modified(&self, key: &str, at: Timestamp) {
+        self.blob_last_modified
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), at);
+    }
 }
 
 #[async_trait]
@@ -368,6 +393,16 @@ impl TaskRepository for Fakes {
             .values()
             .map(|agg| agg.task.clone())
             .filter(|t| t.project_id == project_id && t.archived_at.is_none())
+            .collect())
+    }
+
+    async fn list_all(&self) -> Result<Vec<Task>, RepoError> {
+        Ok(self
+            .tasks
+            .lock()
+            .unwrap()
+            .values()
+            .map(|agg| agg.task.clone())
             .collect())
     }
 
@@ -560,6 +595,19 @@ impl AttachmentRepository for Fakes {
         self.attachments.lock().unwrap().remove(&id);
         Ok(())
     }
+
+    async fn list_all_blob_keys(&self) -> Result<Vec<String>, RepoError> {
+        Ok(self
+            .attachments
+            .lock()
+            .unwrap()
+            .values()
+            .filter_map(|a| match &a.kind {
+                AttachmentKind::File { blob_key, .. } => Some(blob_key.clone()),
+                AttachmentKind::Link { .. } => None,
+            })
+            .collect())
+    }
 }
 
 #[async_trait]
@@ -598,6 +646,11 @@ impl BlobStore for Fakes {
             .lock()
             .unwrap()
             .insert(key.to_string(), (bytes, mime.to_string()));
+        self.blob_last_modified
+            .lock()
+            .unwrap()
+            .entry(key.to_string())
+            .or_insert(Timestamp::from_unix_seconds(0).unwrap());
         Ok(size)
     }
 
@@ -619,7 +672,23 @@ impl BlobStore for Fakes {
 
     async fn delete(&self, key: &str) -> Result<(), RepoError> {
         self.blobs.lock().unwrap().remove(key);
+        self.blob_last_modified.lock().unwrap().remove(key);
         Ok(())
+    }
+
+    async fn list(&self) -> Result<Vec<BlobInfo>, RepoError> {
+        let blobs = self.blobs.lock().unwrap();
+        let modified = self.blob_last_modified.lock().unwrap();
+        Ok(blobs
+            .keys()
+            .map(|key| BlobInfo {
+                key: key.clone(),
+                last_modified: modified
+                    .get(key)
+                    .copied()
+                    .unwrap_or_else(|| Timestamp::from_unix_seconds(0).unwrap()),
+            })
+            .collect())
     }
 }
 
@@ -687,6 +756,11 @@ impl ChunkedUpload for Fakes {
             .lock()
             .unwrap()
             .insert(key.to_string(), (assembled, String::new()));
+        self.blob_last_modified
+            .lock()
+            .unwrap()
+            .entry(key.to_string())
+            .or_insert(Timestamp::from_unix_seconds(0).unwrap());
         Ok(size)
     }
 

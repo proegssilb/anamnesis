@@ -188,6 +188,19 @@ mod sqlite_impl {
             .map_err(|e| RepoError::from_source("failed to delete attachment", e))?;
         Ok(())
     }
+
+    pub(super) async fn list_all_blob_keys(pool: &SqlitePool) -> Result<Vec<String>, RepoError> {
+        let rows = sqlx::query("SELECT blob_key FROM attachments WHERE kind = 'file'")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| RepoError::from_source("failed to list attachment blob keys", e))?;
+        rows.into_iter()
+            .map(|row| {
+                row.get::<Option<String>, _>("blob_key")
+                    .ok_or_else(|| missing_attachment_column("blob_key"))
+            })
+            .collect()
+    }
 }
 
 mod postgres_impl {
@@ -279,6 +292,19 @@ mod postgres_impl {
             .map_err(|e| RepoError::from_source("failed to delete attachment", e))?;
         Ok(())
     }
+
+    pub(super) async fn list_all_blob_keys(pool: &PgPool) -> Result<Vec<String>, RepoError> {
+        let rows = sqlx::query("SELECT blob_key FROM attachments WHERE kind = 'file'")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| RepoError::from_source("failed to list attachment blob keys", e))?;
+        rows.into_iter()
+            .map(|row| {
+                row.get::<Option<String>, _>("blob_key")
+                    .ok_or_else(|| missing_attachment_column("blob_key"))
+            })
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -308,6 +334,13 @@ impl AttachmentRepository for SqlStore {
         match &self.backend {
             Backend::Sqlite(pool) => sqlite_impl::delete(pool, id).await,
             Backend::Postgres(pool) => postgres_impl::delete(pool, id).await,
+        }
+    }
+
+    async fn list_all_blob_keys(&self) -> Result<Vec<String>, RepoError> {
+        match &self.backend {
+            Backend::Sqlite(pool) => sqlite_impl::list_all_blob_keys(pool).await,
+            Backend::Postgres(pool) => postgres_impl::list_all_blob_keys(pool).await,
         }
     }
 }
