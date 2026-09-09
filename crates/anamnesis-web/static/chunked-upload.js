@@ -151,7 +151,13 @@
 
         uploadChunked(taskPath, file, chunkSize, csrfToken(form), progress)
           .then(function () {
-            window.location.href = taskPath + "#task-add-attachment";
+            // Only the fragment changes -- this form is already rendered on
+            // `taskPath`'s own page, so there is no page to navigate to.
+            // (Setting `location.href` from `taskPath` here once tripped
+            // CodeQL's "DOM text reinterpreted as HTML" check, since that
+            // sink is scored as if the URL could still be attacker-supplied;
+            // `location.hash` carries no such flow.)
+            window.location.hash = "task-add-attachment";
             window.location.reload();
           })
           .catch(function (err) {
