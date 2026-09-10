@@ -619,7 +619,12 @@ impl ProjectSyncConfigRepository for Fakes {
         synced_at: Timestamp,
         error: Option<&str>,
     ) -> Result<(), RepoError> {
-        if let Some(config) = self.project_sync_configs.lock().unwrap().get_mut(&project_id) {
+        if let Some(config) = self
+            .project_sync_configs
+            .lock()
+            .unwrap()
+            .get_mut(&project_id)
+        {
             config.last_synced_at = Some(synced_at);
             config.last_sync_error = error.map(str::to_string);
         }
@@ -627,7 +632,10 @@ impl ProjectSyncConfigRepository for Fakes {
     }
 
     async fn delete(&self, project_id: ProjectId) -> Result<(), RepoError> {
-        self.project_sync_configs.lock().unwrap().remove(&project_id);
+        self.project_sync_configs
+            .lock()
+            .unwrap()
+            .remove(&project_id);
         Ok(())
     }
 }
@@ -648,11 +656,16 @@ impl TaskSyncLinkRepository for Fakes {
             .lock()
             .unwrap()
             .values()
-            .find(|l| l.project_id == project_id && l.external_issue_number == external_issue_number)
+            .find(|l| {
+                l.project_id == project_id && l.external_issue_number == external_issue_number
+            })
             .cloned())
     }
 
-    async fn list_for_project(&self, project_id: ProjectId) -> Result<Vec<TaskSyncLink>, RepoError> {
+    async fn list_for_project(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Vec<TaskSyncLink>, RepoError> {
         Ok(self
             .task_sync_links
             .lock()
@@ -1445,7 +1458,8 @@ impl IssueTrackerClient for FakeIssueTracker {
         // by at least one second rather than leaving the value unchanged,
         // which would make a caller's own push invisible to its own next
         // `list_issues_since` watermark check.
-        issue.updated_at = Timestamp::from_unix_seconds(issue.updated_at.unix_seconds() + 1).unwrap();
+        issue.updated_at =
+            Timestamp::from_unix_seconds(issue.updated_at.unix_seconds() + 1).unwrap();
         Ok(issue.clone())
     }
 

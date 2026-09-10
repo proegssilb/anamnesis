@@ -36,16 +36,16 @@ pub use ports::{
     IssueEdit, IssueState, IssueTrackerClient, JobLease, LoginCallback, LoginRedirect,
     MembershipQuery, MembershipRepository, PartInfo, ProjectAggregate, ProjectRepository,
     ProjectSyncConfigRepository, RelationshipRepository, RemoteComment, RemoteIssue, SearchHit,
-    SearchIndex, SearchQuery, SettingsRepository, TangleRepository, TaskAggregate,
-    TaskSyncLinkRepository, TaskRepository, TaskUpdateError, TimezoneResolver, TokenCipher,
-    UserDirectoryQuery, UserDirectoryRepository,
+    SearchIndex, SearchQuery, SettingsRepository, TangleRepository, TaskAggregate, TaskRepository,
+    TaskSyncLinkRepository, TaskUpdateError, TimezoneResolver, TokenCipher, UserDirectoryQuery,
+    UserDirectoryRepository,
 };
 pub use settings::{
     DEFAULT_ACTIVE_PROJECT_LIMIT, DEFAULT_HIGH_BOUNCE_THRESHOLD,
     DEFAULT_SUGGESTION_COOLDOWN_SECONDS, Settings,
 };
 pub use sync::{
-    ProjectSyncConfig, SyncProvider, TaskSyncLink, configure_project_sync,
+    ProjectSyncConfig, SyncConfigFields, SyncProvider, TaskSyncLink, configure_project_sync,
     edit_project_sync_config, link_task_to_issue, rotate_project_sync_token,
 };
 pub use use_cases::{
@@ -58,15 +58,14 @@ pub use use_cases::{
     delete_relationship, derive_seed, drop_tangle, drop_task, edit_area, edit_comment,
     edit_project, edit_project_fields, edit_task, expire_stale_uploads, grant_admin_group,
     grant_area_group_role, grant_area_role, grant_project_group_role, grant_project_role,
-    grant_system_admin, list_admin_groups, list_all_projects, list_area_groups,
-    list_area_members, list_areas, list_attachments, list_comments, list_known_groups,
-    list_known_users, list_mentionable_users, list_project_groups, list_project_members,
-    list_projects_in_area, list_system_admins, place_tangle, raise_task, reindex_all,
-    rename_field_definition, reposition_area, reposition_board_item, request_suggestion,
-    resolve_frozen_tangles, resolve_kind, revoke_admin_group, revoke_area_group_role,
-    revoke_area_role, revoke_project_group_role, revoke_project_role, revoke_system_admin,
-    run_and_record, run_tangle_detection, set_checklist_position, set_task_field_value,
-    set_task_parent, transition_project_status, unarchive_project, unarchive_task,
-    update_settings, upload_file_part, view_area, view_project, view_settings, view_sync_status,
-    view_task,
+    grant_system_admin, list_admin_groups, list_all_projects, list_area_groups, list_area_members,
+    list_areas, list_attachments, list_comments, list_known_groups, list_known_users,
+    list_mentionable_users, list_project_groups, list_project_members, list_projects_in_area,
+    list_system_admins, place_tangle, raise_task, reindex_all, rename_field_definition,
+    reposition_area, reposition_board_item, request_suggestion, resolve_frozen_tangles,
+    resolve_kind, revoke_admin_group, revoke_area_group_role, revoke_area_role,
+    revoke_project_group_role, revoke_project_role, revoke_system_admin, run_and_record,
+    run_tangle_detection, set_checklist_position, set_task_field_value, set_task_parent,
+    transition_project_status, unarchive_project, unarchive_task, update_settings,
+    upload_file_part, view_area, view_project, view_settings, view_sync_status, view_task,
 };

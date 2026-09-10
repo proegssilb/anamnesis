@@ -11,8 +11,11 @@ use super::{
     timestamp_from_seconds,
 };
 
-#[allow(clippy::too_many_arguments)]
-fn assemble(
+/// The `project_sync_configs` row, straight off either backend's `SELECT`
+/// (each backend still reads `project_id` differently — SQLite stores it as
+/// text, Postgres natively — so callers parse that one before filling this
+/// in).
+struct ConfigRow {
     project_id: uuid::Uuid,
     provider: String,
     base_url: Option<String>,
@@ -26,21 +29,23 @@ fn assemble(
     updated_at: i64,
     last_synced_at: Option<i64>,
     last_sync_error: Option<String>,
-) -> Result<ProjectSyncConfig, RepoError> {
+}
+
+fn assemble(row: ConfigRow) -> Result<ProjectSyncConfig, RepoError> {
     Ok(ProjectSyncConfig {
-        project_id: ProjectId::new(project_id),
-        provider: sync_provider_from_text(&provider)?,
-        base_url,
-        owner,
-        repo,
-        encrypted_token,
-        enabled,
-        auto_import_new_issues,
-        auto_push_new_tasks,
-        created_at: timestamp_from_seconds(created_at)?,
-        updated_at: timestamp_from_seconds(updated_at)?,
-        last_synced_at: last_synced_at.map(timestamp_from_seconds).transpose()?,
-        last_sync_error,
+        project_id: ProjectId::new(row.project_id),
+        provider: sync_provider_from_text(&row.provider)?,
+        base_url: row.base_url,
+        owner: row.owner,
+        repo: row.repo,
+        encrypted_token: row.encrypted_token,
+        enabled: row.enabled,
+        auto_import_new_issues: row.auto_import_new_issues,
+        auto_push_new_tasks: row.auto_push_new_tasks,
+        created_at: timestamp_from_seconds(row.created_at)?,
+        updated_at: timestamp_from_seconds(row.updated_at)?,
+        last_synced_at: row.last_synced_at.map(timestamp_from_seconds).transpose()?,
+        last_sync_error: row.last_sync_error,
     })
 }
 
@@ -83,21 +88,21 @@ mod sqlite_impl {
     }
 
     fn assemble_row(row: &sqlx::sqlite::SqliteRow) -> Result<ProjectSyncConfig, RepoError> {
-        assemble(
-            parse_uuid(&row.get::<String, _>("project_id"))?,
-            row.get("provider"),
-            row.get("base_url"),
-            row.get("owner"),
-            row.get("repo"),
-            row.get("encrypted_token"),
-            row.get::<i64, _>("enabled") != 0,
-            row.get::<i64, _>("auto_import_new_issues") != 0,
-            row.get::<i64, _>("auto_push_new_tasks") != 0,
-            row.get::<i64, _>("created_at"),
-            row.get::<i64, _>("updated_at"),
-            row.get::<Option<i64>, _>("last_synced_at"),
-            row.get("last_sync_error"),
-        )
+        assemble(ConfigRow {
+            project_id: parse_uuid(&row.get::<String, _>("project_id"))?,
+            provider: row.get("provider"),
+            base_url: row.get("base_url"),
+            owner: row.get("owner"),
+            repo: row.get("repo"),
+            encrypted_token: row.get("encrypted_token"),
+            enabled: row.get::<i64, _>("enabled") != 0,
+            auto_import_new_issues: row.get::<i64, _>("auto_import_new_issues") != 0,
+            auto_push_new_tasks: row.get::<i64, _>("auto_push_new_tasks") != 0,
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+            last_synced_at: row.get("last_synced_at"),
+            last_sync_error: row.get("last_sync_error"),
+        })
     }
 
     pub(super) async fn upsert(
@@ -203,21 +208,21 @@ mod postgres_impl {
     }
 
     fn assemble_row(row: &sqlx::postgres::PgRow) -> Result<ProjectSyncConfig, RepoError> {
-        assemble(
-            row.get::<uuid::Uuid, _>("project_id"),
-            row.get("provider"),
-            row.get("base_url"),
-            row.get("owner"),
-            row.get("repo"),
-            row.get("encrypted_token"),
-            row.get("enabled"),
-            row.get("auto_import_new_issues"),
-            row.get("auto_push_new_tasks"),
-            row.get::<i64, _>("created_at"),
-            row.get::<i64, _>("updated_at"),
-            row.get::<Option<i64>, _>("last_synced_at"),
-            row.get("last_sync_error"),
-        )
+        assemble(ConfigRow {
+            project_id: row.get("project_id"),
+            provider: row.get("provider"),
+            base_url: row.get("base_url"),
+            owner: row.get("owner"),
+            repo: row.get("repo"),
+            encrypted_token: row.get("encrypted_token"),
+            enabled: row.get("enabled"),
+            auto_import_new_issues: row.get("auto_import_new_issues"),
+            auto_push_new_tasks: row.get("auto_push_new_tasks"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+            last_synced_at: row.get("last_synced_at"),
+            last_sync_error: row.get("last_sync_error"),
+        })
     }
 
     pub(super) async fn upsert(pool: &PgPool, config: &ProjectSyncConfig) -> Result<(), RepoError> {

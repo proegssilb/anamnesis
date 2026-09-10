@@ -129,5 +129,8 @@ async fn acquire_sync_lease(
     lease: &str,
 ) -> Result<bool, anamnesis_app::RepoError> {
     let now = state.clock.now();
-    state.leases.try_acquire(lease, owner, now, SYNC_LEASE_TTL).await
+    state
+        .leases
+        .try_acquire(lease, owner, now, SYNC_LEASE_TTL)
+        .await
 }

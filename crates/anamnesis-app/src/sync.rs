@@ -78,29 +78,40 @@ fn validate_base_url(
     }
 }
 
+/// The submitted, validated-together part of a [`ProjectSyncConfig`] — what
+/// an admin actually supplies through the configure/edit form, as one
+/// request payload. Kept separate from the fields [`configure_project_sync`]
+/// and [`edit_project_sync_config`] compute themselves (`project_id`,
+/// timestamps, a fresh config's `enabled: true` default) and from the
+/// encrypted token, which [`rotate_project_sync_token`] handles on its own
+/// because the web form's "leave blank to keep the current token" UX needs
+/// to distinguish "no new secret supplied" from "clear the secret".
+pub struct SyncConfigFields<'a> {
+    pub provider: SyncProvider,
+    pub base_url: Option<String>,
+    pub owner: &'a str,
+    pub repo: &'a str,
+    pub auto_import_new_issues: bool,
+    pub auto_push_new_tasks: bool,
+}
+
 /// Builds a new [`ProjectSyncConfig`].
-#[allow(clippy::too_many_arguments)]
 pub fn configure_project_sync(
     project_id: ProjectId,
-    provider: SyncProvider,
-    base_url: Option<String>,
-    owner: impl AsRef<str>,
-    repo: impl AsRef<str>,
+    fields: SyncConfigFields<'_>,
     encrypted_token: Vec<u8>,
-    auto_import_new_issues: bool,
-    auto_push_new_tasks: bool,
     now: Timestamp,
 ) -> Result<ProjectSyncConfig, AppError> {
     Ok(ProjectSyncConfig {
         project_id,
-        provider,
-        base_url: validate_base_url(provider, base_url)?,
-        owner: non_blank(owner, "the repository owner")?,
-        repo: non_blank(repo, "the repository name")?,
+        provider: fields.provider,
+        base_url: validate_base_url(fields.provider, fields.base_url)?,
+        owner: non_blank(fields.owner, "the repository owner")?,
+        repo: non_blank(fields.repo, "the repository name")?,
         encrypted_token,
         enabled: true,
-        auto_import_new_issues,
-        auto_push_new_tasks,
+        auto_import_new_issues: fields.auto_import_new_issues,
+        auto_push_new_tasks: fields.auto_push_new_tasks,
         created_at: now,
         updated_at: now,
         last_synced_at: None,
@@ -109,30 +120,21 @@ pub fn configure_project_sync(
 }
 
 /// Replaces owner/repo/provider/base-url/the two auto-sync toggles/enabled,
-/// stamping `updated_at`. Token rotation is a separate function
-/// ([`rotate_project_sync_token`]) because the web form's "leave blank to
-/// keep the current token" UX needs to distinguish "no new secret supplied"
-/// from "clear the secret", which an `Option<Vec<u8>>` parameter here would
-/// read ambiguously at call sites.
-#[allow(clippy::too_many_arguments)]
+/// stamping `updated_at`. Token rotation stays separate — see
+/// [`SyncConfigFields`]'s doc comment for why.
 pub fn edit_project_sync_config(
     config: &ProjectSyncConfig,
-    provider: SyncProvider,
-    base_url: Option<String>,
-    owner: impl AsRef<str>,
-    repo: impl AsRef<str>,
-    auto_import_new_issues: bool,
-    auto_push_new_tasks: bool,
+    fields: SyncConfigFields<'_>,
     enabled: bool,
     now: Timestamp,
 ) -> Result<ProjectSyncConfig, AppError> {
     Ok(ProjectSyncConfig {
-        provider,
-        base_url: validate_base_url(provider, base_url)?,
-        owner: non_blank(owner, "the repository owner")?,
-        repo: non_blank(repo, "the repository name")?,
-        auto_import_new_issues,
-        auto_push_new_tasks,
+        provider: fields.provider,
+        base_url: validate_base_url(fields.provider, fields.base_url)?,
+        owner: non_blank(fields.owner, "the repository owner")?,
+        repo: non_blank(fields.repo, "the repository name")?,
+        auto_import_new_issues: fields.auto_import_new_issues,
+        auto_push_new_tasks: fields.auto_push_new_tasks,
         enabled,
         updated_at: now,
         ..config.clone()
@@ -214,17 +216,26 @@ mod tests {
         Timestamp::from_unix_seconds(secs).unwrap()
     }
 
+    /// A `SyncConfigFields` for `octocat/hello-world` on the given provider,
+    /// with both auto-sync toggles on — the shared starting point most of
+    /// these tests then tweak one field of.
+    fn fields(provider: SyncProvider, base_url: Option<&str>) -> SyncConfigFields<'static> {
+        SyncConfigFields {
+            provider,
+            base_url: base_url.map(str::to_string),
+            owner: "octocat",
+            repo: "hello-world",
+            auto_import_new_issues: true,
+            auto_push_new_tasks: true,
+        }
+    }
+
     #[test]
     fn configure_project_sync_builds_a_github_config_with_no_base_url() {
         let config = configure_project_sync(
             pid(),
-            SyncProvider::GitHub,
-            None,
-            "octocat",
-            "hello-world",
+            fields(SyncProvider::GitHub, None),
             vec![1, 2, 3],
-            true,
-            true,
             ts(0),
         )
         .unwrap();
@@ -235,17 +246,8 @@ mod tests {
 
     #[test]
     fn configure_project_sync_rejects_forgejo_without_a_base_url() {
-        let result = configure_project_sync(
-            pid(),
-            SyncProvider::Forgejo,
-            None,
-            "octocat",
-            "hello-world",
-            vec![],
-            true,
-            true,
-            ts(0),
-        );
+        let result =
+            configure_project_sync(pid(), fields(SyncProvider::Forgejo, None), vec![], ts(0));
         assert!(matches!(result, Err(AppError::Invalid(_))));
     }
 
@@ -253,13 +255,8 @@ mod tests {
     fn configure_project_sync_rejects_a_blank_forgejo_base_url() {
         let result = configure_project_sync(
             pid(),
-            SyncProvider::Forgejo,
-            Some("   ".to_string()),
-            "octocat",
-            "hello-world",
+            fields(SyncProvider::Forgejo, Some("   ")),
             vec![],
-            true,
-            true,
             ts(0),
         );
         assert!(matches!(result, Err(AppError::Invalid(_))));
@@ -269,17 +266,15 @@ mod tests {
     fn configure_project_sync_accepts_a_forgejo_base_url() {
         let config = configure_project_sync(
             pid(),
-            SyncProvider::Forgejo,
-            Some("https://forgejo.example.com".to_string()),
-            "octocat",
-            "hello-world",
+            fields(SyncProvider::Forgejo, Some("https://forgejo.example.com")),
             vec![],
-            true,
-            true,
             ts(0),
         )
         .unwrap();
-        assert_eq!(config.base_url.as_deref(), Some("https://forgejo.example.com"));
+        assert_eq!(
+            config.base_url.as_deref(),
+            Some("https://forgejo.example.com")
+        );
     }
 
     #[rstest]
@@ -289,13 +284,12 @@ mod tests {
     fn configure_project_sync_rejects_blank_owner_or_repo(#[case] owner: &str, #[case] repo: &str) {
         let result = configure_project_sync(
             pid(),
-            SyncProvider::GitHub,
-            None,
-            owner,
-            repo,
+            SyncConfigFields {
+                owner,
+                repo,
+                ..fields(SyncProvider::GitHub, None)
+            },
             vec![],
-            true,
-            true,
             ts(0),
         );
         assert!(matches!(result, Err(AppError::Invalid(_))));
@@ -303,26 +297,17 @@ mod tests {
 
     #[test]
     fn edit_project_sync_config_replaces_fields_and_stamps_updated_at() {
-        let config = configure_project_sync(
-            pid(),
-            SyncProvider::GitHub,
-            None,
-            "octocat",
-            "hello-world",
-            vec![],
-            true,
-            true,
-            ts(0),
-        )
-        .unwrap();
+        let config =
+            configure_project_sync(pid(), fields(SyncProvider::GitHub, None), vec![], ts(0))
+                .unwrap();
         let edited = edit_project_sync_config(
             &config,
-            SyncProvider::GitHub,
-            None,
-            "octocat",
-            "renamed-repo",
-            false,
-            false,
+            SyncConfigFields {
+                repo: "renamed-repo",
+                auto_import_new_issues: false,
+                auto_push_new_tasks: false,
+                ..fields(SyncProvider::GitHub, None)
+            },
             false,
             ts(10),
         )
@@ -337,18 +322,9 @@ mod tests {
 
     #[test]
     fn rotate_project_sync_token_replaces_only_the_token() {
-        let config = configure_project_sync(
-            pid(),
-            SyncProvider::GitHub,
-            None,
-            "octocat",
-            "hello-world",
-            vec![1],
-            true,
-            true,
-            ts(0),
-        )
-        .unwrap();
+        let config =
+            configure_project_sync(pid(), fields(SyncProvider::GitHub, None), vec![1], ts(0))
+                .unwrap();
         let rotated = rotate_project_sync_token(&config, vec![9, 9, 9], ts(5));
         assert_eq!(rotated.encrypted_token, vec![9, 9, 9]);
         assert_eq!(rotated.updated_at, ts(5));

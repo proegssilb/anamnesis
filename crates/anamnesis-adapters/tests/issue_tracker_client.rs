@@ -177,9 +177,7 @@ async fn update_issue_sends_title_body_and_state_and_returns_the_updated_issue()
 async fn list_comments_since_reports_the_authors_display_name() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path(
-            "/api/v3/repos/octocat/hello-world/issues/3/comments",
-        ))
+        .and(path("/api/v3/repos/octocat/hello-world/issues/3/comments"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
             "id": 555,
             "body": "nice work",

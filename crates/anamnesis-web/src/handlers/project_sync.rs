@@ -9,8 +9,8 @@ use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Redirect, Response};
 
 use anamnesis_app::{
-    AppError, ProjectSyncConfig, SyncPorts, SyncProvider, configure_or_update_project_sync,
-    run_and_record, view_sync_status,
+    AppError, ProjectSyncConfig, SyncConfigFields, SyncPorts, SyncProvider,
+    configure_or_update_project_sync, run_and_record, view_sync_status,
 };
 use anamnesis_core::ProjectId;
 
@@ -68,10 +68,9 @@ async fn resolve_token(
     raw: &str,
 ) -> Result<Vec<u8>, WebError> {
     let trimmed = raw.trim();
-    let cipher = state
-        .token_cipher
-        .as_ref()
-        .ok_or_else(|| bad("project sync is not enabled on this deployment (no encryption key configured)"))?;
+    let cipher = state.token_cipher.as_ref().ok_or_else(|| {
+        bad("project sync is not enabled on this deployment (no encryption key configured)")
+    })?;
     if !trimmed.is_empty() {
         return cipher.encrypt(trimmed).map_err(WebError::from);
     }
@@ -104,27 +103,31 @@ async fn configure_sync_impl(
     let role = project_role_for(state, user, project_id).await?;
 
     let provider = parse_provider(&form.provider)?;
-    let base_url = non_empty(&form.base_url);
     let encrypted_token = resolve_token(state, role, project_id, &form.token).await?;
+    let fields = SyncConfigFields {
+        provider,
+        base_url: non_empty(&form.base_url),
+        owner: &form.owner,
+        repo: &form.repo,
+        auto_import_new_issues: !form.auto_import_new_issues.is_empty(),
+        auto_push_new_tasks: !form.auto_push_new_tasks.is_empty(),
+    };
 
     let result = configure_or_update_project_sync(
         state.project_sync_configs.as_ref(),
         state.clock.as_ref(),
         role,
         project_id,
-        provider,
-        base_url,
-        &form.owner,
-        &form.repo,
+        fields,
         encrypted_token,
-        !form.auto_import_new_issues.is_empty(),
-        !form.auto_push_new_tasks.is_empty(),
         !form.enabled.is_empty(),
     )
     .await;
 
     match result {
-        Ok(_) => Ok(Redirect::to(&format!("/projects/{project_id}#project-settings")).into_response()),
+        Ok(_) => {
+            Ok(Redirect::to(&format!("/projects/{project_id}#project-settings")).into_response())
+        }
         Err(AppError::Forbidden) => Err(WebError::App(AppError::Forbidden)),
         Err(AppError::Invalid(message)) => {
             render_project_page_reloaded(
@@ -185,9 +188,12 @@ pub(crate) async fn run_one_sync(
         .token_cipher
         .as_ref()
         .ok_or_else(|| bad("project sync is not enabled on this deployment"))?;
-    let token = cipher.decrypt(&config.encrypted_token).map_err(WebError::from)?;
-    let client = anamnesis_adapters::build_client(config.provider, config.base_url.as_deref(), &token)
-        .map_err(|e| WebError::from(AppError::from(e)))?;
+    let token = cipher
+        .decrypt(&config.encrypted_token)
+        .map_err(WebError::from)?;
+    let client =
+        anamnesis_adapters::build_client(config.provider, config.base_url.as_deref(), &token)
+            .map_err(|e| WebError::from(AppError::from(e)))?;
     let ports = SyncPorts {
         configs: state.project_sync_configs.as_ref(),
         links: state.task_sync_links.as_ref(),

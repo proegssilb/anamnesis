@@ -3479,13 +3479,15 @@ async fn github_sync_config(
         clock,
         admin(),
         project_id,
-        SyncProvider::GitHub,
-        None,
-        "octocat",
-        "hello-world",
+        SyncConfigFields {
+            provider: SyncProvider::GitHub,
+            base_url: None,
+            owner: "octocat",
+            repo: "hello-world",
+            auto_import_new_issues,
+            auto_push_new_tasks,
+        },
         vec![1, 2, 3],
-        auto_import_new_issues,
-        auto_push_new_tasks,
         true,
     )
     .await
@@ -3504,13 +3506,15 @@ async fn configuring_and_viewing_project_sync_requires_project_admin() {
         &clock,
         member(),
         project_id,
-        SyncProvider::GitHub,
-        None,
-        "octocat",
-        "hello-world",
+        SyncConfigFields {
+            provider: SyncProvider::GitHub,
+            base_url: None,
+            owner: "octocat",
+            repo: "hello-world",
+            auto_import_new_issues: true,
+            auto_push_new_tasks: true,
+        },
         vec![],
-        true,
-        true,
         true,
     )
     .await;
@@ -3543,13 +3547,15 @@ async fn forgejo_config_requires_a_base_url() {
         &clock,
         admin(),
         project_id,
-        SyncProvider::Forgejo,
-        None,
-        "octocat",
-        "hello-world",
+        SyncConfigFields {
+            provider: SyncProvider::Forgejo,
+            base_url: None,
+            owner: "octocat",
+            repo: "hello-world",
+            auto_import_new_issues: true,
+            auto_push_new_tasks: true,
+        },
         vec![],
-        true,
-        true,
         true,
     )
     .await;
@@ -3599,17 +3605,9 @@ async fn a_task_already_done_is_never_pushed_as_a_new_issue() {
     fakes.seed_column(done_column.clone());
 
     let task = add_task(&fakes, &ids, &clock0, project_id, "Already finished").await;
-    raise_task(
-        &fakes,
-        &fakes,
-        &clock0,
-        admin(),
-        task.id,
-        done_column.id,
-        0,
-    )
-    .await
-    .unwrap();
+    raise_task(&fakes, &fakes, &clock0, admin(), task.id, done_column.id, 0)
+        .await
+        .unwrap();
 
     let config = github_sync_config(&fakes, &clock0, project_id, true, true).await;
     let tracker = FakeIssueTracker::new();
@@ -3648,8 +3646,14 @@ async fn auto_push_and_auto_import_toggles_are_independent() {
     let outcome = run_and_record(&ports, &tracker, admin(), &config)
         .await
         .unwrap();
-    assert_eq!(outcome.pushed_new_task_count, 0, "auto_push_new_tasks is off");
-    assert_eq!(outcome.imported_task_count, 1, "auto_import_new_issues is on");
+    assert_eq!(
+        outcome.pushed_new_task_count, 0,
+        "auto_push_new_tasks is off"
+    );
+    assert_eq!(
+        outcome.imported_task_count, 1,
+        "auto_import_new_issues is on"
+    );
 }
 
 #[tokio::test]
@@ -3734,7 +3738,10 @@ async fn closing_the_remote_issue_archives_the_task_and_reopening_unarchives_it(
     run_and_record(&ports60, &tracker, admin(), &config)
         .await
         .unwrap();
-    let after_close = TaskRepository::load(&fakes, task.id).await.unwrap().unwrap();
+    let after_close = TaskRepository::load(&fakes, task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(after_close.task.archived_at.is_some());
 
     let mut reopened_issue = tracker.issue(link.external_issue_number).unwrap();
@@ -3747,7 +3754,10 @@ async fn closing_the_remote_issue_archives_the_task_and_reopening_unarchives_it(
     run_and_record(&ports80, &tracker, admin(), &config)
         .await
         .unwrap();
-    let after_reopen = TaskRepository::load(&fakes, task.id).await.unwrap().unwrap();
+    let after_reopen = TaskRepository::load(&fakes, task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(after_reopen.task.archived_at.is_none());
 }
 

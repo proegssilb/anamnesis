@@ -115,7 +115,10 @@ mod tests {
     fn the_wrong_key_fails_to_decrypt() {
         let ciphertext = cipher().encrypt("ghp_supersecret").unwrap();
         let other = AesGcmTokenCipher::new(&[9u8; 32]);
-        assert!(matches!(other.decrypt(&ciphertext), Err(AppError::Crypto(_))));
+        assert!(matches!(
+            other.decrypt(&ciphertext),
+            Err(AppError::Crypto(_))
+        ));
     }
 
     #[test]

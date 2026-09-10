@@ -28,7 +28,9 @@ fn assemble(
         external_url,
         last_remote_updated_at: timestamp_from_seconds(last_remote_updated_at)?,
         last_local_synced_at: timestamp_from_seconds(last_local_synced_at)?,
-        last_comment_synced_at: last_comment_synced_at.map(timestamp_from_seconds).transpose()?,
+        last_comment_synced_at: last_comment_synced_at
+            .map(timestamp_from_seconds)
+            .transpose()?,
         created_at: timestamp_from_seconds(created_at)?,
     })
 }
@@ -277,7 +279,10 @@ impl TaskSyncLinkRepository for SqlStore {
         }
     }
 
-    async fn list_for_project(&self, project_id: ProjectId) -> Result<Vec<TaskSyncLink>, RepoError> {
+    async fn list_for_project(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Vec<TaskSyncLink>, RepoError> {
         match &self.backend {
             Backend::Sqlite(pool) => sqlite_impl::list_for_project(pool, project_id).await,
             Backend::Postgres(pool) => postgres_impl::list_for_project(pool, project_id).await,
