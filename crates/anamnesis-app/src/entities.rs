@@ -20,6 +20,7 @@ use anamnesis_core::{TaskId, Timestamp, UserId};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::sync::SyncProvider;
 
 macro_rules! app_id {
     ($name:ident) => {
@@ -63,6 +64,22 @@ pub struct Comment {
     pub body: String,
     pub created_at: Timestamp,
     pub edited_at: Option<Timestamp>,
+    /// `None` for every locally authored comment (`create_comment`'s output
+    /// always sets this `None`). `Some` only for one brought in from an
+    /// external issue tracker by [`import_comment`] — see that function's
+    /// doc comment for what it implies about editing/deleting.
+    pub origin: Option<CommentOrigin>,
+}
+
+/// Where an imported [`Comment`] came from — set only by [`import_comment`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommentOrigin {
+    pub provider: SyncProvider,
+    pub external_comment_id: u64,
+    pub external_url: String,
+    /// The external system's display name for whoever posted it (a GitHub
+    /// login, a Forgejo username) — not an anamnesis [`UserId`].
+    pub external_author_display: String,
 }
 
 /// Creates a new comment. Rejects a blank (post-trim) body.
@@ -81,7 +98,48 @@ pub fn create_comment(
         body,
         created_at: now,
         edited_at: None,
+        origin: None,
     })
+}
+
+/// Imports a comment from an external issue tracker. `author` is set to a
+/// synthetic, deterministic [`UserId`] (`external:<provider>:<display>`) —
+/// legitimate given `UserId`'s free-form-string shape — purely so the
+/// existing `comments.author NOT NULL` column and
+/// `crate::policy::can_edit_comment`'s ownership composition keep working
+/// unmodified: nobody authenticates as that string, so its `author ==
+/// editor` branch can never fire for an imported comment, leaving only the
+/// Project/System-Admin branch — comments flow one way, in, and anamnesis
+/// never edits one back out, but an admin may still delete a bad import.
+pub fn import_comment(
+    id: CommentId,
+    task_id: TaskId,
+    body: impl AsRef<str>,
+    origin: CommentOrigin,
+    now: Timestamp,
+) -> Result<Comment, AppError> {
+    let body = non_blank(body, "comment body")?;
+    let author = UserId::new(format!(
+        "external:{}:{}",
+        provider_tag(origin.provider),
+        origin.external_author_display
+    ));
+    Ok(Comment {
+        id,
+        task_id,
+        author,
+        body,
+        created_at: now,
+        edited_at: None,
+        origin: Some(origin),
+    })
+}
+
+fn provider_tag(provider: SyncProvider) -> &'static str {
+    match provider {
+        SyncProvider::GitHub => "github",
+        SyncProvider::Forgejo => "forgejo",
+    }
 }
 
 /// Replaces a comment's body, stamping `edited_at`.

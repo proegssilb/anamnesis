@@ -149,6 +149,75 @@
         </section>
 
         <section class="panel-form">
+          <h2>Sync with an external issue tracker</h2>
+          <p class="hint">
+            Two-way sync of title and description with GitHub Issues or a
+            self-hosted Forgejo repo; comments flow in from there, annotated
+            with a link back to the original.
+          </p>
+          {% if sync_config %}
+            <p class="hint">
+              {% if sync_config.enabled %}Enabled{% else %}Disabled{% endif %} —
+              syncing with {{ sync_config.provider }}: {{ sync_config.owner }}/{{ sync_config.repo }}.
+              {% if sync_config.last_synced_at %}
+                Last synced at unix time {{ sync_config.last_synced_at }}.
+              {% else %}
+                Never synced yet.
+              {% endif %}
+            </p>
+            {% if sync_config.last_sync_error %}
+              <p class="hint error">Last attempt failed: {{ sync_config.last_sync_error }}</p>
+            {% endif %}
+            <form method="post" action="/projects/{{ project.id }}/sync/now#project-settings">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit">Sync now</button>
+            </form>
+          {% else %}
+            <p class="hint">Not configured yet.</p>
+          {% endif %}
+          <form class="panel-form" method="post" action="/projects/{{ project.id }}/sync#project-settings">
+            <h3>{% if sync_config %}Edit sync settings{% else %}Configure sync{% endif %}</h3>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label for="sync-provider">Provider</label>
+            <select id="sync-provider" name="provider">
+              <option value="github" {% if sync_config and sync_config.provider == "github" %}selected{% endif %}>GitHub</option>
+              <option value="forgejo" {% if sync_config and sync_config.provider == "forgejo" %}selected{% endif %}>Forgejo</option>
+            </select>
+            <label for="sync-base-url">Instance URL (required for Forgejo; leave blank for github.com)</label>
+            <input id="sync-base-url" name="base_url" maxlength="500"
+                   value="{% if sync_config %}{{ sync_config.base_url }}{% endif %}"
+                   placeholder="https://forgejo.example.com">
+            <label for="sync-owner">Repository owner</label>
+            <input id="sync-owner" name="owner" required maxlength="200"
+                   value="{% if sync_config %}{{ sync_config.owner }}{% endif %}">
+            <label for="sync-repo">Repository name</label>
+            <input id="sync-repo" name="repo" required maxlength="200"
+                   value="{% if sync_config %}{{ sync_config.repo }}{% endif %}">
+            <label for="sync-token">
+              Personal access token{% if sync_config %} (leave blank to keep the current one){% endif %}
+            </label>
+            <input id="sync-token" type="password" name="token" maxlength="500" autocomplete="off"
+                   {% if not sync_config %}required{% endif %}>
+            <label class="checkbox-label" for="sync-auto-import">
+              <input id="sync-auto-import" type="checkbox" name="auto_import_new_issues" value="1"
+                     {% if not sync_config or sync_config.auto_import_new_issues %}checked{% endif %}>
+              Import new remote issues as tasks
+            </label>
+            <label class="checkbox-label" for="sync-auto-push">
+              <input id="sync-auto-push" type="checkbox" name="auto_push_new_tasks" value="1"
+                     {% if not sync_config or sync_config.auto_push_new_tasks %}checked{% endif %}>
+              Push new tasks as issues
+            </label>
+            <label class="checkbox-label" for="sync-enabled">
+              <input id="sync-enabled" type="checkbox" name="enabled" value="1"
+                     {% if not sync_config or sync_config.enabled %}checked{% endif %}>
+              Enabled
+            </label>
+            <button type="submit">Save sync settings</button>
+          </form>
+        </section>
+
+        <section class="panel-form">
           <h2>Members</h2>
           <p class="hint">Ordinary access to this project's tasks; Project Admin also manages its fields, kinds, and membership.</p>
           <ul class="member-list">

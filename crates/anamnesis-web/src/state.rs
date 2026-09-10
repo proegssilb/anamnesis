@@ -17,9 +17,10 @@ use std::sync::Arc;
 use anamnesis_app::{
     AreaRepository, AttachmentRepository, AttachmentUploadRepository, BlobStore, BoardQuery,
     ChunkedUpload, Clock, CommentRepository, GroupMembershipQuery, GroupMembershipRepository,
-    IdGen, IdentityProvider, JobLease, MembershipQuery, MembershipRepository, ProjectRepository,
-    RelationshipRepository, SearchIndex, SearchQuery, SettingsRepository, TangleRepository,
-    TaskRepository, TimezoneResolver, UserDirectoryQuery, UserDirectoryRepository,
+    IdGen, IdentityProvider, JobLease, MembershipQuery, MembershipRepository,
+    ProjectSyncConfigRepository, ProjectRepository, RelationshipRepository, SearchIndex,
+    SearchQuery, SettingsRepository, TangleRepository, TaskRepository, TaskSyncLinkRepository,
+    TimezoneResolver, TokenCipher, UserDirectoryQuery, UserDirectoryRepository,
 };
 use axum::extract::FromRef;
 use axum_extra::extract::cookie::Key;
@@ -157,6 +158,20 @@ pub struct AppState {
     /// `anamnesis_app::settings`'s module doc comment for why timezone
     /// stays config-sourced rather than becoming a runtime-editable value.
     pub timezone_name: String,
+    /// Per-project external issue-tracker sync config (issues #40/#41).
+    pub project_sync_configs: Arc<dyn ProjectSyncConfigRepository>,
+    /// Task <-> external issue links, the reconciliation pass's own
+    /// bookkeeping table. Kept as a separate field from
+    /// [`Self::project_sync_configs`] for the same reason every other port
+    /// pair in this struct is split rather than combined: they are
+    /// independently useful ports over different tables.
+    pub task_sync_links: Arc<dyn TaskSyncLinkRepository>,
+    /// Encrypts/decrypts a sync config's stored external-tracker token.
+    /// `None` only when `ANAMNESIS_SYNC_ENCRYPTION_KEY` is unset — mirrors
+    /// [`Self::identity`]'s own optionality for OIDC: project sync is
+    /// simply unavailable on a deployment that never configured it, rather
+    /// than the field lying with a placeholder cipher nothing may call.
+    pub token_cipher: Option<Arc<dyn TokenCipher>>,
 }
 
 impl FromRef<AppState> for Key {

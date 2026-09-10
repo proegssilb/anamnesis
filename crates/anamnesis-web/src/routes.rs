@@ -18,7 +18,7 @@ use crate::handlers::{
     add_file_attachment_handler, add_link_attachment_handler, archive_all_handler,
     archive_project_handler, archive_task_handler, begin_upload_handler, bulk_create_areas_handler,
     bulk_create_projects_handler, bulk_create_tasks_handler, callback_handler,
-    complete_upload_handler, create_area_handler, create_project_handler,
+    complete_upload_handler, configure_sync_handler, create_area_handler, create_project_handler,
     create_relationship_handler, create_task_handler, delete_relationship_handler,
     download_attachment_handler, drop_project_task_handler, drop_tangle_handler, drop_task_handler,
     edit_area_handler, edit_project_description_handler, edit_project_title_handler,
@@ -30,10 +30,10 @@ use crate::handlers::{
     reposition_handler, revoke_admin_group_handler, revoke_area_group_handler,
     revoke_area_member_handler, revoke_project_group_handler, revoke_project_member_handler,
     revoke_system_admin_handler, root_handler, search_handler, set_field_value_handler,
-    set_parent_handler, transition_project_status_handler, unarchive_project_handler,
-    unarchive_task_handler, update_settings_handler, upload_part_handler, view_area_handler,
-    view_board_handler, view_project_handler, view_settings_handler, view_task_handler,
-    view_users_handler,
+    set_parent_handler, transition_project_status_handler, trigger_sync_now_handler,
+    unarchive_project_handler, unarchive_task_handler, update_settings_handler,
+    upload_part_handler, view_area_handler, view_board_handler, view_project_handler,
+    view_settings_handler, view_task_handler, view_users_handler,
 };
 use crate::state::AppState;
 use crate::static_files;
@@ -114,6 +114,8 @@ fn project_routes() -> Router<AppState> {
         .route("/projects/{id}/archive", post(archive_project_handler))
         .route("/projects/{id}/unarchive", post(unarchive_project_handler))
         .route("/projects/{id}/fields", post(add_field_definition_handler))
+        .route("/projects/{id}/sync", post(configure_sync_handler))
+        .route("/projects/{id}/sync/now", post(trigger_sync_now_handler))
         .route("/projects/{id}/tasks", post(create_task_handler))
         .route("/projects/{id}/tasks/bulk", post(bulk_create_tasks_handler))
         .route(

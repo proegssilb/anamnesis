@@ -18,16 +18,17 @@ use axum::Router;
 use tracing_subscriber::EnvFilter;
 
 use anamnesis_adapters::{
-    FsBlobStore, OidcIdentityProvider, S3BlobStore, S3Settings, SqlStore, SystemClock,
-    TzTimezoneResolver, UuidIdGen,
+    AesGcmTokenCipher, FsBlobStore, OidcIdentityProvider, S3BlobStore, S3Settings, SqlStore,
+    SystemClock, TzTimezoneResolver, UuidIdGen,
 };
 use anamnesis_app::{
-    BlobStore, ChunkedUpload, Clock, IdentityProvider, JobLease, TimezoneResolver,
+    BlobStore, ChunkedUpload, Clock, IdentityProvider, JobLease, TimezoneResolver, TokenCipher,
 };
 use anamnesis_web::config::Config;
 use anamnesis_web::state::AppState;
 use anamnesis_web::{
-    blob_gc, bootstrap, health, reindex, routes, session, sweep, tangles, templates, upload_gc,
+    blob_gc, bootstrap, health, reindex, routes, session, sweep, sync_ticker, tangles, templates,
+    upload_gc,
 };
 
 #[tokio::main]
@@ -59,26 +60,28 @@ async fn main() {
     let (blobs, chunked) = open_blob_store(&config).await;
     let state = build_state(&config, store, blobs, chunked, identity, leases);
 
-    // The five background tickers: the archive sweep (`docs/DOMAIN.md` §6),
+    // The six background tickers: the archive sweep (`docs/DOMAIN.md` §6),
     // the tangle-detection backstop, the abandoned-upload GC, the orphan
-    // blob GC (issue #23), and the reindex sweep (issue #22). All are
-    // deliberately started only here, in the binary -- never from
-    // `routes::build_router`, `AppState` construction, or `bootstrap::run`
-    // -- so no integration test (which builds a `Router` directly via
-    // `routes::build_router`, per `tests/support`) can ever cause one to
-    // spawn. See each module's doc comment for the full reasoning. They take
-    // the one `JobLease` store out of `state` and coordinate on distinct job
-    // names, so none can block another -- or the relationship handlers,
-    // which now hold that same lease around their own detection passes.
+    // blob GC (issue #23), the reindex sweep (issue #22), and the project
+    // sync poller (issues #40/#41). All are deliberately started only here,
+    // in the binary -- never from `routes::build_router`, `AppState`
+    // construction, or `bootstrap::run` -- so no integration test (which
+    // builds a `Router` directly via `routes::build_router`, per
+    // `tests/support`) can ever cause one to spawn. See each module's doc
+    // comment for the full reasoning. They take the one `JobLease` store out
+    // of `state` and coordinate on distinct job names, so none can block
+    // another -- or the relationship handlers, which now hold that same
+    // lease around their own detection passes.
     let sweep_handle = sweep::spawn_ticker(state.clone());
     let tangle_handle = tangles::spawn_backstop(state.clone());
     let upload_gc_handle = upload_gc::spawn_ticker(state.clone());
     let blob_gc_handle = blob_gc::spawn_ticker(state.clone());
     let reindex_handle = reindex::spawn_ticker(state.clone());
+    let sync_handle = sync_ticker::spawn_ticker(state.clone());
 
     serve(routes::build_router(state), config.bind_addr).await;
 
-    // All five tickers are detached background tasks with nothing left to
+    // All six tickers are detached background tasks with nothing left to
     // flush. A sweep either committed or it didn't, and `sweep_done` is
     // idempotent, so an abort mid-sweep is safe to resume on the next boot
     // (see `sweep`'s module doc comment); a detection pass recomputes its
@@ -89,14 +92,17 @@ async fn main() {
     // deletes blobs one at a time, so an abort mid-pass leaves at most one
     // orphan uncollected until the next tick; a reindex pass writes each
     // entity's search entry independently and idempotently, so an abort
-    // mid-pass leaves the index no worse than it already was. `abort()`
-    // returns immediately rather than waiting for the next wake-up, so none
-    // delay process exit.
+    // mid-pass leaves the index no worse than it already was; a sync pass
+    // reconciles one project at a time under its own lease, so an abort
+    // mid-pass leaves at most that one project's sync to pick back up
+    // fresh on the next tick. `abort()` returns immediately rather than
+    // waiting for the next wake-up, so none delay process exit.
     sweep_handle.abort();
     tangle_handle.abort();
     upload_gc_handle.abort();
     blob_gc_handle.abort();
     reindex_handle.abort();
+    sync_handle.abort();
 }
 
 /// Probes an already-running server and exits 0 (healthy) or 1 (not),
@@ -313,6 +319,11 @@ fn build_state(
         secure_cookies: config.base_url_is_https(),
         max_body_bytes: config.max_body_bytes,
         max_attachment_bytes: config.max_attachment_bytes,
+        project_sync_configs: store.clone(),
+        task_sync_links: store.clone(),
+        token_cipher: config
+            .sync_encryption_key
+            .map(|key| Arc::new(AesGcmTokenCipher::new(&key)) as Arc<dyn TokenCipher>),
         settings: store,
         timezone_name: config.timezone.clone(),
     }

@@ -302,7 +302,16 @@
     {% if comments %}
       <ul class="comment-list">
         {% for c in comments %}
-          <li><p class="comment-meta">{{ c.author_name }}</p><div class="comment-body">{{ c.body_html }}</div></li>
+          <li>
+            <p class="comment-meta">{{ c.author_name }}</p>
+            {% if c.origin %}
+              <p class="hint comment-origin">
+                Originally posted on {{ c.origin.provider_label }} —
+                <a href="{{ c.origin.external_url }}" target="_blank" rel="noopener">view original</a>
+              </p>
+            {% endif %}
+            <div class="comment-body">{{ c.body_html }}</div>
+          </li>
         {% endfor %}
       </ul>
     {% else %}

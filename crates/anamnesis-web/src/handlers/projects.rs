@@ -79,6 +79,15 @@ async fn render_project_page_reloaded_with_hint(
         aggregate.project.area_id,
     )
     .await?;
+    // Only loaded for someone who could actually change it — a plain
+    // Member's page load must never trip `Action::ManageProjectSync`'s
+    // `Forbidden` (issues #40/#41).
+    let sync_config = if can_manage {
+        anamnesis_app::view_sync_status(state.project_sync_configs.as_ref(), role, project_id)
+            .await?
+    } else {
+        None
+    };
     render_project_page(
         state,
         user,
@@ -86,6 +95,7 @@ async fn render_project_page_reloaded_with_hint(
         &tasks,
         &panel,
         mentionable_users,
+        sync_config.as_ref(),
         error,
         open_hint,
         status,
@@ -635,6 +645,7 @@ fn render_project_page(
     tasks: &[anamnesis_core::Task],
     panel: &AccessPanel,
     mentionable_users: Vec<(anamnesis_core::UserId, String)>,
+    sync_config: Option<&anamnesis_app::ProjectSyncConfig>,
     error: Option<&str>,
     open_hint: Option<&str>,
     status: StatusCode,
@@ -645,6 +656,7 @@ fn render_project_page(
     let description_html =
         super::markdown::render(&aggregate.project.description, user.user_id.as_str());
     let mentionable_users = super::format::mentionable_users_json(mentionable_users);
+    let sync_config = sync_config.map(build_sync_config_context);
 
     let tmpl = state
         .templates
@@ -664,6 +676,7 @@ fn render_project_page(
             mentionable_users => mentionable_users,
             show_groups => panel.show_groups(),
             can_manage => panel.can_manage,
+            sync_config => sync_config,
             csrf_token => user.csrf_token,
             current_user => user.display_name,
             error => error,
@@ -671,6 +684,28 @@ fn render_project_page(
         })
         .map_err(WebError::template)?;
     Ok((status, Html(body)).into_response())
+}
+
+/// This project's sync config (issues #40/#41), shaped for the template:
+/// plain strings/bools only (never `encrypted_token` — that never reaches
+/// a template context) and a `provider` string matching the `<select>`'s
+/// own option values.
+fn build_sync_config_context(config: &anamnesis_app::ProjectSyncConfig) -> minijinja::Value {
+    let provider = match config.provider {
+        anamnesis_app::SyncProvider::GitHub => "github",
+        anamnesis_app::SyncProvider::Forgejo => "forgejo",
+    };
+    context! {
+        provider => provider,
+        base_url => config.base_url.clone().unwrap_or_default(),
+        owner => config.owner,
+        repo => config.repo,
+        enabled => config.enabled,
+        auto_import_new_issues => config.auto_import_new_issues,
+        auto_push_new_tasks => config.auto_push_new_tasks,
+        last_synced_at => config.last_synced_at.map(|t| t.unix_seconds()),
+        last_sync_error => config.last_sync_error,
+    }
 }
 
 /// This project's own custom field vocabulary (`docs/DOMAIN.md` §3) — the

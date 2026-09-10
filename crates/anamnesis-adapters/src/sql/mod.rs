@@ -27,11 +27,13 @@ mod group_membership;
 mod lease;
 mod membership;
 mod project;
+mod project_sync_config;
 mod relationship;
 mod search;
 mod settings;
 mod tangle;
 mod task;
+mod task_sync_link;
 mod user_directory;
 
 use std::str::FromStr;
@@ -409,6 +411,28 @@ pub(crate) fn project_status_from_text(
         "complete" => Ok(Complete),
         other => Err(RepoError::new(format!(
             "invalid stored project status {other:?}"
+        ))),
+    }
+}
+
+/// `SyncProvider` <-> its stored text representation — shared by
+/// `project_sync_config` (`ProjectSyncConfig::provider`) and `comment`
+/// (`CommentOrigin::provider`).
+pub(crate) fn sync_provider_to_text(provider: anamnesis_app::SyncProvider) -> &'static str {
+    use anamnesis_app::SyncProvider::*;
+    match provider {
+        GitHub => "github",
+        Forgejo => "forgejo",
+    }
+}
+
+pub(crate) fn sync_provider_from_text(raw: &str) -> Result<anamnesis_app::SyncProvider, RepoError> {
+    use anamnesis_app::SyncProvider::*;
+    match raw {
+        "github" => Ok(GitHub),
+        "forgejo" => Ok(Forgejo),
+        other => Err(RepoError::new(format!(
+            "invalid stored sync provider {other:?}"
         ))),
     }
 }

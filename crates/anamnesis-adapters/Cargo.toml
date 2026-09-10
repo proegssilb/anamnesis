@@ -7,6 +7,9 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+# Token-at-rest encryption for project sync (issues #40/#41):
+# `AesGcmTokenCipher` is the only place this workspace encrypts anything.
+aes-gcm = "0.10.3"
 anamnesis-app = { version = "1.4.0", path = "../anamnesis-app" }
 anamnesis-core = { version = "1.4.0", path = "../anamnesis-core" }
 async-trait = "0.1.92"
@@ -19,10 +22,19 @@ job-lease = { version = "0.1.0", path = "../job-lease" }
 # GCP and generic-HTTP backends would be dead weight in the binary.
 object_store = { version = "0.14.1", default-features = false, features = ["aws"] }
 openidconnect = "4.0.1"
+# `HttpIssueTrackerClient`'s GitHub/Forgejo REST calls (issues #40/#41).
+# `openidconnect` already pulls a `reqwest` into the graph with rustls-tls,
+# so this direct dependency adds no real build cost -- pinned to the same
+# major version (0.12) it resolves to rather than anamnesis-web's 0.13, to
+# avoid two `reqwest` majors compiling in one workspace.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "tls-rustls", "sqlite", "postgres", "uuid"] }
-time = "0.3.55"
+# "parsing"/"formatting": `HttpIssueTrackerClient` parses GitHub/Forgejo's
+# RFC 3339 timestamps and formats its own `since` query parameter the same
+# way.
+time = { version = "0.3.55", features = ["parsing", "formatting"] }
 time-tz = "2.0.0"
 # "time" is for `connect_sqlite`'s journal-mode retry and the migration
 # lease's renewal, not for anything resembling a scheduler -- background work

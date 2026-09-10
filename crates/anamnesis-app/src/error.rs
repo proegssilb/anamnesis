@@ -53,6 +53,17 @@ pub enum AppError {
     /// call).
     #[error(transparent)]
     Repo(#[from] RepoError),
+    /// A project has no sync configuration (issues #40/#41) — e.g. "Sync
+    /// now" pressed before anything was ever configured.
+    #[error("project sync is not configured")]
+    SyncNotConfigured,
+    /// The configured external issue tracker reported a failure.
+    #[error(transparent)]
+    IssueTracker(#[from] IssueTrackerError),
+    /// A [`crate::ports::TokenCipher`] operation failed — an invalid key,
+    /// or (on decrypt) a ciphertext that failed authentication.
+    #[error("token encryption failed: {0}")]
+    Crypto(String),
 }
 
 impl From<crate::ports::TaskUpdateError> for AppError {
@@ -130,6 +141,38 @@ impl IdentityError {
     }
 }
 
+/// An opaque error from a [`crate::ports::IssueTrackerClient`]
+/// implementation (issues #40/#41).
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct IssueTrackerError {
+    message: String,
+    #[source]
+    source: Option<Box<dyn StdError + Send + Sync + 'static>>,
+}
+
+impl IssueTrackerError {
+    /// Builds an `IssueTrackerError` with no further cause attached.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Wraps an adapter-specific error (e.g. a `reqwest::Error`) as an
+    /// `IssueTrackerError`, retaining it as the `source` for logging.
+    pub fn from_source(
+        message: impl Into<String>,
+        source: impl StdError + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
 // Manual `PartialEq` impls so tests can assert on `AppError`/`RepoError`
 // shape without needing the boxed source (which is not `PartialEq`) to
 // participate. Two `RepoError`s are equal when their messages match.
@@ -140,6 +183,12 @@ impl PartialEq for RepoError {
 }
 
 impl PartialEq for IdentityError {
+    fn eq(&self, other: &Self) -> bool {
+        self.message == other.message
+    }
+}
+
+impl PartialEq for IssueTrackerError {
     fn eq(&self, other: &Self) -> bool {
         self.message == other.message
     }

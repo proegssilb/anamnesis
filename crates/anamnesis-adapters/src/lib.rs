@@ -11,17 +11,24 @@
 //!   tzdb lookup) stand alone since none of them touches the SQL schema.
 //! - `SystemClock`, `UuidIdGen`, and `OidcIdentityProvider` are the
 //!   remaining shared infrastructure: a clock, an id generator, and OIDC.
+//! - [`AesGcmTokenCipher`] and [`HttpIssueTrackerClient`] back project sync
+//!   (issues #40/#41): encrypting a stored personal access token at rest,
+//!   and talking to GitHub/Forgejo's REST API.
 
 mod blob_store;
 mod clock;
+mod crypto;
 mod id_gen;
 mod identity;
+mod issue_tracker;
 mod sql;
 mod timezone;
 
 pub use blob_store::{FsBlobStore, S3BlobStore, S3Settings};
 pub use clock::SystemClock;
+pub use crypto::AesGcmTokenCipher;
 pub use id_gen::UuidIdGen;
 pub use identity::OidcIdentityProvider;
+pub use issue_tracker::{HttpIssueTrackerClient, build_client};
 pub use sql::{SqlJobLease, SqlStore};
 pub use timezone::TzTimezoneResolver;

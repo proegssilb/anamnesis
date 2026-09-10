@@ -19,6 +19,7 @@ mod project;
 mod relationship;
 mod settings;
 mod suggestion;
+mod sync;
 mod tangle;
 mod task;
 mod user_directory;
@@ -56,6 +57,9 @@ pub use project::{
 pub use relationship::{create_relationship, delete_relationship, resolve_kind};
 pub use settings::{update_settings, view_settings};
 pub use suggestion::{derive_seed, request_suggestion};
+pub use sync::{
+    SyncOutcome, SyncPorts, configure_or_update_project_sync, run_and_record, view_sync_status,
+};
 pub use tangle::{drop_tangle, place_tangle, resolve_frozen_tangles, run_tangle_detection};
 pub use task::{
     archive_task, bulk_create_tasks, create_task, drop_task, edit_task, raise_task,
