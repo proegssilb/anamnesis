@@ -104,6 +104,37 @@ fn app_status_and_message(err: &AppError) -> (StatusCode, String) {
                 "Something went wrong on our end.".to_string(),
             )
         }
+        AppError::SyncNotConfigured | AppError::IssueTracker(_) | AppError::Crypto(_) => {
+            sync_status_and_message(err)
+        }
+    }
+}
+
+/// The project-sync-specific (issues #40/#41) half of [`app_status_and_message`],
+/// split out purely because those three variants are one coherent group
+/// (external issue-tracker integration) distinct from the rest of
+/// `AppError`, not because the parent match was hard to follow otherwise.
+fn sync_status_and_message(err: &AppError) -> (StatusCode, String) {
+    match err {
+        AppError::SyncNotConfigured => (
+            StatusCode::NOT_FOUND,
+            "This project has no sync configuration.".to_string(),
+        ),
+        AppError::IssueTracker(e) => {
+            tracing::error!(error = %e, "issue tracker request failed");
+            (
+                StatusCode::BAD_GATEWAY,
+                "The external issue tracker could not be reached or reported an error.".to_string(),
+            )
+        }
+        AppError::Crypto(message) => {
+            tracing::error!(error = %message, "token encryption failure");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Something went wrong on our end.".to_string(),
+            )
+        }
+        _ => unreachable!("sync_status_and_message is only called for the three sync variants"),
     }
 }
 

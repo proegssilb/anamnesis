@@ -23,10 +23,12 @@ use futures_util::StreamExt;
 use anamnesis_app::{
     AreaRepository, Attachment, AttachmentId, AttachmentKind, AttachmentRepository,
     AttachmentUploadId, AttachmentUploadRepository, BlobInfo, BlobStore, BoardColumn, BoardItem,
-    BoardQuery, ByteStream, ChunkedUpload, Comment, CommentId, CommentRepository, MembershipQuery,
-    MembershipRepository, PartInfo, PendingUpload, ProjectAggregate, ProjectRepository,
+    BoardQuery, ByteStream, ChunkedUpload, Comment, CommentId, CommentRepository,
+    IssueTrackerError, MembershipQuery, MembershipRepository, PartInfo, PendingUpload,
+    ProjectAggregate, ProjectRepository, ProjectSyncConfig, ProjectSyncConfigRepository,
     RelationshipRepository, RepoError, SearchHit, SearchIndex, SearchQuery, Settings,
-    SettingsRepository, TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
+    SettingsRepository, TangleRepository, TaskAggregate, TaskRepository, TaskSyncLink,
+    TaskSyncLinkRepository, TaskUpdateError,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
@@ -76,6 +78,8 @@ pub struct Fakes {
     /// assertions on `SearchIndex` too.
     search_entries: Mutex<Vec<(&'static str, String, String, bool)>>,
     settings: Mutex<Settings>,
+    project_sync_configs: Mutex<HashMap<ProjectId, ProjectSyncConfig>>,
+    task_sync_links: Mutex<HashMap<TaskId, TaskSyncLink>>,
 }
 
 impl Fakes {
@@ -562,6 +566,129 @@ impl CommentRepository for Fakes {
 
     async fn delete(&self, id: CommentId) -> Result<(), RepoError> {
         self.comments.lock().unwrap().remove(&id);
+        Ok(())
+    }
+
+    async fn exists_with_external_comment_id(
+        &self,
+        task_id: TaskId,
+        external_comment_id: u64,
+    ) -> Result<bool, RepoError> {
+        Ok(self.comments.lock().unwrap().values().any(|c| {
+            c.task_id == task_id
+                && c.origin
+                    .as_ref()
+                    .is_some_and(|o| o.external_comment_id == external_comment_id)
+        }))
+    }
+}
+
+#[async_trait]
+impl ProjectSyncConfigRepository for Fakes {
+    async fn load(&self, project_id: ProjectId) -> Result<Option<ProjectSyncConfig>, RepoError> {
+        Ok(self
+            .project_sync_configs
+            .lock()
+            .unwrap()
+            .get(&project_id)
+            .cloned())
+    }
+
+    async fn list_enabled(&self) -> Result<Vec<ProjectSyncConfig>, RepoError> {
+        Ok(self
+            .project_sync_configs
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|c| c.enabled)
+            .cloned()
+            .collect())
+    }
+
+    async fn upsert(&self, config: &ProjectSyncConfig) -> Result<(), RepoError> {
+        self.project_sync_configs
+            .lock()
+            .unwrap()
+            .insert(config.project_id, config.clone());
+        Ok(())
+    }
+
+    async fn record_sync_result(
+        &self,
+        project_id: ProjectId,
+        synced_at: Timestamp,
+        error: Option<&str>,
+    ) -> Result<(), RepoError> {
+        if let Some(config) = self
+            .project_sync_configs
+            .lock()
+            .unwrap()
+            .get_mut(&project_id)
+        {
+            config.last_synced_at = Some(synced_at);
+            config.last_sync_error = error.map(str::to_string);
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, project_id: ProjectId) -> Result<(), RepoError> {
+        self.project_sync_configs
+            .lock()
+            .unwrap()
+            .remove(&project_id);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TaskSyncLinkRepository for Fakes {
+    async fn load_by_task(&self, task_id: TaskId) -> Result<Option<TaskSyncLink>, RepoError> {
+        Ok(self.task_sync_links.lock().unwrap().get(&task_id).cloned())
+    }
+
+    async fn load_by_issue(
+        &self,
+        project_id: ProjectId,
+        external_issue_number: u64,
+    ) -> Result<Option<TaskSyncLink>, RepoError> {
+        Ok(self
+            .task_sync_links
+            .lock()
+            .unwrap()
+            .values()
+            .find(|l| {
+                l.project_id == project_id && l.external_issue_number == external_issue_number
+            })
+            .cloned())
+    }
+
+    async fn list_for_project(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Vec<TaskSyncLink>, RepoError> {
+        Ok(self
+            .task_sync_links
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|l| l.project_id == project_id)
+            .cloned()
+            .collect())
+    }
+
+    async fn insert(&self, link: &TaskSyncLink) -> Result<(), RepoError> {
+        self.task_sync_links
+            .lock()
+            .unwrap()
+            .insert(link.task_id, link.clone());
+        Ok(())
+    }
+
+    async fn update(&self, link: &TaskSyncLink) -> Result<(), RepoError> {
+        self.task_sync_links
+            .lock()
+            .unwrap()
+            .insert(link.task_id, link.clone());
         Ok(())
     }
 }
@@ -1213,5 +1340,150 @@ impl BoardQuery for Fakes {
             tangled_task_ids,
             tangles: active_tangles,
         })
+    }
+}
+
+// --- IssueTrackerClient fake (issues #40/#41) ---
+
+use anamnesis_app::{IssueEdit, IssueState, IssueTrackerClient, RemoteComment, RemoteIssue};
+
+/// A scripted `IssueTrackerClient` for sync reconciliation tests: seeded
+/// with canned issues/comments via [`Self::seed_issue`]/[`Self::seed_comment`],
+/// and recording every [`Self::create_issue`]/[`Self::update_issue`] call
+/// for assertions. Kept separate from [`Fakes`] — every other port models
+/// this app's own persisted state, while this one models a third-party
+/// server's, and nothing needs them to share a lock.
+#[derive(Debug, Default)]
+pub struct FakeIssueTracker {
+    issues: Mutex<HashMap<u64, RemoteIssue>>,
+    comments: Mutex<HashMap<u64, Vec<RemoteComment>>>,
+    next_issue_number: std::sync::atomic::AtomicU64,
+    pub created_issues: Mutex<Vec<(String, String)>>,
+    pub updated_issues: Mutex<Vec<(u64, String, String, IssueState)>>,
+}
+
+impl FakeIssueTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn seed_issue(&self, issue: RemoteIssue) {
+        self.next_issue_number
+            .fetch_max(issue.number, std::sync::atomic::Ordering::SeqCst);
+        self.issues.lock().unwrap().insert(issue.number, issue);
+    }
+
+    pub fn seed_comment(&self, issue_number: u64, comment: RemoteComment) {
+        self.comments
+            .lock()
+            .unwrap()
+            .entry(issue_number)
+            .or_default()
+            .push(comment);
+    }
+
+    pub fn issue(&self, number: u64) -> Option<RemoteIssue> {
+        self.issues.lock().unwrap().get(&number).cloned()
+    }
+}
+
+#[async_trait]
+impl IssueTrackerClient for FakeIssueTracker {
+    async fn list_issues_since(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        since: Option<Timestamp>,
+    ) -> Result<Vec<RemoteIssue>, IssueTrackerError> {
+        Ok(self
+            .issues
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|i| since.is_none_or(|s| i.updated_at >= s))
+            .cloned()
+            .collect())
+    }
+
+    async fn create_issue(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        title: &str,
+        body: &str,
+    ) -> Result<RemoteIssue, IssueTrackerError> {
+        let number = self
+            .next_issue_number
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        let issue = RemoteIssue {
+            number,
+            title: title.to_string(),
+            body: body.to_string(),
+            html_url: format!("https://example.test/issues/{number}"),
+            state: IssueState::Open,
+            updated_at: Timestamp::from_unix_seconds(0).unwrap(),
+        };
+        self.issues.lock().unwrap().insert(number, issue.clone());
+        self.created_issues
+            .lock()
+            .unwrap()
+            .push((title.to_string(), body.to_string()));
+        Ok(issue)
+    }
+
+    async fn update_issue(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        number: u64,
+        edit: IssueEdit<'_>,
+    ) -> Result<RemoteIssue, IssueTrackerError> {
+        self.updated_issues.lock().unwrap().push((
+            number,
+            edit.title.to_string(),
+            edit.body.to_string(),
+            edit.state,
+        ));
+        let mut issues = self.issues.lock().unwrap();
+        let issue = issues
+            .get_mut(&number)
+            .ok_or_else(|| IssueTrackerError::new(format!("no such issue #{number}")))?;
+        issue.title = edit.title.to_string();
+        issue.body = edit.body.to_string();
+        issue.state = edit.state;
+        // A real tracker always advances `updated_at` on any change,
+        // including one this same client just made — this fake has no
+        // clock of its own, so it simulates that by always moving forward
+        // by at least one second rather than leaving the value unchanged,
+        // which would make a caller's own push invisible to its own next
+        // `list_issues_since` watermark check.
+        issue.updated_at =
+            Timestamp::from_unix_seconds(issue.updated_at.unix_seconds() + 1).unwrap();
+        Ok(issue.clone())
+    }
+
+    async fn list_comments_since(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        number: u64,
+        since: Option<Timestamp>,
+    ) -> Result<Vec<RemoteComment>, IssueTrackerError> {
+        // `>=`, not `>`: mirrors a real "since" query that may re-include its
+        // own boundary item — which is exactly the case
+        // `CommentRepository::exists_with_external_comment_id`'s dedup check
+        // exists to handle, and this fake should exercise it rather than
+        // conveniently avoid it.
+        Ok(self
+            .comments
+            .lock()
+            .unwrap()
+            .get(&number)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|c| since.is_none_or(|s| c.created_at >= s))
+            .collect())
     }
 }

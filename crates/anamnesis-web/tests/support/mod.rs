@@ -18,7 +18,11 @@ use axum_extra::extract::cookie::{Cookie, Key, SignedCookieJar};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use anamnesis_adapters::{FsBlobStore, SqlStore, SystemClock, TzTimezoneResolver, UuidIdGen};
+use anamnesis_adapters::{
+    AesGcmTokenCipher, FsBlobStore, SqlJobLease, SqlStore, SystemClock, TzTimezoneResolver,
+    UuidIdGen,
+};
+use anamnesis_app::TokenCipher;
 use anamnesis_web::session::SessionData;
 use anamnesis_web::state::AppState;
 use anamnesis_web::{bootstrap, routes, session, templates};
@@ -46,6 +50,13 @@ pub const TEST_MAX_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
 /// here as a plain string constant so tests need not depend on that private
 /// module path.
 pub const DEV_USER_ID: &str = "dev-user";
+
+/// A fixed 32-byte key for [`TestApp::with_sync_encryption_key`] — tests
+/// exercising project sync (issues #40/#41) with a real `TokenCipher`, as
+/// opposed to every other `TestApp` constructor, which leaves
+/// `token_cipher: None` to match a deployment that never set
+/// `ANAMNESIS_SYNC_ENCRYPTION_KEY`.
+const TEST_SYNC_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
 
 pub struct TestApp {
     router: Router,
@@ -78,6 +89,7 @@ impl TestApp {
             bootstrap_admin,
             TEST_MAX_BODY_BYTES,
             TEST_MAX_ATTACHMENT_BYTES,
+            None,
         )
         .await
     }
@@ -91,6 +103,7 @@ impl TestApp {
             DEV_USER_ID,
             max_body_bytes,
             TEST_MAX_ATTACHMENT_BYTES,
+            None,
         )
         .await
     }
@@ -108,6 +121,24 @@ impl TestApp {
             DEV_USER_ID,
             TEST_MAX_BODY_BYTES,
             max_attachment_bytes,
+            None,
+        )
+        .await
+    }
+
+    /// As [`TestApp::with_bootstrap_admin`], but with a real `TokenCipher`
+    /// wired in (keyed by [`TEST_SYNC_ENCRYPTION_KEY`]) — for project sync
+    /// tests (issues #40/#41) that need `POST /projects/{id}/sync`/`/sync/now`
+    /// to actually work, as opposed to every other test app, which leaves
+    /// `token_cipher: None` to match a deployment with no
+    /// `ANAMNESIS_SYNC_ENCRYPTION_KEY` set.
+    pub async fn with_sync_encryption_key(dev_auth_bypass: bool, bootstrap_admin: &str) -> Self {
+        Self::build(
+            dev_auth_bypass,
+            bootstrap_admin,
+            TEST_MAX_BODY_BYTES,
+            TEST_MAX_ATTACHMENT_BYTES,
+            Some(Arc::new(AesGcmTokenCipher::new(&TEST_SYNC_ENCRYPTION_KEY))),
         )
         .await
     }
@@ -117,39 +148,39 @@ impl TestApp {
         bootstrap_admin: &str,
         max_body_bytes: usize,
         max_attachment_bytes: u64,
+        token_cipher: Option<Arc<dyn TokenCipher>>,
     ) -> Self {
         assert!(
             TEST_SESSION_SECRET.len() >= 64,
             "test session secret must meet the same floor as production"
         );
 
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let db_path = dir.path().join("test.db");
-        let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
-        let store = SqlStore::connect(&db_url)
-            .await
-            .expect("connect to temp SQLite database");
-        let id_gen = UuidIdGen;
-        bootstrap::run(&store, &id_gen, bootstrap_admin, None, "UTC")
-            .await
-            .expect("bootstrap a fresh test database");
-        let store = Arc::new(store);
-
+        let (store, dir) = open_bootstrapped_store(bootstrap_admin).await;
         let key = Key::from(TEST_SESSION_SECRET.as_bytes());
 
         let blob_dir = tempfile::tempdir().expect("create temp blob dir");
         let blob_root = blob_dir.path().to_path_buf();
-        let blobs = FsBlobStore::new(&blob_root)
-            .await
-            .expect("create temp blob store");
+        let blobs = Arc::new(
+            FsBlobStore::new(&blob_root)
+                .await
+                .expect("create temp blob store"),
+        );
+        let leases = Arc::new(
+            store
+                .job_lease()
+                .await
+                .expect("open the temp database's job-lease store"),
+        );
 
         let state = test_state(
             store.clone(),
             blobs,
+            leases,
             key.clone(),
             dev_auth_bypass,
             max_body_bytes,
             max_attachment_bytes,
+            token_cipher,
         )
         .await;
         let router = routes::build_router(state.clone());
@@ -377,6 +408,25 @@ impl TestApp {
     }
 }
 
+/// Opens a fresh temp-file SQLite database and bootstraps it — split out of
+/// [`TestApp::build`] as its own self-contained concern (open + bootstrap),
+/// distinct from the blob store/lease/`AppState`/router wiring the rest of
+/// `build` does. The `TempDir` is returned alongside so its guard outlives
+/// the store connected to the file inside it.
+async fn open_bootstrapped_store(bootstrap_admin: &str) -> (Arc<SqlStore>, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let db_path = dir.path().join("test.db");
+    let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
+    let store = SqlStore::connect(&db_url)
+        .await
+        .expect("connect to temp SQLite database");
+    let id_gen = UuidIdGen;
+    bootstrap::run(&store, &id_gen, bootstrap_admin, None, "UTC")
+        .await
+        .expect("bootstrap a fresh test database");
+    (Arc::new(store), dir)
+}
+
 /// The test harness's counterpart of `main.rs`'s `build_state`: the table
 /// wiring one `SqlStore` into every port `AppState` exposes.
 ///
@@ -385,23 +435,21 @@ impl TestApp {
 /// they are not inputs, just the adapters this harness picks. `identity` is
 /// always `None`: no test talks to a real identity provider.
 ///
-/// The job lease is opened from `store`'s own pool rather than passed in, as
-/// `bootstrap::run` does it, so no test can forget it — an `AppState` without
-/// one cannot run the tangle detection its relationship routes now drive.
+/// `leases` and `blobs` are opened by the caller ([`TestApp::build`]) rather
+/// than here, alongside the store and blob directory it already opens —
+/// this function's own job is just wiring already-ready resources into
+/// every `AppState` port, not opening any of them itself.
 #[allow(clippy::too_many_arguments)]
 async fn test_state(
     store: Arc<SqlStore>,
-    blobs: FsBlobStore,
+    blobs: Arc<FsBlobStore>,
+    leases: Arc<SqlJobLease>,
     cookie_key: Key,
     dev_auth_bypass: bool,
     max_body_bytes: usize,
     max_attachment_bytes: u64,
+    token_cipher: Option<Arc<dyn TokenCipher>>,
 ) -> AppState {
-    let leases = store
-        .job_lease()
-        .await
-        .expect("open the temp database's job-lease store");
-    let blobs = Arc::new(blobs);
     AppState {
         areas: store.clone(),
         projects: store.clone(),
@@ -425,7 +473,7 @@ async fn test_state(
         timezone: Arc::new(TzTimezoneResolver::new()),
         clock: Arc::new(SystemClock),
         id_gen: Arc::new(UuidIdGen),
-        leases: Arc::new(leases),
+        leases,
         identity: None,
         templates: Arc::new(templates::build_environment()),
         cookie_key,
@@ -434,6 +482,9 @@ async fn test_state(
         secure_cookies: false,
         max_body_bytes,
         max_attachment_bytes,
+        project_sync_configs: store.clone(),
+        task_sync_links: store.clone(),
+        token_cipher,
         settings: store,
         timezone_name: "UTC".to_string(),
     }

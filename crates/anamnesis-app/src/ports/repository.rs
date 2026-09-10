@@ -203,6 +203,17 @@ pub trait CommentRepository: Send + Sync {
     async fn insert(&self, comment: &Comment) -> Result<(), RepoError>;
     async fn update(&self, comment: &Comment) -> Result<(), RepoError>;
     async fn delete(&self, id: CommentId) -> Result<(), RepoError>;
+    /// Whether `task_id` already has a comment imported from external
+    /// comment `external_comment_id` — the sync reconciliation pass's
+    /// dedup check (issues #40/#41). Scoped per task, not globally: dedup
+    /// only needs "already imported onto this task", and per-task scoping
+    /// can't collide across two unrelated self-hosted Forgejo instances
+    /// that happen to reuse a comment id.
+    async fn exists_with_external_comment_id(
+        &self,
+        task_id: TaskId,
+        external_comment_id: u64,
+    ) -> Result<bool, RepoError>;
 }
 
 /// Loads, lists, and writes [`Attachment`]s, paged per task.

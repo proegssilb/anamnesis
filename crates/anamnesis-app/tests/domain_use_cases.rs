@@ -6,7 +6,7 @@
 mod domain_fakes;
 mod support;
 
-use domain_fakes::Fakes;
+use domain_fakes::{FakeIssueTracker, Fakes};
 use support::{FixedClock, SequentialIdGen, byte_stream};
 
 // `anamnesis_app` and `anamnesis_core` both export same-named use-case /
@@ -19,7 +19,7 @@ use anamnesis_core::policy::Role;
 use anamnesis_core::{
     AreaId, Column, ColumnId, DomainError, FieldData, FieldKind, KindId, NumberValue, OfferItem,
     Outcome, Placement, Project, ProjectId, ProjectStatus, Relationship, RelationshipKind,
-    SuggestionSettings, Task, TaskId, TaskSummary, Title, UserId,
+    SuggestionSettings, Task, TaskId, TaskSummary, Timestamp, Title, UserId,
 };
 
 fn admin() -> Option<Role> {
@@ -3442,4 +3442,428 @@ async fn update_settings_never_touches_last_swept_at() {
 
     assert_eq!(stored.active_project_limit, 42);
     assert_eq!(stored.last_swept_at, Some(swept_at));
+}
+
+// ============================== Project sync (GitHub/Forgejo) ==============================
+// Issues #40/#41. `FakeIssueTracker` (`domain_fakes`) stands in for the real
+// HTTP adapter; `FixedClock` never advances on its own, so a new instance at
+// a later timestamp is built for each simulated "tick" below rather than
+// reusing one clock across a whole test.
+
+fn sync_ports<'a>(
+    fakes: &'a Fakes,
+    clock: &'a FixedClock,
+    ids: &'a SequentialIdGen,
+) -> SyncPorts<'a> {
+    SyncPorts {
+        configs: fakes,
+        links: fakes,
+        tasks: fakes,
+        comments: fakes,
+        board: fakes,
+        search: fakes,
+        clock,
+        ids,
+    }
+}
+
+async fn github_sync_config(
+    fakes: &Fakes,
+    clock: &FixedClock,
+    project_id: ProjectId,
+    auto_import_new_issues: bool,
+    auto_push_new_tasks: bool,
+) -> ProjectSyncConfig {
+    configure_or_update_project_sync(
+        fakes,
+        clock,
+        admin(),
+        project_id,
+        SyncConfigFields {
+            provider: SyncProvider::GitHub,
+            base_url: None,
+            owner: "octocat",
+            repo: "hello-world",
+            auto_import_new_issues,
+            auto_push_new_tasks,
+        },
+        vec![1, 2, 3],
+        true,
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn configuring_and_viewing_project_sync_requires_project_admin() {
+    let fakes = Fakes::new();
+    let clock = FixedClock::at(0);
+    let ids = SequentialIdGen::new();
+    let project_id = some_project_id(&ids);
+
+    let result = configure_or_update_project_sync(
+        &fakes,
+        &clock,
+        member(),
+        project_id,
+        SyncConfigFields {
+            provider: SyncProvider::GitHub,
+            base_url: None,
+            owner: "octocat",
+            repo: "hello-world",
+            auto_import_new_issues: true,
+            auto_push_new_tasks: true,
+        },
+        vec![],
+        true,
+    )
+    .await;
+    assert!(matches!(result, Err(AppError::Forbidden)));
+    assert!(matches!(
+        view_sync_status(&fakes, member(), project_id).await,
+        Err(AppError::Forbidden)
+    ));
+
+    let config = github_sync_config(&fakes, &clock, project_id, true, true).await;
+    assert!(config.enabled);
+    assert_eq!(
+        view_sync_status(&fakes, admin(), project_id)
+            .await
+            .unwrap()
+            .map(|c| c.owner),
+        Some("octocat".to_string())
+    );
+}
+
+#[tokio::test]
+async fn forgejo_config_requires_a_base_url() {
+    let fakes = Fakes::new();
+    let clock = FixedClock::at(0);
+    let ids = SequentialIdGen::new();
+    let project_id = some_project_id(&ids);
+
+    let result = configure_or_update_project_sync(
+        &fakes,
+        &clock,
+        admin(),
+        project_id,
+        SyncConfigFields {
+            provider: SyncProvider::Forgejo,
+            base_url: None,
+            owner: "octocat",
+            repo: "hello-world",
+            auto_import_new_issues: true,
+            auto_push_new_tasks: true,
+        },
+        vec![],
+        true,
+    )
+    .await;
+    assert!(matches!(result, Err(AppError::Invalid(_))));
+}
+
+#[tokio::test]
+async fn first_sync_pushes_existing_unlinked_tasks_as_new_issues_exactly_once() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let project_id = some_project_id(&ids);
+    let clock0 = FixedClock::at(0);
+    let task = add_task(&fakes, &ids, &clock0, project_id, "Fix the sink").await;
+    let config = github_sync_config(&fakes, &clock0, project_id, true, true).await;
+    let tracker = FakeIssueTracker::new();
+
+    let clock10 = FixedClock::at(10);
+    let ports10 = sync_ports(&fakes, &clock10, &ids);
+    let outcome = run_and_record(&ports10, &tracker, admin(), &config)
+        .await
+        .unwrap();
+    assert_eq!(outcome.pushed_new_task_count, 1);
+    assert_eq!(tracker.created_issues.lock().unwrap().len(), 1);
+
+    let link = TaskSyncLinkRepository::load_by_task(&fakes, task.id)
+        .await
+        .unwrap();
+    assert!(link.is_some());
+
+    // Second tick: already linked, must not push again.
+    let clock20 = FixedClock::at(20);
+    let ports20 = sync_ports(&fakes, &clock20, &ids);
+    let outcome2 = run_and_record(&ports20, &tracker, admin(), &config)
+        .await
+        .unwrap();
+    assert_eq!(outcome2.pushed_new_task_count, 0);
+    assert_eq!(tracker.created_issues.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_task_already_done_is_never_pushed_as_a_new_issue() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let project_id = some_project_id(&ids);
+    let clock0 = FixedClock::at(0);
+    let done_column = make_column(&ids, "Done", 0, None, true);
+    fakes.seed_column(done_column.clone());
+
+    let task = add_task(&fakes, &ids, &clock0, project_id, "Already finished").await;
+    raise_task(&fakes, &fakes, &clock0, admin(), task.id, done_column.id, 0)
+        .await
+        .unwrap();
+
+    let config = github_sync_config(&fakes, &clock0, project_id, true, true).await;
+    let tracker = FakeIssueTracker::new();
+    let clock10 = FixedClock::at(10);
+    let ports = sync_ports(&fakes, &clock10, &ids);
+
+    let outcome = run_and_record(&ports, &tracker, admin(), &config)
+        .await
+        .unwrap();
+    assert_eq!(outcome.pushed_new_task_count, 0);
+    assert!(tracker.created_issues.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn auto_push_and_auto_import_toggles_are_independent() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let project_id = some_project_id(&ids);
+    let clock0 = FixedClock::at(0);
+    let _local_task = add_task(&fakes, &ids, &clock0, project_id, "Local task").await;
+
+    // Import on, push off.
+    let config = github_sync_config(&fakes, &clock0, project_id, true, false).await;
+    let tracker = FakeIssueTracker::new();
+    tracker.seed_issue(RemoteIssue {
+        number: 99,
+        title: "Remote issue".to_string(),
+        body: String::new(),
+        html_url: "https://example.test/issues/99".to_string(),
+        state: IssueState::Open,
+        updated_at: Timestamp::from_unix_seconds(0).unwrap(),
+    });
+
+    let clock10 = FixedClock::at(10);
+    let ports = sync_ports(&fakes, &clock10, &ids);
+    let outcome = run_and_record(&ports, &tracker, admin(), &config)
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.pushed_new_task_count, 0,
+        "auto_push_new_tasks is off"
+    );
+    assert_eq!(
+        outcome.imported_task_count, 1,
+        "auto_import_new_issues is on"
+    );
+}
+
+#[tokio::test]
+async fn archiving_a_linked_task_closes_its_issue_and_unarchiving_reopens_it() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let project_id = some_project_id(&ids);
+    let clock0 = FixedClock::at(0);
+    let task = add_task(&fakes, &ids, &clock0, project_id, "Track me").await;
+    let config = github_sync_config(&fakes, &clock0, project_id, true, true).await;
+    let tracker = FakeIssueTracker::new();
+
+    let clock10 = FixedClock::at(10);
+    let ports10 = sync_ports(&fakes, &clock10, &ids);
+    run_and_record(&ports10, &tracker, admin(), &config)
+        .await
+        .unwrap();
+
+    let clock20 = FixedClock::at(20);
+    archive_task(&fakes, &clock20, &fakes, admin(), task.id)
+        .await
+        .unwrap();
+    let ports20 = sync_ports(&fakes, &clock20, &ids);
+    run_and_record(&ports20, &tracker, admin(), &config)
+        .await
+        .unwrap();
+    let (_, _, _, state) = tracker
+        .updated_issues
+        .lock()
+        .unwrap()
+        .last()
+        .cloned()
+        .unwrap();
+    assert_eq!(state, IssueState::Closed);
+
+    let clock30 = FixedClock::at(30);
+    unarchive_task(&fakes, &clock30, &fakes, admin(), task.id)
+        .await
+        .unwrap();
+    let clock40 = FixedClock::at(40);
+    let ports40 = sync_ports(&fakes, &clock40, &ids);
+    run_and_record(&ports40, &tracker, admin(), &config)
+        .await
+        .unwrap();
+    let (_, _, _, state2) = tracker
+        .updated_issues
+        .lock()
+        .unwrap()
+        .last()
+        .cloned()
+        .unwrap();
+    assert_eq!(state2, IssueState::Open);
+}
+
+#[tokio::test]
+async fn closing_the_remote_issue_archives_the_task_and_reopening_unarchives_it() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let project_id = some_project_id(&ids);
+    let clock0 = FixedClock::at(0);
+    let task = add_task(&fakes, &ids, &clock0, project_id, "Track me").await;
+    let config = github_sync_config(&fakes, &clock0, project_id, true, true).await;
+    let tracker = FakeIssueTracker::new();
+
+    let clock10 = FixedClock::at(10);
+    let ports10 = sync_ports(&fakes, &clock10, &ids);
+    run_and_record(&ports10, &tracker, admin(), &config)
+        .await
+        .unwrap();
+    let link = TaskSyncLinkRepository::load_by_task(&fakes, task.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut closed_issue = tracker.issue(link.external_issue_number).unwrap();
+    closed_issue.state = IssueState::Closed;
+    closed_issue.updated_at = Timestamp::from_unix_seconds(50).unwrap();
+    tracker.seed_issue(closed_issue);
+
+    let clock60 = FixedClock::at(60);
+    let ports60 = sync_ports(&fakes, &clock60, &ids);
+    run_and_record(&ports60, &tracker, admin(), &config)
+        .await
+        .unwrap();
+    let after_close = TaskRepository::load(&fakes, task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(after_close.task.archived_at.is_some());
+
+    let mut reopened_issue = tracker.issue(link.external_issue_number).unwrap();
+    reopened_issue.state = IssueState::Open;
+    reopened_issue.updated_at = Timestamp::from_unix_seconds(70).unwrap();
+    tracker.seed_issue(reopened_issue);
+
+    let clock80 = FixedClock::at(80);
+    let ports80 = sync_ports(&fakes, &clock80, &ids);
+    run_and_record(&ports80, &tracker, admin(), &config)
+        .await
+        .unwrap();
+    let after_reopen = TaskRepository::load(&fakes, task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(after_reopen.task.archived_at.is_none());
+}
+
+#[tokio::test]
+async fn comment_import_dedups_across_two_consecutive_syncs() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let project_id = some_project_id(&ids);
+    let clock0 = FixedClock::at(0);
+    let task = add_task(&fakes, &ids, &clock0, project_id, "Track me").await;
+    let config = github_sync_config(&fakes, &clock0, project_id, true, true).await;
+    let tracker = FakeIssueTracker::new();
+
+    let clock10 = FixedClock::at(10);
+    let ports10 = sync_ports(&fakes, &clock10, &ids);
+    run_and_record(&ports10, &tracker, admin(), &config)
+        .await
+        .unwrap();
+    let link = TaskSyncLinkRepository::load_by_task(&fakes, task.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    tracker.seed_comment(
+        link.external_issue_number,
+        RemoteComment {
+            id: 555,
+            body: "Nice work".to_string(),
+            html_url: "https://example.test/issues/1#comment-555".to_string(),
+            author_display: "octocat".to_string(),
+            created_at: Timestamp::from_unix_seconds(5).unwrap(),
+        },
+    );
+
+    let clock20 = FixedClock::at(20);
+    let ports20 = sync_ports(&fakes, &clock20, &ids);
+    let outcome1 = run_and_record(&ports20, &tracker, admin(), &config)
+        .await
+        .unwrap();
+    assert_eq!(outcome1.imported_comment_count, 1);
+
+    let clock30 = FixedClock::at(30);
+    let ports30 = sync_ports(&fakes, &clock30, &ids);
+    let outcome2 = run_and_record(&ports30, &tracker, admin(), &config)
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome2.imported_comment_count, 0,
+        "already imported, must not duplicate"
+    );
+
+    let comments = list_comments(&fakes, admin(), task.id).await.unwrap();
+    assert_eq!(comments.len(), 1);
+    assert!(comments[0].origin.is_some());
+    assert_eq!(
+        comments[0].origin.as_ref().unwrap().external_author_display,
+        "octocat"
+    );
+}
+
+#[tokio::test]
+async fn a_link_pointing_at_a_deleted_task_is_skipped_without_aborting_the_batch() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let project_id = some_project_id(&ids);
+    let clock0 = FixedClock::at(0);
+    let config = github_sync_config(&fakes, &clock0, project_id, true, true).await;
+    let tracker = FakeIssueTracker::new();
+
+    // A link whose task was never seeded — stands in for one whose task was
+    // since deleted out from under it.
+    let ghost_task_id = TaskId::new(ids.next());
+    let stale_link = TaskSyncLink {
+        task_id: ghost_task_id,
+        project_id,
+        external_issue_number: 7,
+        external_url: "https://example.test/issues/7".to_string(),
+        last_remote_updated_at: Timestamp::from_unix_seconds(0).unwrap(),
+        last_local_synced_at: Timestamp::from_unix_seconds(0).unwrap(),
+        last_comment_synced_at: None,
+        created_at: Timestamp::from_unix_seconds(0).unwrap(),
+    };
+    TaskSyncLinkRepository::insert(&fakes, &stale_link)
+        .await
+        .unwrap();
+    tracker.seed_issue(RemoteIssue {
+        number: 7,
+        title: "Ghost".to_string(),
+        body: String::new(),
+        html_url: "https://example.test/issues/7".to_string(),
+        state: IssueState::Open,
+        updated_at: Timestamp::from_unix_seconds(10).unwrap(),
+    });
+
+    let real_task = add_task(&fakes, &ids, &clock0, project_id, "Real task").await;
+
+    let clock20 = FixedClock::at(20);
+    let ports20 = sync_ports(&fakes, &clock20, &ids);
+    // Must not error even though the ghost link's task doesn't exist, and
+    // the real, unlinked task must still get pushed in the same pass.
+    let outcome = run_and_record(&ports20, &tracker, admin(), &config)
+        .await
+        .unwrap();
+    assert_eq!(outcome.pushed_new_task_count, 1);
+    let link = TaskSyncLinkRepository::load_by_task(&fakes, real_task.id)
+        .await
+        .unwrap();
+    assert!(link.is_some());
 }

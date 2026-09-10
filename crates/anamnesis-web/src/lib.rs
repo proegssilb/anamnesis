@@ -19,6 +19,7 @@ pub mod session;
 pub mod state;
 pub mod static_files;
 pub mod sweep;
+pub mod sync_ticker;
 pub mod tangles;
 pub mod templates;
 pub mod upload_gc;

@@ -176,27 +176,60 @@ async fn build_relationships_context(
 /// as its raw OIDC `sub`, which is what `anamnesis_app::UserDirectoryQuery`
 /// exists to fix. An author with no cached entry (never logged in since it
 /// was added) falls back to that same raw id, exactly as before.
+///
+/// A comment imported from an external issue tracker (issues #40/#41,
+/// `Comment::origin`) never has a cached display name — its `author` is a
+/// synthetic id, not a real logged-in user — so its origin's own
+/// `external_author_display` is shown instead, alongside a link back to
+/// the original comment.
 async fn build_comments_context(
     state: &AppState,
     comments: &[Comment],
     viewer: &UserId,
 ) -> Result<Vec<minijinja::Value>, WebError> {
-    let authors: Vec<UserId> = comments.iter().map(|c| c.author.clone()).collect();
+    let authors: Vec<UserId> = comments
+        .iter()
+        .filter(|c| c.origin.is_none())
+        .map(|c| c.author.clone())
+        .collect();
     let names: HashMap<UserId, String> = state.user_directory.display_names(&authors).await?;
     Ok(comments
         .iter()
-        .map(|c| {
-            let author_name = names
-                .get(&c.author)
-                .cloned()
-                .unwrap_or_else(|| c.author.to_string());
-            context! {
-                id => c.id.to_string(),
-                author_name => author_name,
-                body_html => crate::handlers::markdown::render(c.body.as_str(), viewer.as_str()),
-            }
-        })
+        .map(|c| build_one_comment_context(c, &names, viewer))
         .collect())
+}
+
+fn build_one_comment_context(
+    c: &Comment,
+    names: &HashMap<UserId, String>,
+    viewer: &UserId,
+) -> minijinja::Value {
+    let author_name = match &c.origin {
+        Some(origin) => origin.external_author_display.clone(),
+        None => names
+            .get(&c.author)
+            .cloned()
+            .unwrap_or_else(|| c.author.to_string()),
+    };
+    context! {
+        id => c.id.to_string(),
+        author_name => author_name,
+        body_html => crate::handlers::markdown::render(c.body.as_str(), viewer.as_str()),
+        origin => c.origin.as_ref().map(build_comment_origin_context),
+    }
+}
+
+/// The provider label and link-back the task page shows beneath an
+/// imported comment (issues #40/#41).
+fn build_comment_origin_context(origin: &anamnesis_app::CommentOrigin) -> minijinja::Value {
+    let provider_label = match origin.provider {
+        anamnesis_app::SyncProvider::GitHub => "GitHub",
+        anamnesis_app::SyncProvider::Forgejo => "Forgejo",
+    };
+    context! {
+        provider_label => provider_label,
+        external_url => origin.external_url,
+    }
 }
 
 /// The checklist parent's display context — resolved the same way a
