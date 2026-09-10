@@ -14,12 +14,13 @@ use std::time::Duration;
 use anamnesis_adapters::SqlStore;
 use anamnesis_app::{
     AreaRepository, Attachment, AttachmentId, AttachmentKind, AttachmentRepository,
-    AttachmentUploadId, AttachmentUploadRepository, BoardQuery, Comment, CommentId,
+    AttachmentUploadId, AttachmentUploadRepository, BoardQuery, Comment, CommentId, CommentOrigin,
     CommentRepository, GroupMembershipQuery, GroupMembershipRepository, JobLease, MembershipQuery,
     MembershipRepository, PartInfo, PendingUpload, ProjectAggregate, ProjectRepository,
-    RelationshipRepository, SearchHit, SearchIndex, SearchQuery, Settings, SettingsRepository,
-    TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError, UserDirectoryQuery,
-    UserDirectoryRepository,
+    ProjectSyncConfig, ProjectSyncConfigRepository, RelationshipRepository, SearchHit, SearchIndex,
+    SearchQuery, Settings, SettingsRepository, SyncProvider, TangleRepository, TaskAggregate,
+    TaskRepository, TaskSyncLink, TaskSyncLinkRepository, TaskUpdateError, UserDirectoryQuery,
+    UserDirectoryRepository, import_comment,
 };
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
@@ -130,6 +131,9 @@ async fn contract(store: &SqlStore) {
     board_and_suggestion_contract(store, task_contract_project).await;
     tangle_on_board_contract(store, task_contract_project).await;
     comment_contract(store, &task_a).await;
+    imported_comment_contract(store, &task_a).await;
+    project_sync_config_contract(store, task_contract_project).await;
+    task_sync_link_contract(store, task_contract_project, &task_a).await;
     attachment_contract(store, &task_a).await;
     attachment_upload_contract(store, &task_a).await;
     membership_contract(store).await;
@@ -1067,6 +1071,7 @@ async fn comment_contract(store: &SqlStore, owner: &Task) {
         body: "first".to_string(),
         created_at: ts(9_000),
         edited_at: None,
+        origin: None,
     };
     let second = Comment {
         id: CommentId::new(Uuid::new_v4()),
@@ -1075,6 +1080,7 @@ async fn comment_contract(store: &SqlStore, owner: &Task) {
         body: "second".to_string(),
         created_at: ts(9_001),
         edited_at: None,
+        origin: None,
     };
     CommentRepository::insert(store, &first).await.unwrap();
     CommentRepository::insert(store, &second).await.unwrap();
@@ -1107,6 +1113,231 @@ async fn comment_contract(store: &SqlStore, owner: &Task) {
     assert_eq!(
         CommentRepository::load(store, second.id).await.unwrap(),
         None
+    );
+}
+
+/// An imported comment's origin round-trips, and dedup sees it — split out
+/// from [`comment_contract`] since it's a distinct concern (issues #40/#41),
+/// not because either function was ever hard to follow.
+async fn imported_comment_contract(store: &SqlStore, owner: &Task) {
+    let imported = import_comment(
+        CommentId::new(Uuid::new_v4()),
+        owner.id,
+        "nice work",
+        CommentOrigin {
+            provider: SyncProvider::GitHub,
+            external_comment_id: 555,
+            external_url: "https://github.com/octocat/hello-world/issues/1#issuecomment-555"
+                .to_string(),
+            external_author_display: "octocat".to_string(),
+        },
+        ts(9_600),
+    )
+    .unwrap();
+    CommentRepository::insert(store, &imported).await.unwrap();
+    let reloaded = CommentRepository::load(store, imported.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reloaded, imported, "an imported comment's origin round-trips");
+    assert!(reloaded.origin.is_some());
+
+    assert!(
+        CommentRepository::exists_with_external_comment_id(store, owner.id, 555)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !CommentRepository::exists_with_external_comment_id(store, owner.id, 999)
+            .await
+            .unwrap(),
+        "an id nothing was imported under must not be reported as existing"
+    );
+}
+
+// --- Project sync (GitHub/Forgejo) ---
+
+async fn project_sync_config_contract(store: &SqlStore, project_id: ProjectId) {
+    let config = project_sync_config_upsert_contract(store, project_id).await;
+    project_sync_config_lifecycle_contract(store, project_id, config).await;
+}
+
+/// Loading when unconfigured, upserting, and the round trip (including
+/// `list_enabled`) — split from the lifecycle operations below purely as a
+/// distinct concern, not because either half was hard to follow.
+async fn project_sync_config_upsert_contract(
+    store: &SqlStore,
+    project_id: ProjectId,
+) -> ProjectSyncConfig {
+    assert_eq!(
+        ProjectSyncConfigRepository::load(store, project_id)
+            .await
+            .unwrap(),
+        None,
+        "loading an unconfigured project's sync config is None, not an error"
+    );
+
+    let config = ProjectSyncConfig {
+        project_id,
+        provider: SyncProvider::GitHub,
+        base_url: None,
+        owner: "octocat".to_string(),
+        repo: "hello-world".to_string(),
+        encrypted_token: vec![1, 2, 3, 4],
+        enabled: true,
+        auto_import_new_issues: true,
+        auto_push_new_tasks: true,
+        created_at: ts(10_000),
+        updated_at: ts(10_000),
+        last_synced_at: None,
+        last_sync_error: None,
+    };
+    ProjectSyncConfigRepository::upsert(store, &config)
+        .await
+        .unwrap();
+    assert_eq!(
+        ProjectSyncConfigRepository::load(store, project_id)
+            .await
+            .unwrap(),
+        Some(config.clone()),
+        "round-tripped config, including a None base_url, must equal the saved config"
+    );
+    assert!(
+        ProjectSyncConfigRepository::list_enabled(store)
+            .await
+            .unwrap()
+            .iter()
+            .any(|c| c.project_id == project_id),
+        "an enabled config must appear in list_enabled"
+    );
+    config
+}
+
+async fn project_sync_config_lifecycle_contract(
+    store: &SqlStore,
+    project_id: ProjectId,
+    config: ProjectSyncConfig,
+) {
+    project_sync_config_record_result_contract(store, project_id, &config).await;
+    project_sync_config_disable_and_delete_contract(store, project_id, config).await;
+}
+
+async fn project_sync_config_record_result_contract(
+    store: &SqlStore,
+    project_id: ProjectId,
+    config: &ProjectSyncConfig,
+) {
+    ProjectSyncConfigRepository::record_sync_result(
+        store,
+        project_id,
+        ts(10_500),
+        Some("rate limited"),
+    )
+    .await
+    .unwrap();
+    let after_result = ProjectSyncConfigRepository::load(store, project_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after_result.last_synced_at, Some(ts(10_500)));
+    assert_eq!(after_result.last_sync_error.as_deref(), Some("rate limited"));
+    assert_eq!(
+        after_result.owner, config.owner,
+        "record_sync_result must not touch unrelated fields"
+    );
+}
+
+async fn project_sync_config_disable_and_delete_contract(
+    store: &SqlStore,
+    project_id: ProjectId,
+    config: ProjectSyncConfig,
+) {
+    let mut disabled = config;
+    disabled.enabled = false;
+    disabled.base_url = Some("https://forgejo.example.com".to_string());
+    disabled.provider = SyncProvider::Forgejo;
+    ProjectSyncConfigRepository::upsert(store, &disabled)
+        .await
+        .unwrap();
+    assert!(
+        !ProjectSyncConfigRepository::list_enabled(store)
+            .await
+            .unwrap()
+            .iter()
+            .any(|c| c.project_id == project_id),
+        "a disabled config must not appear in list_enabled"
+    );
+    assert_eq!(
+        ProjectSyncConfigRepository::load(store, project_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .base_url
+            .as_deref(),
+        Some("https://forgejo.example.com")
+    );
+
+    ProjectSyncConfigRepository::delete(store, project_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        ProjectSyncConfigRepository::load(store, project_id)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+async fn task_sync_link_contract(store: &SqlStore, project_id: ProjectId, task: &Task) {
+    assert_eq!(
+        TaskSyncLinkRepository::load_by_task(store, task.id)
+            .await
+            .unwrap(),
+        None
+    );
+
+    let link = TaskSyncLink {
+        task_id: task.id,
+        project_id,
+        external_issue_number: 42,
+        external_url: "https://github.com/octocat/hello-world/issues/42".to_string(),
+        last_remote_updated_at: ts(11_000),
+        last_local_synced_at: ts(11_000),
+        last_comment_synced_at: None,
+        created_at: ts(11_000),
+    };
+    TaskSyncLinkRepository::insert(store, &link).await.unwrap();
+    assert_eq!(
+        TaskSyncLinkRepository::load_by_task(store, task.id)
+            .await
+            .unwrap(),
+        Some(link.clone())
+    );
+    assert_eq!(
+        TaskSyncLinkRepository::load_by_issue(store, project_id, 42)
+            .await
+            .unwrap(),
+        Some(link.clone())
+    );
+    assert_eq!(
+        TaskSyncLinkRepository::list_for_project(store, project_id)
+            .await
+            .unwrap(),
+        vec![link.clone()]
+    );
+
+    let mut updated_link = link.clone();
+    updated_link.last_remote_updated_at = ts(12_000);
+    updated_link.last_local_synced_at = ts(12_000);
+    updated_link.last_comment_synced_at = Some(ts(11_500));
+    TaskSyncLinkRepository::update(store, &updated_link)
+        .await
+        .unwrap();
+    assert_eq!(
+        TaskSyncLinkRepository::load_by_task(store, task.id)
+            .await
+            .unwrap(),
+        Some(updated_link)
     );
 }
 

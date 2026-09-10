@@ -20,43 +20,53 @@ mod error;
 pub mod policy;
 mod ports;
 mod settings;
+mod sync;
 mod use_cases;
 
 pub use entities::{
     Attachment, AttachmentId, AttachmentKind, AttachmentUploadId, Comment, CommentId,
-    PendingUpload, attach_file, attach_link, create_comment, edit_comment as edit_comment_entity,
+    CommentOrigin, PendingUpload, attach_file, attach_link, create_comment,
+    edit_comment as edit_comment_entity, import_comment,
 };
-pub use error::{AppError, IdentityError, RepoError};
+pub use error::{AppError, IdentityError, IssueTrackerError, RepoError};
 pub use ports::{
     AreaRepository, AttachmentRepository, AttachmentUploadRepository, AuthenticatedIdentity,
     BlobInfo, BlobStore, BoardColumn, BoardItem, BoardQuery, ByteStream, ChunkedUpload, Clock,
     CommentRepository, GroupMembershipQuery, GroupMembershipRepository, IdGen, IdentityProvider,
-    JobLease, LoginCallback, LoginRedirect, MembershipQuery, MembershipRepository, PartInfo,
-    ProjectAggregate, ProjectRepository, RelationshipRepository, SearchHit, SearchIndex,
-    SearchQuery, SettingsRepository, TangleRepository, TaskAggregate, TaskRepository,
-    TaskUpdateError, TimezoneResolver, UserDirectoryQuery, UserDirectoryRepository,
+    IssueEdit, IssueState, IssueTrackerClient, JobLease, LoginCallback, LoginRedirect,
+    MembershipQuery, MembershipRepository, PartInfo, ProjectAggregate, ProjectRepository,
+    ProjectSyncConfigRepository, RelationshipRepository, RemoteComment, RemoteIssue, SearchHit,
+    SearchIndex, SearchQuery, SettingsRepository, TangleRepository, TaskAggregate,
+    TaskSyncLinkRepository, TaskRepository, TaskUpdateError, TimezoneResolver, TokenCipher,
+    UserDirectoryQuery, UserDirectoryRepository,
 };
 pub use settings::{
     DEFAULT_ACTIVE_PROJECT_LIMIT, DEFAULT_HIGH_BOUNCE_THRESHOLD,
     DEFAULT_SUGGESTION_COOLDOWN_SECONDS, Settings,
 };
+pub use sync::{
+    ProjectSyncConfig, SyncProvider, TaskSyncLink, configure_project_sync,
+    edit_project_sync_config, link_task_to_issue, rotate_project_sync_token,
+};
 pub use use_cases::{
-    ArchiveOutcome, BoardItemKind, BulkCreateOutcome, NewUpload, ReindexOutcome, abort_file_upload,
-    add_comment, add_field_definition, add_file_attachment, add_link_attachment,
-    add_relationship_kind, archive_done_tasks, archive_project, archive_task, begin_file_upload,
-    bulk_create_areas, bulk_create_projects, bulk_create_tasks, collect_orphan_blobs,
-    complete_file_upload, create_area, create_project, create_relationship, create_task,
-    delete_attachment, delete_comment, delete_relationship, derive_seed, drop_tangle, drop_task,
-    edit_area, edit_comment, edit_project, edit_project_fields, edit_task, expire_stale_uploads,
-    grant_admin_group, grant_area_group_role, grant_area_role, grant_project_group_role,
-    grant_project_role, grant_system_admin, list_admin_groups, list_all_projects, list_area_groups,
+    ArchiveOutcome, BoardItemKind, BulkCreateOutcome, NewUpload, ReindexOutcome, SyncOutcome,
+    SyncPorts, abort_file_upload, add_comment, add_field_definition, add_file_attachment,
+    add_link_attachment, add_relationship_kind, archive_done_tasks, archive_project, archive_task,
+    begin_file_upload, bulk_create_areas, bulk_create_projects, bulk_create_tasks,
+    collect_orphan_blobs, complete_file_upload, configure_or_update_project_sync, create_area,
+    create_project, create_relationship, create_task, delete_attachment, delete_comment,
+    delete_relationship, derive_seed, drop_tangle, drop_task, edit_area, edit_comment,
+    edit_project, edit_project_fields, edit_task, expire_stale_uploads, grant_admin_group,
+    grant_area_group_role, grant_area_role, grant_project_group_role, grant_project_role,
+    grant_system_admin, list_admin_groups, list_all_projects, list_area_groups,
     list_area_members, list_areas, list_attachments, list_comments, list_known_groups,
     list_known_users, list_mentionable_users, list_project_groups, list_project_members,
     list_projects_in_area, list_system_admins, place_tangle, raise_task, reindex_all,
     rename_field_definition, reposition_area, reposition_board_item, request_suggestion,
     resolve_frozen_tangles, resolve_kind, revoke_admin_group, revoke_area_group_role,
     revoke_area_role, revoke_project_group_role, revoke_project_role, revoke_system_admin,
-    run_tangle_detection, set_checklist_position, set_task_field_value, set_task_parent,
-    transition_project_status, unarchive_project, unarchive_task, update_settings,
-    upload_file_part, view_area, view_project, view_settings, view_task,
+    run_and_record, run_tangle_detection, set_checklist_position, set_task_field_value,
+    set_task_parent, transition_project_status, unarchive_project, unarchive_task,
+    update_settings, upload_file_part, view_area, view_project, view_settings, view_sync_status,
+    view_task,
 };

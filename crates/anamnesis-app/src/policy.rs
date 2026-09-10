@@ -74,6 +74,12 @@ pub enum Action {
     ManageFieldDefinitions,
     ManageRelationshipKinds,
     ManageProjectMembership,
+    /// Configuring or viewing a project's external issue-tracker sync
+    /// (issues #40/#41). Read and write share this one gate — same
+    /// reasoning `crate::use_cases::settings` gives for having no separate
+    /// `ViewSettings` action: the config carries a secret token and is
+    /// meaningless to a plain Member.
+    ManageProjectSync,
 
     // --- Task: ordinary work, any assigned role. ---
     ViewTask,
@@ -132,7 +138,8 @@ pub fn is_allowed(role: Option<Role>, action: Action) -> bool {
         | TransitionProjectStatus
         | ManageFieldDefinitions
         | ManageRelationshipKinds
-        | ManageProjectMembership => can_manage_project(role),
+        | ManageProjectMembership
+        | ManageProjectSync => can_manage_project(role),
 
         ViewProject => can_view_project(role),
 
@@ -219,6 +226,7 @@ mod tests {
     #[case(Action::ManageFieldDefinitions)]
     #[case(Action::ManageRelationshipKinds)]
     #[case(Action::ManageProjectMembership)]
+    #[case(Action::ManageProjectSync)]
     fn project_admin_actions_require_admin(#[case] action: Action) {
         assert!(is_allowed(admin(), action));
         assert!(is_allowed(project_admin(), action));

@@ -355,6 +355,33 @@ pub struct UpdateSettingsForm {
     pub sweep_day: String,
 }
 
+/// Configures (or edits) a project's external issue-tracker sync (issues
+/// #40/#41). `base_url` is required for Forgejo, optional for GitHub —
+/// `crate::handlers::project_sync::parse_provider`/`configure_sync_impl`
+/// resolve that. `token` blank means "keep the existing one" (see
+/// `crate::handlers::project_sync::resolve_token`) — never round-tripped
+/// through the page as plaintext otherwise. The three checkboxes follow
+/// [`AddFieldDefinitionForm::show_on_card`]'s own present-when-checked,
+/// absent-when-not shape.
+#[derive(Debug, Deserialize)]
+pub struct ConfigureSyncForm {
+    pub csrf_token: String,
+    /// `"github"` | `"forgejo"`.
+    pub provider: String,
+    #[serde(default)]
+    pub base_url: String,
+    pub owner: String,
+    pub repo: String,
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub auto_import_new_issues: String,
+    #[serde(default)]
+    pub auto_push_new_tasks: String,
+    #[serde(default)]
+    pub enabled: String,
+}
+
 /// Moves a board card (a task or a placed tangle) to `column_id`/`position`
 /// (`docs/DOMAIN.md` §8) — posted either by `static/app.js`'s drag handler
 /// (via `htmx.ajax`) or by `_reposition_form.html`'s plain-form fallback,

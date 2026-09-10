@@ -7,18 +7,21 @@ mod common;
 mod group_membership;
 mod identity;
 mod infra;
+mod issue_tracker;
 mod membership;
 mod query;
 mod repository;
+mod sync;
 mod user_directory;
 
-pub use common::{Clock, IdGen};
+pub use common::{Clock, IdGen, TokenCipher};
 pub use group_membership::{GroupMembershipQuery, GroupMembershipRepository};
 pub use identity::{AuthenticatedIdentity, IdentityProvider, LoginCallback, LoginRedirect};
 pub use infra::{
     BlobInfo, BlobStore, ByteStream, ChunkedUpload, JobLease, PartInfo, SearchIndex,
     TimezoneResolver,
 };
+pub use issue_tracker::{IssueEdit, IssueState, IssueTrackerClient, RemoteComment, RemoteIssue};
 pub use membership::{MembershipQuery, MembershipRepository};
 pub use query::{BoardColumn, BoardItem, BoardQuery, SearchHit, SearchQuery};
 pub use repository::{
@@ -26,4 +29,5 @@ pub use repository::{
     ProjectAggregate, ProjectRepository, RelationshipRepository, SettingsRepository,
     TangleRepository, TaskAggregate, TaskRepository, TaskUpdateError,
 };
+pub use sync::{ProjectSyncConfigRepository, TaskSyncLinkRepository};
 pub use user_directory::{UserDirectoryQuery, UserDirectoryRepository};

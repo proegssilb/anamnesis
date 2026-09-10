@@ -14,3 +14,15 @@ pub trait Clock: Send + Sync {
 pub trait IdGen: Send + Sync {
     fn next(&self) -> uuid::Uuid;
 }
+
+/// Encrypts/decrypts a project sync config's external-tracker token at
+/// rest (issues #40/#41). CPU-only, no I/O — unlike every other port in
+/// this module family, this one is synchronous, mirroring [`Clock`]/
+/// [`IdGen`]. `encrypt`'s output is opaque to callers (an adapter is free
+/// to prepend a nonce, an AEAD tag, or anything else it needs to decrypt
+/// its own output) and is stored verbatim as
+/// `crate::ProjectSyncConfig::encrypted_token`.
+pub trait TokenCipher: Send + Sync {
+    fn encrypt(&self, plaintext: &str) -> Result<Vec<u8>, crate::error::AppError>;
+    fn decrypt(&self, ciphertext: &[u8]) -> Result<String, crate::error::AppError>;
+}

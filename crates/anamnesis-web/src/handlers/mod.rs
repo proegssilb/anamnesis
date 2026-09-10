@@ -15,6 +15,7 @@ mod login;
 mod markdown;
 mod membership;
 mod misc;
+pub(crate) mod project_sync;
 mod projects;
 mod search;
 mod settings;
@@ -40,6 +41,7 @@ pub use membership::{
     view_users_handler,
 };
 pub use misc::{healthz_handler, root_handler};
+pub use project_sync::{configure_sync_handler, trigger_sync_now_handler};
 pub use projects::{
     add_field_definition_handler, archive_project_handler, bulk_create_tasks_handler,
     create_task_handler, drop_project_task_handler, edit_project_description_handler,

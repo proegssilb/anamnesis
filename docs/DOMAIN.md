@@ -688,3 +688,37 @@ There is still no true row deletion of an area, project, or task anywhere in
 this system; `remove_*` is only ever invoked from an archive use case, never
 a hard delete, so this is a correction to what "remove" already meant at
 every call site, not a new capability.
+
+### Project sync with GitHub / Forgejo (issues #40, #41)
+
+A project may be configured, in its own settings, to sync its tasks against
+one external repo on GitHub or a self-hosted Forgejo instance — both speak
+the same Gitea-compatible REST shape, so one `IssueTrackerClient` port and
+one HTTP adapter serve both. Title and description sync two-way between a
+Task and its linked Issue; the one shared lifecycle bit both sides have —
+open vs. closed — syncs two-way as well, mapped onto `Task.archived_at`
+through the exact same last-write-wins comparison as title/description, not
+special-cased; anamnesis's finer board states (Doing, Todo, ...) have no
+remote equivalent and are never synced. Comments flow one way only, external
+into anamnesis, annotated with a link back to the source; nothing anamnesis
+writes on a task is ever pushed out as a new remote comment.
+
+Sync is **polling, not webhook-driven**: this app has no public-ingress
+infrastructure, and a self-hosted deployment may have no reachable public
+URL at all, so a periodic ticker (the same family as §6's sweep) polls each
+configured project instead, bounding sync latency by the poll interval
+rather than delivering it in real time. A local task with no link yet can
+auto-create a remote issue, gated by its own `auto_push_new_tasks` toggle,
+symmetric with the existing `auto_import_new_issues` toggle for the reverse
+direction — one direction having a toggle without the other would be an
+arbitrary asymmetry. A task already sitting in an `is_done` board column is
+never pushed as a new issue even when unlinked, since there is no reason to
+create one only to immediately close it.
+
+A project's access token is stored encrypted at rest (AES-256-GCM, a
+nonce-prepended ciphertext, keyed by a new required-for-this-feature
+`ANAMNESIS_SYNC_ENCRYPTION_KEY`) — the first thing this codebase encrypts,
+as opposed to the existing `Secret` wrapper that only redacts `Debug`
+output. A deployment that never sets the key simply has project sync
+unavailable, the same pattern already used for `identity` when OIDC is
+unconfigured.

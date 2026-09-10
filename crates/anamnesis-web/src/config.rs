@@ -113,6 +113,14 @@ pub struct Config {
     /// wanting genuinely large attachments raises this, not
     /// `max_body_bytes`, which stays a sane per-request ceiling regardless.
     pub max_attachment_bytes: u64,
+    /// `ANAMNESIS_SYNC_ENCRYPTION_KEY`, decoded — the key
+    /// `anamnesis_adapters::AesGcmTokenCipher` encrypts a project sync
+    /// config's external-tracker token with at rest (issues #40/#41).
+    /// `None` means project sync is simply unavailable on this deployment
+    /// (`AppState::token_cipher` mirrors `identity`'s own optionality for
+    /// OIDC) — but a *present*, malformed value is still a startup error
+    /// naming the variable, exactly like every other validated setting here.
+    pub sync_encryption_key: Option<[u8; 32]>,
 }
 
 /// What an `s3://` blob root needs to actually reach its bucket.
@@ -194,6 +202,10 @@ impl std::fmt::Debug for Config {
             .field("tls_ca_bundle", &self.tls_ca_bundle)
             .field("max_body_bytes", &self.max_body_bytes)
             .field("max_attachment_bytes", &self.max_attachment_bytes)
+            .field(
+                "sync_encryption_key",
+                &self.sync_encryption_key.map(|_| "<redacted>"),
+            )
             .finish()
     }
 }
@@ -251,30 +263,26 @@ impl Config {
         let required = resolve_required_strings(&get)?;
         let bind_addr = resolve_bind_addr(&get)?;
         let cookie_key = resolve_cookie_key(&get)?;
-        let oidc_scopes = resolve_oidc_scopes(&get);
-        let (oidc_issuer_url, oidc_client_id, oidc_client_secret) =
-            resolve_oidc_credentials(&get, dev_auth_bypass)?;
-        let oidc_user_id_claim = get("ANAMNESIS_OIDC_USER_ID_CLAIM");
-        let oidc_display_name_claim = get("ANAMNESIS_OIDC_DISPLAY_NAME_CLAIM");
-        let (oidc_groups_claim, oidc_admin_group) = resolve_oidc_groups(&get)?;
+        let oidc = resolve_oidc_settings(&get, dev_auth_bypass)?;
         let blob_root = get("ANAMNESIS_BLOB_ROOT").unwrap_or_else(|| DEFAULT_BLOB_ROOT.to_string());
         let s3 = resolve_s3(&get, &blob_root)?;
         let tls_ca_bundle = get("ANAMNESIS_TLS_CA_BUNDLE").filter(|v| !v.is_empty());
         let max_body_bytes = resolve_max_body_bytes(&get)?;
         let max_attachment_bytes = resolve_max_attachment_bytes(&get)?;
+        let sync_encryption_key = resolve_sync_encryption_key(&get)?;
 
         Ok(Config {
             database_url: required.database_url,
             bind_addr,
             base_url: required.base_url,
-            oidc_issuer_url,
-            oidc_client_id,
-            oidc_client_secret,
-            oidc_scopes,
-            oidc_user_id_claim,
-            oidc_display_name_claim,
-            oidc_groups_claim,
-            oidc_admin_group,
+            oidc_issuer_url: oidc.issuer_url,
+            oidc_client_id: oidc.client_id,
+            oidc_client_secret: oidc.client_secret,
+            oidc_scopes: oidc.scopes,
+            oidc_user_id_claim: oidc.user_id_claim,
+            oidc_display_name_claim: oidc.display_name_claim,
+            oidc_groups_claim: oidc.groups_claim,
+            oidc_admin_group: oidc.admin_group,
             cookie_key,
             dev_auth_bypass,
             timezone: required.timezone,
@@ -284,6 +292,7 @@ impl Config {
             tls_ca_bundle,
             max_body_bytes,
             max_attachment_bytes,
+            sync_encryption_key,
         })
     }
 
@@ -409,6 +418,52 @@ fn resolve_max_attachment_bytes(get: &impl Fn(&str) -> Option<String>) -> Result
     }
 }
 
+/// `ANAMNESIS_SYNC_ENCRYPTION_KEY`: 64 hex characters (32 bytes) encrypting
+/// a project sync config's stored external-tracker token (issues #40/#41).
+/// Optional — `None` just means project sync is unavailable on this
+/// deployment — but present-and-malformed is rejected by name like every
+/// other validated setting here, not silently ignored.
+///
+/// Hex, not base64: a plain byte count elsewhere in this module (see
+/// [`resolve_max_body_bytes`]'s doc comment) is chosen over a size-string
+/// parser for the same reason a hand-rolled hex decode is chosen here over
+/// pulling in a `base64` dependency for one 32-byte value.
+fn resolve_sync_encryption_key(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<[u8; 32]>, ConfigError> {
+    let Some(raw) = get("ANAMNESIS_SYNC_ENCRYPTION_KEY").filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    let invalid = |reason: String| ConfigError::Invalid {
+        name: "ANAMNESIS_SYNC_ENCRYPTION_KEY",
+        reason,
+    };
+    let bytes = decode_hex(raw.trim()).map_err(invalid)?;
+    let key: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
+        invalid(format!(
+            "must decode to 32 bytes (64 hex characters), got {}",
+            v.len()
+        ))
+    })?;
+    Ok(Some(key))
+}
+
+/// Decodes a hex string into bytes, two characters at a time. Checks
+/// `is_ascii()` up front so the byte-chunking below can never land on a
+/// UTF-8 character boundary that isn't also a byte boundary.
+fn decode_hex(raw: &str) -> Result<Vec<u8>, String> {
+    if !raw.is_ascii() || !raw.len().is_multiple_of(2) {
+        return Err("must be an even number of ASCII hex characters".to_string());
+    }
+    raw.as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            let text = std::str::from_utf8(pair).expect("ASCII is valid UTF-8");
+            u8::from_str_radix(text, 16).map_err(|e| format!("invalid hex digit {text:?}: {e}"))
+        })
+        .collect()
+}
+
 /// The `ANAMNESIS_S3_*` family, but only when `blob_root` is an `s3://` URL
 /// — on a filesystem blob root there is nothing to configure and any of
 /// these that happen to be set are ignored.
@@ -432,6 +487,42 @@ fn resolve_s3(
         access_key_id: require(get, "ANAMNESIS_S3_ACCESS_KEY_ID")?,
         secret_access_key: Secret::new(require(get, "ANAMNESIS_S3_SECRET_ACCESS_KEY")?),
     }))
+}
+
+/// Every `ANAMNESIS_OIDC_*` value [`Config::from_source`] needs, gathered by
+/// [`resolve_oidc_settings`] into one call — folding what used to be four
+/// separate resolutions (three of them fallible) into the one `?` this
+/// struct's fields travel through, so `from_source` itself reads as one
+/// step per genuinely distinct configuration concern (required strings,
+/// bind address, cookie key, OIDC, blob storage, ...) rather than counting
+/// every OIDC sub-field as its own step.
+struct OidcSettings {
+    scopes: Vec<String>,
+    issuer_url: Option<String>,
+    client_id: Option<String>,
+    client_secret: Option<Secret>,
+    user_id_claim: Option<String>,
+    display_name_claim: Option<String>,
+    groups_claim: Option<String>,
+    admin_group: Option<String>,
+}
+
+fn resolve_oidc_settings(
+    get: &impl Fn(&str) -> Option<String>,
+    dev_auth_bypass: bool,
+) -> Result<OidcSettings, ConfigError> {
+    let (issuer_url, client_id, client_secret) = resolve_oidc_credentials(get, dev_auth_bypass)?;
+    let (groups_claim, admin_group) = resolve_oidc_groups(get)?;
+    Ok(OidcSettings {
+        scopes: resolve_oidc_scopes(get),
+        issuer_url,
+        client_id,
+        client_secret,
+        user_id_claim: get("ANAMNESIS_OIDC_USER_ID_CLAIM"),
+        display_name_claim: get("ANAMNESIS_OIDC_DISPLAY_NAME_CLAIM"),
+        groups_claim,
+        admin_group,
+    })
 }
 
 /// `ANAMNESIS_OIDC_SCOPES`, whitespace-split, defaulting to
@@ -958,6 +1049,72 @@ mod tests {
         let rendered = format!("{:?}", Config::from_source(env(&pairs)).unwrap());
         assert!(rendered.contains("groups"));
         assert!(rendered.contains("anamnesis-admins"));
+    }
+
+    #[test]
+    fn sync_encryption_key_defaults_to_none() {
+        let cfg = Config::from_source(env(&full_valid_env())).unwrap();
+        assert_eq!(cfg.sync_encryption_key, None);
+    }
+
+    const SYNC_KEY_HEX: &str =
+        "0011223344556677889900112233445566778899001122334455667788990011";
+
+    #[test]
+    fn sync_encryption_key_decodes_64_hex_characters() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_SYNC_ENCRYPTION_KEY", SYNC_KEY_HEX));
+        let cfg = Config::from_source(env(&pairs)).unwrap();
+        assert_eq!(
+            cfg.sync_encryption_key,
+            Some([
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0x11, 0x22,
+                0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+                0x66, 0x77, 0x88, 0x99, 0x00, 0x11,
+            ])
+        );
+    }
+
+    #[test]
+    fn sync_encryption_key_of_the_wrong_length_is_rejected_by_name() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_SYNC_ENCRYPTION_KEY", "00112233"));
+        let err = Config::from_source(env(&pairs)).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ConfigError::Invalid {
+                    name: "ANAMNESIS_SYNC_ENCRYPTION_KEY",
+                    ..
+                }
+            ),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn non_hex_sync_encryption_key_is_rejected_by_name() {
+        let mut pairs = full_valid_env();
+        pairs.push((
+            "ANAMNESIS_SYNC_ENCRYPTION_KEY",
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        ));
+        let err = Config::from_source(env(&pairs)).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "ANAMNESIS_SYNC_ENCRYPTION_KEY",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn debug_does_not_render_the_sync_encryption_key() {
+        let mut pairs = full_valid_env();
+        pairs.push(("ANAMNESIS_SYNC_ENCRYPTION_KEY", SYNC_KEY_HEX));
+        let rendered = format!("{:?}", Config::from_source(env(&pairs)).unwrap());
+        assert!(!rendered.contains(SYNC_KEY_HEX));
     }
 
     #[test]
