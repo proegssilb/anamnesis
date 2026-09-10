@@ -47,7 +47,8 @@ pub trait TaskSyncLinkRepository: Send + Sync {
         project_id: ProjectId,
         external_issue_number: u64,
     ) -> Result<Option<TaskSyncLink>, RepoError>;
-    async fn list_for_project(&self, project_id: ProjectId) -> Result<Vec<TaskSyncLink>, RepoError>;
+    async fn list_for_project(&self, project_id: ProjectId)
+    -> Result<Vec<TaskSyncLink>, RepoError>;
     async fn insert(&self, link: &TaskSyncLink) -> Result<(), RepoError>;
     async fn update(&self, link: &TaskSyncLink) -> Result<(), RepoError>;
 }

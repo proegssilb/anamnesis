@@ -8,7 +8,10 @@ mod support;
 
 use axum::http::StatusCode;
 
-use anamnesis_app::{CommentId, CommentOrigin, SyncProvider, configure_project_sync, import_comment};
+use anamnesis_app::{
+    CommentId, CommentOrigin, SyncConfigFields, SyncProvider, configure_project_sync,
+    import_comment,
+};
 use anamnesis_core::{ProjectId, TaskId};
 
 use support::{TestApp, body_text, location_of};
@@ -62,7 +65,13 @@ async fn post_sync_by_a_non_admin_is_forbidden() {
     let response = app
         .post_form(
             &format!("/projects/{project_id}/sync"),
-            &sync_form("stranger-token", "github", "octocat", "hello-world", "secret-pat"),
+            &sync_form(
+                "stranger-token",
+                "github",
+                "octocat",
+                "hello-world",
+                "secret-pat",
+            ),
             Some(&stranger_cookie),
         )
         .await;
@@ -81,7 +90,13 @@ async fn post_sync_without_a_valid_csrf_token_is_rejected() {
     let response = app
         .post_form(
             &format!("/projects/{project_id}/sync"),
-            &sync_form("wrong-token", "github", "octocat", "hello-world", "secret-pat"),
+            &sync_form(
+                "wrong-token",
+                "github",
+                "octocat",
+                "hello-world",
+                "secret-pat",
+            ),
             Some(&admin_cookie),
         )
         .await;
@@ -100,7 +115,13 @@ async fn configuring_github_sync_without_a_base_url_succeeds_and_the_project_pag
     let response = app
         .post_form(
             &format!("/projects/{project_id}/sync"),
-            &sync_form("admin-token", "github", "octocat", "hello-world", "secret-pat"),
+            &sync_form(
+                "admin-token",
+                "github",
+                "octocat",
+                "hello-world",
+                "secret-pat",
+            ),
             Some(&admin_cookie),
         )
         .await;
@@ -124,7 +145,13 @@ async fn configuring_forgejo_sync_without_a_base_url_is_rejected() {
     let response = app
         .post_form(
             &format!("/projects/{project_id}/sync"),
-            &sync_form("admin-token", "forgejo", "octocat", "hello-world", "secret-pat"),
+            &sync_form(
+                "admin-token",
+                "forgejo",
+                "octocat",
+                "hello-world",
+                "secret-pat",
+            ),
             Some(&admin_cookie),
         )
         .await;
@@ -145,7 +172,13 @@ async fn a_blank_token_on_edit_keeps_the_stored_ciphertext() {
     let first = app
         .post_form(
             &format!("/projects/{project_id}/sync"),
-            &sync_form("admin-token", "github", "octocat", "hello-world", "the-real-secret"),
+            &sync_form(
+                "admin-token",
+                "github",
+                "octocat",
+                "hello-world",
+                "the-real-secret",
+            ),
             Some(&admin_cookie),
         )
         .await;
@@ -193,13 +226,15 @@ async fn trigger_sync_now_with_no_encryption_key_configured_returns_a_clear_4xx_
     let now = app.state.clock.now();
     let config = configure_project_sync(
         project_id,
-        SyncProvider::GitHub,
-        None,
-        "octocat",
-        "hello-world",
+        SyncConfigFields {
+            provider: SyncProvider::GitHub,
+            base_url: None,
+            owner: "octocat",
+            repo: "hello-world",
+            auto_import_new_issues: true,
+            auto_push_new_tasks: true,
+        },
         vec![1, 2, 3],
-        true,
-        true,
         now,
     )
     .unwrap();
@@ -253,8 +288,7 @@ async fn an_imported_comment_renders_its_origin_but_a_plain_comment_does_not() {
     let origin = CommentOrigin {
         provider: SyncProvider::GitHub,
         external_comment_id: 42,
-        external_url: "https://github.com/octocat/hello-world/issues/1#issuecomment-42"
-            .to_string(),
+        external_url: "https://github.com/octocat/hello-world/issues/1#issuecomment-42".to_string(),
         external_author_display: "octocat".to_string(),
     };
     let imported = import_comment(

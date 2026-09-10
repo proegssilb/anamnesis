@@ -1,13 +1,8 @@
-//! Reconciling a project's tasks against its linked external issue tracker
-//! (issues #40, #41). Polling, not webhooks — see `docs/DOMAIN.md`'s sync
-//! section (added alongside this module) for why: this app has no
-//! public-ingress infrastructure, and a self-hosted deployment may have no
-//! reachable public URL at all.
-//!
-//! [`reconcile_project`] is the whole algorithm, run per project by either
-//! `anamnesis-web`'s ticker or its "Sync now" button (both call
-//! [`run_and_record`], never this directly, so neither can forget to stamp
-//! the outcome). Five steps, each a small named sub-function:
+//! The reconciliation algorithm proper: given a project's [`ProjectSyncConfig`]
+//! and an [`IssueTrackerClient`], bring its tasks and the linked repo's
+//! issues into agreement. [`reconcile_project`] is the whole thing, called
+//! only by `super::run_and_record` (never directly, so the outcome is
+//! always stamped). Five steps, each a small named sub-function:
 //!
 //! 1. Push local tasks with no link yet as new issues (only if
 //!    `auto_push_new_tasks`), skipping any already sitting in an `is_done`
@@ -29,196 +24,20 @@
 
 use std::collections::{HashMap, HashSet};
 
-use anamnesis_core::policy::Role;
-use anamnesis_core::{self as core, Column, ProjectId, Task, Timestamp};
+use anamnesis_core::{self as core, Column, Task, Timestamp};
 
 use crate::entities::{self, CommentId, CommentOrigin};
 use crate::error::AppError;
-use crate::policy::{Action, is_allowed};
 use crate::ports::{
-    BoardQuery, Clock, CommentRepository, IdGen, IssueEdit, IssueState, IssueTrackerClient,
-    ProjectSyncConfigRepository, RemoteComment, RemoteIssue, SearchIndex, TaskAggregate,
-    TaskRepository, TaskSyncLinkRepository, TaskUpdateError,
+    IssueEdit, IssueState, IssueTrackerClient, RemoteComment, RemoteIssue, TaskAggregate,
+    TaskUpdateError,
 };
-use crate::sync::{
-    ProjectSyncConfig, SyncProvider, TaskSyncLink, configure_project_sync,
-    edit_project_sync_config, link_task_to_issue, rotate_project_sync_token,
-};
+use crate::sync::{ProjectSyncConfig, SyncProvider, TaskSyncLink, link_task_to_issue};
+use crate::use_cases::indexing::log_index_failure;
 
-use super::indexing::log_index_failure;
+use super::{SyncOutcome, SyncPorts};
 
-/// Everything one reconciliation pass over a single project needs from the
-/// world. Eight ports, every one independently used in the body — a real
-/// dependency list for one operation, not a parameter-count workaround.
-pub struct SyncPorts<'a> {
-    pub configs: &'a dyn ProjectSyncConfigRepository,
-    pub links: &'a dyn TaskSyncLinkRepository,
-    pub tasks: &'a dyn TaskRepository,
-    pub comments: &'a dyn CommentRepository,
-    /// Needed for exactly one check: whether a not-yet-linked task already
-    /// sits in an `is_done` column, so step 1 doesn't push it as a new issue
-    /// only to close it moments later. Not used for anything else here —
-    /// reconciliation never renders or reorders the board.
-    pub board: &'a dyn BoardQuery,
-    pub search: &'a dyn SearchIndex,
-    pub clock: &'a dyn Clock,
-    pub ids: &'a dyn IdGen,
-}
-
-/// What one reconciliation pass actually did, for logging and the sync
-/// status line.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct SyncOutcome {
-    pub pushed_new_task_count: usize,
-    pub imported_task_count: usize,
-    pub pushed_to_remote_count: usize,
-    pub pulled_from_remote_count: usize,
-    pub imported_comment_count: usize,
-}
-
-/// Loads the current sync config for a project. `Err(AppError::Forbidden)`
-/// for anyone but a Project/System Admin.
-pub async fn view_sync_status(
-    repo: &dyn ProjectSyncConfigRepository,
-    role: Option<Role>,
-    project_id: ProjectId,
-) -> Result<Option<ProjectSyncConfig>, AppError> {
-    if !is_allowed(role, Action::ManageProjectSync) {
-        return Err(AppError::Forbidden);
-    }
-    Ok(repo.load(project_id).await?)
-}
-
-/// Creates or replaces a project's sync config — the settings form always
-/// posts the full state, so insert and update collapse into one upsert, same
-/// as `crate::use_cases::update_settings` does for the one global settings
-/// row. `encrypted_token` is whatever the caller has already decided should
-/// end up stored (freshly encrypted from a submitted token, or the existing
-/// ciphertext re-supplied when the form's token field was left blank) — this
-/// use case does not decide that, only persists it.
-#[allow(clippy::too_many_arguments)]
-pub async fn configure_or_update_project_sync(
-    repo: &dyn ProjectSyncConfigRepository,
-    clock: &dyn Clock,
-    role: Option<Role>,
-    project_id: ProjectId,
-    provider: SyncProvider,
-    base_url: Option<String>,
-    owner: &str,
-    repo_name: &str,
-    encrypted_token: Vec<u8>,
-    auto_import_new_issues: bool,
-    auto_push_new_tasks: bool,
-    enabled: bool,
-) -> Result<ProjectSyncConfig, AppError> {
-    if !is_allowed(role, Action::ManageProjectSync) {
-        return Err(AppError::Forbidden);
-    }
-    let now = clock.now();
-    let existing = repo.load(project_id).await?;
-    let config = build_project_sync_config(
-        existing,
-        project_id,
-        provider,
-        base_url,
-        owner,
-        repo_name,
-        encrypted_token,
-        auto_import_new_issues,
-        auto_push_new_tasks,
-        enabled,
-        now,
-    )?;
-    repo.upsert(&config).await?;
-    Ok(config)
-}
-
-/// Decides what the stored config should become: a fresh one via
-/// [`configure_project_sync`] when none exists yet, or the existing one
-/// edited via [`edit_project_sync_config`] plus [`rotate_project_sync_token`]
-/// otherwise. Pure (no port access) and split out from
-/// [`configure_or_update_project_sync`] specifically so that async use case
-/// stays a short, obvious "load, build, save" shape rather than growing this
-/// decision inline.
-#[allow(clippy::too_many_arguments)]
-fn build_project_sync_config(
-    existing: Option<ProjectSyncConfig>,
-    project_id: ProjectId,
-    provider: SyncProvider,
-    base_url: Option<String>,
-    owner: &str,
-    repo_name: &str,
-    encrypted_token: Vec<u8>,
-    auto_import_new_issues: bool,
-    auto_push_new_tasks: bool,
-    enabled: bool,
-    now: Timestamp,
-) -> Result<ProjectSyncConfig, AppError> {
-    match existing {
-        None => {
-            let created = configure_project_sync(
-                project_id,
-                provider,
-                base_url,
-                owner,
-                repo_name,
-                encrypted_token,
-                auto_import_new_issues,
-                auto_push_new_tasks,
-                now,
-            )?;
-            Ok(ProjectSyncConfig { enabled, ..created })
-        }
-        Some(current) => {
-            let edited = edit_project_sync_config(
-                &current,
-                provider,
-                base_url,
-                owner,
-                repo_name,
-                auto_import_new_issues,
-                auto_push_new_tasks,
-                enabled,
-                now,
-            )?;
-            Ok(rotate_project_sync_token(&edited, encrypted_token, now))
-        }
-    }
-}
-
-/// The one entry point both the ticker and the "Sync now" button call: runs
-/// [`reconcile_project`] and *always* stamps the outcome via
-/// `ProjectSyncConfigRepository::record_sync_result` — success or failure —
-/// so neither caller can forget it. A failure recording the result itself is
-/// logged and non-fatal (mirrors `crate::use_cases::indexing`'s policy for
-/// the same reason: the reconciliation work already happened and must not
-/// be reported as lost just because the bookkeeping write failed too).
-pub async fn run_and_record(
-    ports: &SyncPorts<'_>,
-    client: &dyn IssueTrackerClient,
-    role: Option<Role>,
-    config: &ProjectSyncConfig,
-) -> Result<SyncOutcome, AppError> {
-    if !is_allowed(role, Action::ManageProjectSync) {
-        return Err(AppError::Forbidden);
-    }
-    let now = ports.clock.now();
-    let result = reconcile_project(ports, client, config).await;
-    let error_message = result.as_ref().err().map(ToString::to_string);
-    if let Err(err) = ports
-        .configs
-        .record_sync_result(config.project_id, now, error_message.as_deref())
-        .await
-    {
-        eprintln!(
-            "anamnesis: failed to record sync result for project {}: {err}",
-            config.project_id
-        );
-    }
-    result
-}
-
-async fn reconcile_project(
+pub(super) async fn reconcile_project(
     ports: &SyncPorts<'_>,
     client: &dyn IssueTrackerClient,
     config: &ProjectSyncConfig,
@@ -553,7 +372,10 @@ async fn note_archival_change(ports: &SyncPorts<'_>, before: &Task, after: &Task
         log_index_failure("sync_pull_archive", err);
     } else if before.archived_at.is_some()
         && after.archived_at.is_none()
-        && let Err(err) = ports.search.index_task(after.id, after.title.as_str()).await
+        && let Err(err) = ports
+            .search
+            .index_task(after.id, after.title.as_str())
+            .await
     {
         log_index_failure("sync_pull_unarchive", err);
     }
@@ -670,7 +492,7 @@ async fn import_comments_for_link(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anamnesis_core::TaskId;
+    use anamnesis_core::{ProjectId, TaskId};
     use rstest::rstest;
     use uuid::Uuid;
 
@@ -783,7 +605,8 @@ mod tests {
     fn partition_by_link_splits_new_from_known_issues() {
         let mut link = link_at(0, 0);
         link.external_issue_number = 5;
-        let (new_issues, known) = partition_by_link(vec![remote_issue(5), remote_issue(6)], &[link]);
+        let (new_issues, known) =
+            partition_by_link(vec![remote_issue(5), remote_issue(6)], &[link]);
         assert_eq!(new_issues.len(), 1);
         assert_eq!(new_issues[0].number, 6);
         assert_eq!(known.len(), 1);
@@ -791,8 +614,14 @@ mod tests {
     }
 
     fn done_column() -> Column {
-        anamnesis_core::create_column(anamnesis_core::ColumnId::from_u128(1), "Done", 0, None, true)
-            .unwrap()
+        anamnesis_core::create_column(
+            anamnesis_core::ColumnId::from_u128(1),
+            "Done",
+            0,
+            None,
+            true,
+        )
+        .unwrap()
     }
 
     fn doing_column() -> Column {
@@ -841,6 +670,10 @@ mod tests {
         let ids: Vec<TaskId> = candidates.iter().map(|t| t.id).collect();
         assert!(ids.contains(&below.id));
         assert!(ids.contains(&on_doing.id));
-        assert_eq!(ids.len(), 2, "the done task and the linked task must both be excluded");
+        assert_eq!(
+            ids.len(),
+            2,
+            "the done task and the linked task must both be excluded"
+        );
     }
 }

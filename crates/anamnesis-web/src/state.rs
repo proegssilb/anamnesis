@@ -17,10 +17,10 @@ use std::sync::Arc;
 use anamnesis_app::{
     AreaRepository, AttachmentRepository, AttachmentUploadRepository, BlobStore, BoardQuery,
     ChunkedUpload, Clock, CommentRepository, GroupMembershipQuery, GroupMembershipRepository,
-    IdGen, IdentityProvider, JobLease, MembershipQuery, MembershipRepository,
-    ProjectSyncConfigRepository, ProjectRepository, RelationshipRepository, SearchIndex,
-    SearchQuery, SettingsRepository, TangleRepository, TaskRepository, TaskSyncLinkRepository,
-    TimezoneResolver, TokenCipher, UserDirectoryQuery, UserDirectoryRepository,
+    IdGen, IdentityProvider, JobLease, MembershipQuery, MembershipRepository, ProjectRepository,
+    ProjectSyncConfigRepository, RelationshipRepository, SearchIndex, SearchQuery,
+    SettingsRepository, TangleRepository, TaskRepository, TaskSyncLinkRepository, TimezoneResolver,
+    TokenCipher, UserDirectoryQuery, UserDirectoryRepository,
 };
 use axum::extract::FromRef;
 use axum_extra::extract::cookie::Key;

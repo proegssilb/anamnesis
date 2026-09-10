@@ -1139,7 +1139,10 @@ async fn imported_comment_contract(store: &SqlStore, owner: &Task) {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(reloaded, imported, "an imported comment's origin round-trips");
+    assert_eq!(
+        reloaded, imported,
+        "an imported comment's origin round-trips"
+    );
     assert!(reloaded.origin.is_some());
 
     assert!(
@@ -1240,7 +1243,10 @@ async fn project_sync_config_record_result_contract(
         .unwrap()
         .unwrap();
     assert_eq!(after_result.last_synced_at, Some(ts(10_500)));
-    assert_eq!(after_result.last_sync_error.as_deref(), Some("rate limited"));
+    assert_eq!(
+        after_result.last_sync_error.as_deref(),
+        Some("rate limited")
+    );
     assert_eq!(
         after_result.owner, config.owner,
         "record_sync_result must not touch unrelated fields"

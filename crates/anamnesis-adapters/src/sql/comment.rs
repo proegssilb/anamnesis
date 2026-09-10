@@ -9,7 +9,10 @@ use anamnesis_core::{TaskId, UserId};
 use async_trait::async_trait;
 use sqlx::{PgPool, Row, SqlitePool};
 
-use super::{Backend, SqlStore, parse_uuid, sync_provider_from_text, sync_provider_to_text, timestamp_from_seconds};
+use super::{
+    Backend, SqlStore, parse_uuid, sync_provider_from_text, sync_provider_to_text,
+    timestamp_from_seconds,
+};
 
 /// Reconstructs a `CommentOrigin` from its four stored columns — `Some`
 /// only when `external_comment_id` is non-null (all four travel together,
@@ -135,7 +138,12 @@ mod sqlite_impl {
         .bind(&comment.body)
         .bind(comment.created_at.unix_seconds())
         .bind(comment.edited_at.map(|t| t.unix_seconds()))
-        .bind(comment.origin.as_ref().map(|o| sync_provider_to_text(o.provider)))
+        .bind(
+            comment
+                .origin
+                .as_ref()
+                .map(|o| sync_provider_to_text(o.provider)),
+        )
         .bind(
             comment
                 .origin
@@ -255,7 +263,12 @@ mod postgres_impl {
         .bind(&comment.body)
         .bind(comment.created_at.unix_seconds())
         .bind(comment.edited_at.map(|t| t.unix_seconds()))
-        .bind(comment.origin.as_ref().map(|o| sync_provider_to_text(o.provider)))
+        .bind(
+            comment
+                .origin
+                .as_ref()
+                .map(|o| sync_provider_to_text(o.provider)),
+        )
         .bind(
             comment
                 .origin

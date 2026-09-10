@@ -124,8 +124,7 @@ fn sync_status_and_message(err: &AppError) -> (StatusCode, String) {
             tracing::error!(error = %e, "issue tracker request failed");
             (
                 StatusCode::BAD_GATEWAY,
-                "The external issue tracker could not be reached or reported an error."
-                    .to_string(),
+                "The external issue tracker could not be reached or reported an error.".to_string(),
             )
         }
         AppError::Crypto(message) => {

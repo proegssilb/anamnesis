@@ -95,8 +95,9 @@ pub fn build_client(
     match provider {
         SyncProvider::GitHub => HttpIssueTrackerClient::github(base_url, token),
         SyncProvider::Forgejo => {
-            let base_url = base_url
-                .ok_or_else(|| IssueTrackerError::new("a Forgejo config is missing its base URL"))?;
+            let base_url = base_url.ok_or_else(|| {
+                IssueTrackerError::new("a Forgejo config is missing its base URL")
+            })?;
             HttpIssueTrackerClient::forgejo(base_url, token)
         }
     }
@@ -120,8 +121,9 @@ fn issue_state_from_text(raw: &str) -> Result<IssueState, IssueTrackerError> {
 }
 
 fn parse_rfc3339(raw: &str) -> Result<Timestamp, IssueTrackerError> {
-    let parsed = time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc3339)
-        .map_err(|e| IssueTrackerError::from_source(format!("invalid timestamp {raw:?}"), e))?;
+    let parsed =
+        time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc3339)
+            .map_err(|e| IssueTrackerError::from_source(format!("invalid timestamp {raw:?}"), e))?;
     Timestamp::from_unix_seconds(parsed.unix_timestamp())
         .map_err(|e| IssueTrackerError::from_source(format!("timestamp out of range: {raw:?}"), e))
 }
@@ -246,10 +248,9 @@ impl IssueTrackerClient for HttpIssueTrackerClient {
                 .await
                 .map_err(|e| IssueTrackerError::from_source("failed to list issues", e))?;
             let response = error_for_status(response, "list issues").await?;
-            let raw_issues: Vec<RawIssue> = response
-                .json()
-                .await
-                .map_err(|e| IssueTrackerError::from_source("failed to parse issues response", e))?;
+            let raw_issues: Vec<RawIssue> = response.json().await.map_err(|e| {
+                IssueTrackerError::from_source("failed to parse issues response", e)
+            })?;
             let count = raw_issues.len();
             for raw in raw_issues {
                 if raw.pull_request.is_some() {
@@ -369,7 +370,8 @@ mod tests {
 
     #[test]
     fn github_with_a_base_url_targets_the_enterprise_api_root() {
-        let client = HttpIssueTrackerClient::github(Some("https://github.example.com"), "t").unwrap();
+        let client =
+            HttpIssueTrackerClient::github(Some("https://github.example.com"), "t").unwrap();
         assert_eq!(client.api_root, "https://github.example.com/api/v3");
     }
 
@@ -383,7 +385,14 @@ mod tests {
     #[test]
     fn build_client_requires_a_base_url_for_forgejo() {
         assert!(build_client(SyncProvider::Forgejo, None, "t").is_err());
-        assert!(build_client(SyncProvider::Forgejo, Some("https://forgejo.example.com"), "t").is_ok());
+        assert!(
+            build_client(
+                SyncProvider::Forgejo,
+                Some("https://forgejo.example.com"),
+                "t"
+            )
+            .is_ok()
+        );
         assert!(build_client(SyncProvider::GitHub, None, "t").is_ok());
     }
 
