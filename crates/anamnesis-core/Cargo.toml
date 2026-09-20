@@ -13,4 +13,4 @@ time = { version = "0.3.55", features = ["macros", "serde"] }
 uuid = { version = "1.25.0", features = ["serde"] }
 
 [dev-dependencies]
-rstest = "0.26.1"
+rstest = "0.27.0"
