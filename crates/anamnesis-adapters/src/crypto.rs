@@ -3,9 +3,8 @@
 //! actually encrypts anything, as opposed to `anamnesis-web::config::Secret`,
 //! which only redacts `Debug` output for values that are never persisted.
 
-use aes_gcm::aead::rand_core::RngCore;
-use aes_gcm::aead::{Aead, KeyInit, OsRng};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::aead::{Aead, Generate, KeyInit, Nonce};
+use aes_gcm::{Aes256Gcm, Key};
 
 use anamnesis_app::{AppError, TokenCipher};
 
@@ -42,15 +41,13 @@ impl std::fmt::Debug for AesGcmTokenCipher {
 
 impl TokenCipher for AesGcmTokenCipher {
     fn encrypt(&self, plaintext: &str) -> Result<Vec<u8>, AppError> {
-        let mut nonce_bytes = [0u8; NONCE_LEN];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from(nonce_bytes);
+        let nonce = Nonce::<Aes256Gcm>::generate();
         let ciphertext = self
             .cipher
             .encrypt(&nonce, plaintext.as_bytes())
             .map_err(|_| AppError::Crypto("failed to encrypt token".to_string()))?;
         let mut out = Vec::with_capacity(NONCE_LEN + ciphertext.len());
-        out.extend_from_slice(&nonce_bytes);
+        out.extend_from_slice(&nonce);
         out.extend(ciphertext);
         Ok(out)
     }
@@ -65,7 +62,7 @@ impl TokenCipher for AesGcmTokenCipher {
         let nonce_bytes: [u8; NONCE_LEN] = nonce_bytes
             .try_into()
             .expect("split_at(NONCE_LEN) guarantees exactly NONCE_LEN bytes");
-        let nonce = Nonce::from(nonce_bytes);
+        let nonce = Nonce::<Aes256Gcm>::from(nonce_bytes);
         let plaintext = self.cipher.decrypt(&nonce, ct).map_err(|_| {
             AppError::Crypto(
                 "failed to decrypt token (wrong encryption key, or the ciphertext was tampered with)"
