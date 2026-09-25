@@ -1,6 +1,6 @@
 [package]
 name = "anamnesis-adapters"
-version = "1.4.0"
+version = "1.7.0"
 edition.workspace = true
 # This is an application crate, not a library anyone should depend on; only
 # `job-lease` in this workspace is meant for crates.io.
@@ -10,8 +10,8 @@ publish = false
 # Token-at-rest encryption for project sync (issues #40/#41):
 # `AesGcmTokenCipher` is the only place this workspace encrypts anything.
 aes-gcm = "0.11.0"
-anamnesis-app = { version = "1.4.0", path = "../anamnesis-app" }
-anamnesis-core = { version = "1.4.0", path = "../anamnesis-core" }
+anamnesis-app = { version = "1.7.0", path = "../anamnesis-app" }
+anamnesis-core = { version = "1.7.0", path = "../anamnesis-core" }
 async-trait = "0.1.92"
 bytes = "1.12.1"
 # `BlobStore::put` reads its caller's `ByteStream`; `FsBlobStore` bridges it
