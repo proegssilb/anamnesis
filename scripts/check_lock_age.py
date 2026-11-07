@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Fail if Cargo.lock gained a crates.io package version younger than N days.
+"""Fail if Cargo.lock gained a crates.io package version younger than N days.
 
 Renovate's `minimumReleaseAge` only governs the requirement Renovate itself
 bumps; the versions Cargo.lock resolves transitively -- or that a manual
