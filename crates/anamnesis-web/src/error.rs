@@ -236,7 +236,7 @@ impl WebError {
         let (status, message) = self.status_and_message();
         let body = templates
             .get_template("error.html")
-            .and_then(|t| t.render(context! { status => status.as_u16(), message => message }))
+            .and_then(|t| t.render(context! { status => status.as_u16(), message => &message }))
             .unwrap_or_else(|_| message.clone());
         (status, Html(body)).into_response()
     }
