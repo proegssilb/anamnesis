@@ -17,7 +17,10 @@ axum-extra = { version = "0.12.6", features = ["cookie", "cookie-signed"] }
 # Wraps the multipart file field as a `ByteStream` (`anamnesis_app::ByteStream`)
 # for streaming straight into `BlobStore::put` without buffering it whole.
 futures-util = "0.3.34"
-minijinja = "3.0.0"
+# `serde` is opt-in from 3.0: domain types (`Area`, `Task`, ...) reach
+# templates through `minijinja::value::Serde` rather than a hand-written
+# `Into<Value>` per type.
+minijinja = { version = "3.0.0", features = ["serde"] }
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
 # Plain HTTP to loopback is all the `--health-check` probe needs, so no TLS
 # features are requested here. `openidconnect` already pulls `reqwest` into

@@ -227,7 +227,7 @@ async fn render_reposition_fragment(
         Some(context! {
             c => column_views[idx].clone(),
             columns => column_views.clone(),
-            csrf_token => user.csrf_token,
+            csrf_token => &user.csrf_token,
             oob => true,
         })
     });
@@ -305,7 +305,7 @@ async fn render_columns_fragment(
         .get_template("_board_columns.html")
         .map_err(WebError::template)?;
     let body = tmpl
-        .render(context! { columns => column_views, csrf_token => user.csrf_token })
+        .render(context! { columns => column_views, csrf_token => &user.csrf_token })
         .map_err(WebError::template)?;
     Ok((status, Html(body)).into_response())
 }
@@ -778,8 +778,8 @@ async fn render_board_page(
             columns => column_views,
             tangles => tangle_views,
             suggestion => suggestion_view,
-            csrf_token => user.csrf_token,
-            current_user => user.display_name,
+            csrf_token => &user.csrf_token,
+            current_user => &user.display_name,
             is_system_admin => is_system_admin,
             error => error,
         })

@@ -99,8 +99,8 @@ async fn search_impl(
             query => trimmed,
             results => results,
             include_archived => include_archived,
-            csrf_token => user.csrf_token,
-            current_user => user.display_name,
+            csrf_token => &user.csrf_token,
+            current_user => &user.display_name,
         })
         .map_err(WebError::template)?;
     Ok(Html(body).into_response())

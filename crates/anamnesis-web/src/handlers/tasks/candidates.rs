@@ -84,7 +84,7 @@ fn render_task_candidates(
                 task_id => task_id.to_string(),
                 query => query,
                 candidates => candidates,
-                csrf_token => user.csrf_token,
+                csrf_token => &user.csrf_token,
             },
         )
     } else {
@@ -95,8 +95,8 @@ fn render_task_candidates(
                 task_title => task_title,
                 query => query,
                 candidates => candidates,
-                csrf_token => user.csrf_token,
-                current_user => user.display_name,
+                csrf_token => &user.csrf_token,
+                current_user => &user.display_name,
             },
         )
     };

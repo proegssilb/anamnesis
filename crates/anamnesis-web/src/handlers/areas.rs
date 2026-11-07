@@ -8,6 +8,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
+use minijinja::value::Serde;
 
 use anamnesis_app::{
     AppError, bulk_create_areas, bulk_create_projects, create_area, create_project, edit_area,
@@ -633,8 +634,8 @@ async fn render_areas_page(
             // (see this function's only two call sites) -- so it doubles as
             // the nav link's admin gate with no extra membership lookup.
             is_system_admin => can_manage,
-            csrf_token => user.csrf_token,
-            current_user => user.display_name,
+            csrf_token => &user.csrf_token,
+            current_user => &user.display_name,
             error => error,
         })
         .map_err(WebError::template)?;
@@ -732,18 +733,18 @@ fn render_area_page(
         .map_err(WebError::template)?;
     let body = tmpl
         .render(context! {
-            area => area,
+            area => Serde(&area),
             area_id => area.id.to_string(),
             description_html => super::markdown::render(area.description.as_str(), user.user_id.as_str()),
             board_sections => board_sections,
             members => members,
             groups => groups,
-            known_groups => panel.known_groups,
+            known_groups => &panel.known_groups,
             known_users => panel.known_users_context(),
             show_groups => panel.show_groups(),
             can_manage => panel.can_manage,
-            csrf_token => user.csrf_token,
-            current_user => user.display_name,
+            csrf_token => &user.csrf_token,
+            current_user => &user.display_name,
             error => error,
         })
         .map_err(WebError::template)?;

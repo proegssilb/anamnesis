@@ -396,12 +396,12 @@ fn render_users_page(
     let body = tmpl
         .render(context! {
             admins => page.admin_context(),
-            admin_groups => page.admin_groups,
-            known_groups => page.known_groups,
+            admin_groups => &page.admin_groups,
+            known_groups => &page.known_groups,
             known_users => page.known_users_context(),
             show_groups => page.show_groups(),
-            csrf_token => user.csrf_token,
-            current_user => user.display_name,
+            csrf_token => &user.csrf_token,
+            current_user => &user.display_name,
             is_system_admin => true,
             error => error,
         })
