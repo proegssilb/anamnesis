@@ -251,5 +251,9 @@ fn static_routes() -> Router<AppState> {
         .route("/static/htmx.min.js", get(static_files::htmx_js))
         .route("/static/sortable.min.js", get(static_files::sortable_js))
         .route("/static/icon.svg", get(static_files::icon))
+        .route(
+            "/static/apple-touch-icon.png",
+            get(static_files::apple_touch_icon),
+        )
         .route("/manifest.webmanifest", get(static_files::manifest))
 }

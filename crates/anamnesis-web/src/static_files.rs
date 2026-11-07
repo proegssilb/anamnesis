@@ -1,5 +1,5 @@
 //! The handful of static assets the app serves: the stylesheet, the PWA
-//! manifest, its icon, and the two vendored client-side libraries
+//! manifest, its icon (plus a PNG raster of it for iOS), and the two vendored client-side libraries
 //! `docs/DOMAIN.md` §8 calls for (`htmx` for transport, `SortableJS` for
 //! drag mechanics — see that section's "Sortable drags, htmx persists"),
 //! plus this app's own small glue script. All are embedded at compile time
@@ -71,6 +71,16 @@ pub async fn icon() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "image/svg+xml")],
         include_str!("../static/icon.svg"),
+    )
+}
+
+/// iOS ignores SVG icons for home-screen bookmarks, so it gets a 180×180
+/// PNG raster of `icon.svg`. It's full-bleed square (no rounded corners) on
+/// purpose: iOS applies its own corner mask and fills transparency with black.
+pub async fn apple_touch_icon() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../static/apple-touch-icon.png").as_slice(),
     )
 }
 
