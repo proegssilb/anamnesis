@@ -14,8 +14,12 @@
 # `cargo-chef` reduces the workspace to a manifest-only "recipe", so the
 # dependency layer is invalidated by Cargo.toml/Cargo.lock changes alone and
 # not by every source edit.
+#
+# Pinned, so an image build never runs a cargo-chef published minutes ago.
+# Renovate bumps this (see the customManagers entry in renovate.json), which
+# holds it to the same 14-day minimumReleaseAge as every other dependency.
 FROM rust:1.98-bookworm AS chef
-RUN cargo install cargo-chef --locked
+RUN cargo install cargo-chef --version 0.1.78 --locked
 WORKDIR /build
 
 FROM chef AS planner
@@ -25,7 +29,9 @@ RUN cargo chef prepare --recipe-path recipe.json
 # --- Build ------------------------------------------------------------------
 FROM chef AS builder
 COPY --from=planner /build/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+# `--locked`, like the build below: build exactly what Cargo.lock says, and
+# fail rather than silently re-resolve if the lockfile is out of date.
+RUN cargo chef cook --release --locked --recipe-path recipe.json
 COPY . .
 RUN cargo build --release --locked --bin anamnesis-web
 
