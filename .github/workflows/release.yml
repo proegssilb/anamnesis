@@ -136,7 +136,7 @@ jobs:
 
       # This action's `stable` ref is a branch, so there is no version tag to
       # name here; it resolves the current stable Rust at run time regardless.
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
