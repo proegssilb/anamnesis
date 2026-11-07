@@ -12,12 +12,20 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Supply-chain gate: `lock-age` and `deny` only read Cargo.lock and package
+  # metadata -- neither compiles anything. Every job that does compile
+  # (`check`, `postgres`, `coverage`) runs dependency build scripts and proc
+  # macros on the runner, so it `needs:` both gates to pass first. Otherwise a
+  # too-new or advisory-flagged dependency would already have executed (with
+  # `coverage`'s CODACY_PROJECT_TOKEN in reach) by the time its check failed.
+
   # fmt + clippy + the full workspace test suite (Postgres contract test
   # excluded here — it is #[ignore]d by default and covered by the
   # `postgres` job below, against a real database).
   check:
     name: fmt, clippy, test (stable)
     runs-on: ubuntu-latest
+    needs: [lock-age, deny]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -105,6 +113,7 @@ jobs:
   postgres:
     name: adapter contract tests (Postgres)
     runs-on: ubuntu-latest
+    needs: [lock-age, deny]
     services:
       postgres:
         image: postgres:18
@@ -143,6 +152,7 @@ jobs:
   coverage:
     name: coverage (Codacy)
     runs-on: ubuntu-latest
+    needs: [lock-age, deny]
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
