@@ -1,0 +1,14 @@
+# Exceptions to the Cargo.lock minimum-release-age check
+# (scripts/check_lock_age.py, run by the `lock-age` job in ci.yml).
+#
+# Every crates.io package version newly added to Cargo.lock must be at least
+# 14 days old -- the same wait renovate.json's `minimumReleaseAge` applies to
+# the requirements Renovate bumps itself. List a version here only to let it
+# in early on purpose, e.g. an urgent security fix, and say why. An entry is
+# matched on exact name and version, so it never lets in a later release; it
+# can be removed once the version is old enough, and a stale one is harmless.
+#
+# [[allow]]
+# name = "some-crate"
+# version = "1.2.3"
+# reason = "RUSTSEC-YYYY-NNNN: fixes ... ; cannot wait out the 14 days"
