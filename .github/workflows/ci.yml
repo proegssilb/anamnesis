@@ -38,6 +38,33 @@ jobs:
       - name: cargo test --workspace
         run: cargo test --workspace
 
+  # Every crates.io package version newly added to Cargo.lock must be at
+  # least 14 days old, matching renovate.json's `minimumReleaseAge`. Renovate
+  # only holds the requirement it bumps to that rule; this catches what the
+  # lockfile resolves transitively, and a manual `cargo update`. Exceptions
+  # go in .github/lock-age-allow.toml with a reason.
+  lock-age:
+    name: Cargo.lock package age
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Full history, so the base revision below is present to diff against.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check newly locked crate versions are at least 14 days old
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "No previous revision to compare against (new branch); skipping."
+            exit 0
+          fi
+          python3 scripts/check_lock_age.py --base "$BASE_SHA"
+
   # Runs the Postgres side of the SqlStore contract (crates/anamnesis-adapters/tests/sql_store_contract.rs),
   # which is #[ignore]d in the default `check` job above. A postgres:16
   # service container backs it; the health-check keeps the job from racing
