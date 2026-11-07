@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use minijinja::context;
+use minijinja::value::Serde;
 
 use anamnesis_app::{
     Attachment, BoardColumn, Comment, list_attachments, list_comments, resolve_kind,
@@ -109,7 +110,7 @@ struct TaskPageContext<'a> {
 /// own, just enumeration.
 fn task_page_context(ctx: TaskPageContext) -> minijinja::Value {
     context! {
-        task => ctx.task,
+        task => Serde(&ctx.task),
         description_html => ctx.description_html,
         project_title => ctx.project_title,
         mentionable_users => ctx.mentionable_users,
@@ -121,12 +122,12 @@ fn task_page_context(ctx: TaskPageContext) -> minijinja::Value {
         parent => ctx.parent,
         children => ctx.children_ctx,
         comments => ctx.comments_ctx,
-        attachments => ctx.attachments,
+        attachments => Serde(ctx.attachments),
         relationships => ctx.relationships,
         column_options => ctx.column_options,
         fields => ctx.fields,
-        csrf_token => ctx.user.csrf_token,
-        current_user => ctx.user.display_name,
+        csrf_token => &ctx.user.csrf_token,
+        current_user => &ctx.user.display_name,
         error => ctx.error,
         max_body_bytes => ctx.max_body_bytes,
     }
@@ -228,7 +229,7 @@ fn build_comment_origin_context(origin: &anamnesis_app::CommentOrigin) -> miniji
     };
     context! {
         provider_label => provider_label,
-        external_url => origin.external_url,
+        external_url => &origin.external_url,
     }
 }
 

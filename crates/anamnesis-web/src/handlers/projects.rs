@@ -8,6 +8,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
+use minijinja::value::Serde;
 use serde::Deserialize;
 
 use anamnesis_app::{
@@ -664,21 +665,21 @@ fn render_project_page(
         .map_err(WebError::template)?;
     let body = tmpl
         .render(context! {
-            project => aggregate.project,
+            project => Serde(&aggregate.project),
             project_id => aggregate.project.id.to_string(),
             description_html => description_html,
             board_sections => board_sections,
             fields => fields,
             members => members,
             groups => groups,
-            known_groups => panel.known_groups,
+            known_groups => &panel.known_groups,
             known_users => panel.known_users_context(),
             mentionable_users => mentionable_users,
             show_groups => panel.show_groups(),
             can_manage => panel.can_manage,
             sync_config => sync_config,
-            csrf_token => user.csrf_token,
-            current_user => user.display_name,
+            csrf_token => &user.csrf_token,
+            current_user => &user.display_name,
             error => error,
             open_hint => open_hint,
         })
@@ -698,13 +699,13 @@ fn build_sync_config_context(config: &anamnesis_app::ProjectSyncConfig) -> minij
     context! {
         provider => provider,
         base_url => config.base_url.clone().unwrap_or_default(),
-        owner => config.owner,
-        repo => config.repo,
+        owner => &config.owner,
+        repo => &config.repo,
         enabled => config.enabled,
         auto_import_new_issues => config.auto_import_new_issues,
         auto_push_new_tasks => config.auto_push_new_tasks,
         last_synced_at => config.last_synced_at.map(|t| t.unix_seconds()),
-        last_sync_error => config.last_sync_error,
+        last_sync_error => &config.last_sync_error,
     }
 }
 
@@ -961,7 +962,7 @@ fn sort_header_views(
         .map(|(field, label)| {
             let active = *field == sort;
             context! {
-                label => label,
+                label => *label,
                 indicator => match (active, dir_desc) {
                     (false, _) => "",
                     (true, false) => " \u{25b2}",
@@ -1036,13 +1037,13 @@ async fn list_projects_impl(
             projects => project_row_views(&projects, &area_titles),
             areas => area_options,
             status => params.status.as_str(),
-            area => params.area,
+            area => &params.area,
             include_archived => !params.archived.is_empty(),
             sort => sort,
             dir => if dir_desc { "desc" } else { "asc" },
             sort_headers => sort_header_views(&params, sort, dir_desc),
-            csrf_token => user.csrf_token,
-            current_user => user.display_name,
+            csrf_token => &user.csrf_token,
+            current_user => &user.display_name,
             is_system_admin => admin,
         })
         .map_err(WebError::template)?;

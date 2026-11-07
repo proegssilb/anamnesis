@@ -184,8 +184,8 @@ fn render_settings_page(
         .map_err(WebError::template)?;
     let body = tmpl
         .render(context! {
-            csrf_token => user.csrf_token,
-            current_user => user.display_name,
+            csrf_token => &user.csrf_token,
+            current_user => &user.display_name,
             is_system_admin => true,
             active_project_limit => settings.active_project_limit,
             cooldown_seconds => settings.suggestion.cooldown_seconds,
