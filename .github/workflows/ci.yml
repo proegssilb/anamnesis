@@ -12,12 +12,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Supply-chain gate: `lock-age` and `deny` only read Cargo.lock and package
-  # metadata -- neither compiles anything. Every job that does compile
-  # (`check`, `postgres`, `coverage`) runs dependency build scripts and proc
-  # macros on the runner, so it `needs:` both gates to pass first. Otherwise a
-  # too-new or advisory-flagged dependency would already have executed (with
-  # `coverage`'s CODACY_PROJECT_TOKEN in reach) by the time its check failed.
+  # Supply-chain gate: `lock-age`, `deny` and `socket` only read Cargo.lock,
+  # Cargo.toml and package metadata -- none of them compiles anything. Every
+  # job that does compile (`check`, `postgres`, `coverage`) runs dependency
+  # build scripts and proc macros on the runner, so it `needs:` all three
+  # gates to pass first. Otherwise a too-new, advisory-flagged or
+  # Socket-flagged dependency would already have executed (with `coverage`'s
+  # CODACY_PROJECT_TOKEN in reach) by the time its check failed.
 
   # fmt + clippy + the full workspace test suite (Postgres contract test
   # excluded here — it is #[ignore]d by default and covered by the
@@ -25,7 +26,7 @@ jobs:
   check:
     name: fmt, clippy, test (stable)
     runs-on: ubuntu-latest
-    needs: [lock-age, deny]
+    needs: [lock-age, deny, socket]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -106,6 +107,51 @@ jobs:
       - name: cargo deny check
         run: cargo deny --locked check advisories bans sources
 
+  # Socket.dev behavioral analysis of the dependency tree: malware, install/
+  # build scripts, network and filesystem access, obfuscation, maintainer
+  # changes -- the "nobody has looked at this new version" gap that the age
+  # gate and RustSec advisories don't cover. `socket ci` (= `socket scan
+  # create --report`) uploads the manifests it finds (Cargo.toml/Cargo.lock;
+  # no --auto-manifest, so it runs no build tooling), waits for the verdict,
+  # and exits non-zero if any alert hits a policy action of `error` in the
+  # Socket org's security policy.
+  #
+  # The token comes from the SOCKET_CLI_API_TOKEN repository secret (the
+  # variable the CLI reads first; no `socket login` needed). Without it the
+  # job fails rather than passing unscanned -- including on PRs from forks,
+  # which don't receive secrets.
+  socket:
+    name: Socket dependency scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned CLI version (Renovate bumps it, subject to the 14-day
+      # minimumReleaseAge). The pin alone doesn't age-gate the CLI's own
+      # transitive npm dependencies, which are version ranges, so --before
+      # caps resolution at packages published 14+ days ago. --ignore-scripts:
+      # nothing in the tree runs install scripts. --omit=optional skips the
+      # prebuilt native `socket-patch` binaries, which `socket ci` doesn't use.
+      - name: Install Socket CLI
+        run: |
+          npm install --global --ignore-scripts --omit=optional --no-audit --no-fund \
+            --before="$(date -u -d '14 days ago' +%Y-%m-%dT%H:%M:%SZ)" \
+            socket@1.10.1
+
+      - name: socket ci
+        env:
+          SOCKET_CLI_API_TOKEN: ${{ secrets.SOCKET_CLI_API_TOKEN }}
+        run: |
+          if [ -z "$SOCKET_CLI_API_TOKEN" ]; then
+            echo "::error::SOCKET_CLI_API_TOKEN secret is not available to this run; refusing to pass unscanned."
+            exit 1
+          fi
+          socket ci
+
   # Runs the Postgres side of the SqlStore contract (crates/anamnesis-adapters/tests/sql_store_contract.rs),
   # which is #[ignore]d in the default `check` job above. A postgres:16
   # service container backs it; the health-check keeps the job from racing
@@ -113,7 +159,7 @@ jobs:
   postgres:
     name: adapter contract tests (Postgres)
     runs-on: ubuntu-latest
-    needs: [lock-age, deny]
+    needs: [lock-age, deny, socket]
     services:
       postgres:
         image: postgres:18
@@ -152,7 +198,7 @@ jobs:
   coverage:
     name: coverage (Codacy)
     runs-on: ubuntu-latest
-    needs: [lock-age, deny]
+    needs: [lock-age, deny, socket]
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
