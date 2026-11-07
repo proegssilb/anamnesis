@@ -1,0 +1,49 @@
+# cargo-deny configuration, run by the `deny` job in .github/workflows/ci.yml
+# (`cargo deny check advisories bans sources`).
+# Reference: https://embarkstudios.github.io/cargo-deny/checks/cfg.html
+
+[graph]
+all-features = true
+
+# RustSec advisory database. Any vulnerability advisory against a crate in
+# Cargo.lock fails the check. Do not silence one with `ignore` unless it
+# demonstrably does not apply to how this workspace uses the crate, and say
+# why next to the ID.
+[advisories]
+version = 2
+# Unmaintained-crate notices fail too, for direct and transitive
+# dependencies alike: they are how RustSec flags a crate that will not get
+# the next security fix.
+unmaintained = "all"
+# A yanked version in Cargo.lock was withdrawn by its own author; never ship
+# one knowingly.
+yanked = "deny"
+ignore = [
+    # Marvin Attack: `rsa`'s private-key operations (decrypt/sign) leak
+    # timing. No patched release exists. It does not apply here: in the
+    # shipped binary `rsa` is reached only through `openidconnect`, and only
+    # to *verify* ID-token signatures with the provider's public JWKS keys --
+    # anamnesis holds no RSA private key and authenticates to the provider
+    # with a client secret, so there is no private-key operation to time.
+    # The one private-key use is the dev-dependency in
+    # anamnesis-adapters/tests/identity_provider.rs, which signs test tokens
+    # with a throwaway key generated in-process -- the local, offline use the
+    # advisory itself calls fine. Revisit if anamnesis ever signs or
+    # decrypts with RSA (e.g. `private_key_jwt` client auth or encrypted ID
+    # tokens), and drop this once a patched `rsa` is in Cargo.lock.
+    { id = "RUSTSEC-2023-0071", reason = "rsa used only for public-key JWT verification in production; private key only in offline tests" },
+]
+
+# Only crates.io. A dependency from any other registry or straight from a
+# git repository bypasses both crates.io's immutability and the 14-day age
+# gate (scripts/check_lock_age.py), so it must be a deliberate change here.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+# Not used as a ban list: duplicate versions are reported for information
+# only, since most come from upstream crates' own requirements.
+[bans]
+multiple-versions = "warn"

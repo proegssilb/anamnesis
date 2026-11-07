@@ -67,6 +67,37 @@ jobs:
           fi
           python3 scripts/check_lock_age.py --base "$BASE_SHA"
 
+  # RustSec advisories against Cargo.lock, and crates.io as the only allowed
+  # source. Policy and any advisory exceptions live in deny.toml.
+  deny:
+    name: cargo-deny (advisories, sources)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # cargo-deny reads the dependency graph via `cargo metadata`, so it
+      # needs a cargo new enough for this workspace's manifests.
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      # The same install-action pin as the coverage job (the `tool` input
+      # overrides that ref's cargo-llvm-cov default). Its pinned manifest
+      # carries the SHA-256 of the cargo-deny release binary and verifies it;
+      # `fallback: none` makes it fail rather than fall back to an
+      # unverified cargo-binstall if that version were ever missing.
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@ea647c55f74bb153499600c054578c0d83fa19d5 # cargo-llvm-cov
+        with:
+          tool: cargo-deny@0.20.2
+          fallback: none
+
+      - name: cargo deny check
+        run: cargo deny --locked check advisories bans sources
+
   # Runs the Postgres side of the SqlStore contract (crates/anamnesis-adapters/tests/sql_store_contract.rs),
   # which is #[ignore]d in the default `check` job above. A postgres:16
   # service container backs it; the health-check keeps the job from racing
