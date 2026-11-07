@@ -17,6 +17,18 @@
       ],
       "datasourceTemplate": "crate",
       "depNameTemplate": "cargo-chef"
+    },
+    {
+      "customType": "regex",
+      "description": "Socket CLI version installed in the CI workflow",
+      "managerFilePatterns": [
+        "/(^|/)\\.github/workflows/ci\\.yml$/"
+      ],
+      "matchStrings": [
+        "\\bsocket@(?<currentValue>\\d+\\.\\d+\\.\\d+)\\b"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "socket"
     }
   ]
 }
