@@ -1,0 +1,46 @@
+# Prospector profile for Codacy (Prospector 1.19.1 on Codacy as of 2026-11).
+#
+# Codacy only reads this once "Configuration file" is switched on for
+# Prospector under the repository's Code patterns page. From then on this file,
+# not the Code patterns page, decides which of Prospector's sub-tools run, so
+# it has to mirror what the Codacy UI enabled before: dodgy, mccabe,
+# profile-validator, pycodestyle, pydocstyle and pyflakes on; pylint off (Codacy
+# runs Pylint as its own tool); bandit, mypy, pyright, pyroma and vulture off
+# (optional tools, off unless enabled).
+#
+# The reason this file exists: Codacy exposes Prospector's pydocstyle as a
+# single on/off pattern, and it runs every pydocstyle check -- including both
+# halves of pydocstyle's two mutually exclusive pairs, so any multi-line
+# docstring or class docstring fails one rule of each pair whichever way it is
+# written. The only way to keep docstring checking without that is to disable
+# one rule per pair here.
+
+strictness: medium
+doc-warnings: true
+test-warnings: false
+autodetect: true
+
+pylint:
+  run: false
+
+pycodestyle:
+  run: true
+
+pyflakes:
+  run: true
+
+mccabe:
+  run: true
+
+dodgy:
+  run: true
+
+pydocstyle:
+  run: true
+  disable:
+    # D212 ("summary on the first line") vs D213 ("summary on the second
+    # line"): keep D212, the PEP 257 layout this repo's Python already uses.
+    - D213
+    # D211 ("no blank line before a class docstring") vs D203 ("one blank
+    # line before it"): keep D211, which matches PEP 257 and black's output.
+    - D203
