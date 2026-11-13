@@ -2,6 +2,11 @@
 # GHCR, plus stripped binaries attached to the GitHub Release so a VM
 # install needs no Rust toolchain (see docs/DEPLOYMENT.md).
 #
+# This repository on GitHub is a push mirror of the Forgejo one, where
+# development and CI happen (.forgejo/workflows/). The tag arrives here with
+# the mirror push; .forgejo/workflows/release.yml publishes the same tag to
+# Forgejo's own registry and releases.
+#
 # Every third-party action is pinned to a full commit SHA with its version in
 # a trailing comment. A tag is a mutable pointer -- whoever controls the
 # action's repository can move `v3` -- and this workflow holds a token that can

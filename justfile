@@ -54,7 +54,8 @@ test-adapters:
     cargo test -p anamnesis-adapters
 
 # anamnesis-adapters — SqlStore contract, Postgres side (needs a running
-# Postgres; defaults match .github/workflows/ci.yml's service container).
+# Postgres; user, password and database match the service container in
+# .forgejo/workflows/ci.yml, which CI reaches by service name, not localhost).
 test-adapters-pg pg_url="postgres://anamnesis:anamnesis@localhost:5432/anamnesis_test":
     ANAMNESIS_TEST_PG_URL="{{pg_url}}" cargo test -p anamnesis-adapters --test sql_store_contract -- --ignored
 

@@ -5,6 +5,10 @@
     "helpers:pinGitHubActionDigests"
   ],
   "minimumReleaseAge": "14 days",
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "labels": ["security"]
+  },
   "customManagers": [
     {
       "customType": "regex",
@@ -22,7 +26,7 @@
       "customType": "regex",
       "description": "Socket CLI version installed in the CI workflow",
       "managerFilePatterns": [
-        "/(^|/)\\.github/workflows/ci\\.yml$/"
+        "/(^|/)\\.forgejo/workflows/ci\\.yml$/"
       ],
       "matchStrings": [
         "\\bsocket@(?<currentValue>\\d+\\.\\d+\\.\\d+)\\b"

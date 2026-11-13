@@ -267,9 +267,10 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-CI (`.github/workflows/ci.yml`) runs all of the above on every push and pull
-request, including the Postgres side of the adapter contract test against a
-real `postgres:16` service container.
+CI (`.forgejo/workflows/ci.yml`, on the self-hosted Forgejo instance where
+development happens; GitHub is a public mirror that publishes releases) runs
+all of the above on every push and pull request, including the Postgres side
+of the adapter contract test against a real `postgres:18` service container.
 
 ## Architecture
 

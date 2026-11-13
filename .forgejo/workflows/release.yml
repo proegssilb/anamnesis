@@ -1,0 +1,117 @@
+# Publishes a release on a version tag, on Forgejo: a multi-arch container
+# image to this instance's registry, plus stripped binaries attached to the
+# Forgejo release.
+#
+# The public side is separate. Forgejo push-mirrors every ref to GitHub, and
+# the tag arriving there runs .github/workflows/release.yml, which publishes
+# the same version to GHCR and GitHub Releases on GitHub's native runners.
+# The two builds are independent: same source, same Dockerfile, but not
+# bit-identical images.
+#
+# Every third-party action is pinned to a full commit SHA with its version in
+# a trailing comment. This job holds a token that can push images and write
+# releases, so a moved tag would be a supply-chain compromise of exactly the
+# artifacts users install. Bump the SHA and the comment together.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: code.i.xenrelay.com
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # One job, both architectures. runner01 is amd64; arm64 builds under QEMU
+  # (binfmt on the runner VM), which is slow but only runs on a tag. The
+  # registry build cache keeps the dependency layer between releases, so only
+  # a Cargo.lock change pays the emulated dependency build again.
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      # Full history: the release notes list commits since the previous tag.
+      - uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: https://github.com/docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: https://github.com/docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: https://github.com/docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - id: build
+        uses: https://github.com/docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+
+      # The binaries are the ones inside the image just pushed, copied out of
+      # each platform's manifest: no second compile, and the release assets
+      # are exactly what the image runs. These are what
+      # deploy/cloud-init/user-data.example.yaml downloads (from GitHub).
+      - name: Extract binaries from the image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p dist
+          for pair in amd64:x86_64 arm64:aarch64; do
+            platform="${pair%%:*}" arch="${pair##*:}"
+            out="dist/anamnesis-web-${arch}-unknown-linux-gnu"
+            cid=$(docker create --platform "linux/${platform}" "$IMAGE")
+            docker cp "$cid:/usr/local/bin/anamnesis-web" "$out"
+            docker rm "$cid" >/dev/null
+            (cd dist && sha256sum "$(basename "$out")" > "$(basename "$out").sha256")
+          done
+          ls -l dist
+
+      - name: Create the Forgejo release
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prev=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          {
+            echo "Image: \`${REGISTRY}/${IMAGE_NAME}:${TAG#v}\`"
+            echo
+            echo "## Changes${prev:+ since $prev}"
+            echo
+            git log --no-merges --format='- %s (%h)' ${prev:+"$prev.."}"$TAG"
+          } > notes.md
+          prerelease=false
+          case "$TAG" in *-*) prerelease=true ;; esac
+          id=$(jq -n --arg tag "$TAG" --rawfile body notes.md --argjson pre "$prerelease" \
+                 '{tag_name: $tag, name: $tag, body: $body, prerelease: $pre}' \
+               | curl -sSf -X POST -H "Authorization: token $TOKEN" \
+                   -H 'Content-Type: application/json' --data @- "$API/releases" \
+               | jq -r .id)
+          for f in dist/*; do
+            curl -sSf -X POST -H "Authorization: token $TOKEN" \
+              -F "attachment=@$f" "$API/releases/$id/assets?name=$(basename "$f")" > /dev/null
+            echo "attached $(basename "$f")"
+          done

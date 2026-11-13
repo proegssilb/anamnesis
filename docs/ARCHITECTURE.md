@@ -536,5 +536,5 @@ files cannot, because they fail.
 defines the behavioural assertions once and calls them from both a SQLite
 test (always runs) and a Postgres test (`#[ignore]`d unless
 `ANAMNESIS_TEST_PG_URL` is set — see the Postgres job in
-`.github/workflows/ci.yml`), so a bug in one backend's SQL that the other
+`.forgejo/workflows/ci.yml`), so a bug in one backend's SQL that the other
 gets right cannot silently pass — the same assertions run against both.

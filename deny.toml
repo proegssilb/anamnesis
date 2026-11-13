@@ -1,4 +1,4 @@
-# cargo-deny configuration, run by the `deny` job in .github/workflows/ci.yml
+# cargo-deny configuration, run by the `deny` job in .forgejo/workflows/ci.yml
 # (`cargo deny check advisories bans sources`).
 # Reference: https://embarkstudios.github.io/cargo-deny/checks/cfg.html
 
