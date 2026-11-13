@@ -32,6 +32,29 @@ ignore = [
     # decrypts with RSA (e.g. `private_key_jwt` client auth or encrypted ID
     # tokens), and drop this once a patched `rsa` is in Cargo.lock.
     { id = "RUSTSEC-2023-0071", reason = "rsa used only for public-key JWT verification in production; private key only in offline tests" },
+    # ammonia mutation XSS via MathML/SVG namespace confusion. Exploitable only
+    # when the sanitizer allows one of HTML's raw-text elements (title,
+    # textarea, xmp, iframe, noembed, noframes, plaintext, noscript, style,
+    # script) as the gadget. anamnesis-web's markdown renderer allows none of
+    # them, nor `math` or `svg` (ALLOWED_TAGS in handlers/markdown.rs), and
+    # `strip_html` allows no tags at all. The fix, 4.2.5, was published the
+    # same day as the advisory (2026-11-13), so it is not taken early past
+    # the 14-day age gate for a vulnerability that does not apply. Drop this
+    # once 4.2.5 is in Cargo.lock; revisit at once if ALLOWED_TAGS ever gains
+    # a raw-text element, `math`, or `svg`.
+    { id = "RUSTSEC-2026-0533", reason = "no raw-text element, math or svg is in ammonia's allowlist; fix not yet 14 days old" },
+    # Bundled SQLite (< 3.54.0) can return uninitialized page-cache memory
+    # when opening a database together with a `-wal` file that a less trusted
+    # party wrote. anamnesis opens only the databases at its own
+    # operator-configured URL (ANAMNESIS_DATABASE_URL and the lease database
+    # derived from it), in its own state directory; nothing user-supplied is
+    # ever opened as SQLite. The fix needs libsqlite3-sys >= 0.39, and
+    # sqlx-sqlite 0.9.0, the newest release, caps it below 0.38 -- there is
+    # nothing to upgrade to yet. Drop this when an sqlx release allows
+    # libsqlite3-sys >= 0.39 and Cargo.lock has it; revisit at once if
+    # anamnesis ever opens a database file it did not create (e.g. a restore
+    # or import feature).
+    { id = "RUSTSEC-2026-0459", reason = "only operator-configured databases are opened; no sqlx release allows the fixed libsqlite3-sys yet" },
 ]
 
 # Only crates.io. A dependency from any other registry or straight from a
