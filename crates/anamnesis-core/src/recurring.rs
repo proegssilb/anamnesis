@@ -120,8 +120,12 @@ pub fn fire(
         if !up && !stale {
             placement = entry_end;
         }
-        // A stale window stays below with nothing left to expire.
-        recurrence.expires_at = if stale { None } else { firing.expires_at };
+        // If the user already has it up, never arm an expiry that would pull
+        // it down later: keep whatever expiry it had. A stale window stays
+        // below with nothing left to expire.
+        if !up {
+            recurrence.expires_at = if stale { None } else { firing.expires_at };
+        }
     } else {
         recurrence.due_since = recurrence.due_since.or(Some(now));
     }
@@ -273,7 +277,18 @@ mod tests {
         let t = on_board(recurring(true));
         let fired = fire(&t, false, entry_end(), firing(Some(900)), ts(200));
         assert_eq!(fired.placement, t.placement);
-        assert_eq!(rec(&fired).expires_at, Some(ts(900)));
+        assert_eq!(rec(&fired).next_due_at, Some(ts(1000)));
+    }
+
+    #[test]
+    fn fire_on_already_up_deadline_chore_does_not_arm_expiry() {
+        let t = on_board(recurring(true));
+        let fired = fire(&t, false, entry_end(), firing(Some(900)), ts(200));
+        assert_eq!(rec(&fired).expires_at, None);
+        let mut armed = t.clone();
+        armed.recurrence.as_mut().unwrap().expires_at = Some(ts(50));
+        let kept = fire(&armed, false, entry_end(), firing(Some(900)), ts(200));
+        assert_eq!(rec(&kept).expires_at, Some(ts(50)));
     }
 
     #[test]
