@@ -51,8 +51,8 @@ pub use relationship::{
     create_relationship, create_relationship_kind, is_blocking,
 };
 pub use schedule::{
-    Anchor, MonthDay, Nth, PopIn, Rule, Schedule, ScheduleError, WeekdaySet, first_start,
-    next_occurrence, upcoming,
+    Anchor, MonthDay, Nth, ParseError, PopIn, Rule, Schedule, ScheduleError, WeekdaySet, describe,
+    first_start, next_occurrence, parse, upcoming,
 };
 pub use suggest::{
     Blockage, BlockingGraph, BoardState, Offer, OfferItem, Outcome, SuggestionReason,

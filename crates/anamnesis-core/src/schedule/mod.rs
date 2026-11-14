@@ -11,6 +11,10 @@
 //!   (or on `set_on` if never completed). `after` is ignored on purpose: an
 //!   after-done chore stays due until it is completed.
 
+mod grammar;
+
+pub use grammar::{ParseError, describe, parse};
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::{Date, Duration, Month, Time, Weekday};
