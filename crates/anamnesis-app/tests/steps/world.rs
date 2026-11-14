@@ -204,6 +204,7 @@ impl AppWorld {
                 last_offered_at: None,
                 bounce_count: 0,
                 due_since: None,
+                is_deadline_chore: false,
             },
         );
     }

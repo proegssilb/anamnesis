@@ -72,6 +72,11 @@ pub struct TaskSummary {
     /// everything else. A due chore skips the offer cooldown and competes
     /// for the due slot.
     pub due_since: Option<Timestamp>,
+    /// A recurring task whose schedule has a pop-in time. It reaches the
+    /// board only by firing (or by the user raising it), never as a
+    /// suggestion: a trash chore whose window closed is not offered on
+    /// Thursday.
+    pub is_deadline_chore: bool,
 }
 
 impl TaskSummary {
@@ -89,6 +94,10 @@ impl TaskSummary {
             last_offered_at: task.last_offered_at,
             bounce_count: task.bounce_count,
             due_since: task.recurrence.as_ref().and_then(|r| r.due_since),
+            is_deadline_chore: task
+                .recurrence
+                .as_ref()
+                .is_some_and(|r| r.schedule.is_deadline()),
         }
     }
 }
@@ -225,7 +234,8 @@ pub struct Offer {
 /// qualified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Blockage {
-    /// There is no task below the horizon at all.
+    /// There is no task below the horizon at all — deadline chores aside,
+    /// which are never suggested.
     BacklogEmpty,
     /// The backlog is non-empty, but none of it belongs to an `Active`
     /// project.
@@ -258,12 +268,18 @@ fn is_eligible(
     tangled_ids: &BTreeSet<TaskId>,
     settings: &SuggestionSettings,
 ) -> bool {
-    !candidate.archived
-        && candidate.placement.is_below()
+    is_backlog(candidate)
         && candidate.project_status == ProjectStatus::Active
         && !graph.is_blocked(candidate.task_id)
         && !tangled_ids.contains(&candidate.task_id)
         && (candidate.due_since.is_some() || off_cooldown(candidate, now, settings))
+}
+
+/// Below the horizon and available to suggest at all. A deadline chore is
+/// not: it reaches the board only by firing, so to the engine it is not
+/// part of the backlog (and a backlog of nothing else reads as empty).
+fn is_backlog(candidate: &TaskSummary) -> bool {
+    !candidate.archived && candidate.placement.is_below() && !candidate.is_deadline_chore
 }
 
 fn off_cooldown(candidate: &TaskSummary, now: Timestamp, settings: &SuggestionSettings) -> bool {
@@ -283,12 +299,11 @@ fn diagnose(
     graph: &BlockingGraph,
     tangled_ids: &BTreeSet<TaskId>,
 ) -> Blockage {
-    let live: Vec<&TaskSummary> = candidates.iter().filter(|c| !c.archived).collect();
-    let below: Vec<&&TaskSummary> = live.iter().filter(|c| c.placement.is_below()).collect();
+    let below: Vec<&TaskSummary> = candidates.iter().filter(|c| is_backlog(c)).collect();
     if below.is_empty() {
         return Blockage::BacklogEmpty;
     }
-    let active: Vec<&&&TaskSummary> = below
+    let active: Vec<&&TaskSummary> = below
         .iter()
         .filter(|c| c.project_status == ProjectStatus::Active)
         .collect();
@@ -703,6 +718,7 @@ mod tests {
             last_offered_at: None,
             bounce_count: 0,
             due_since: None,
+            is_deadline_chore: false,
         }
     }
 
@@ -783,6 +799,7 @@ mod tests {
             last_offered_at: None,
             bounce_count: 0,
             due_since: None,
+            is_deadline_chore: false,
         }];
         let outcome = suggest(
             ts(100),
@@ -1481,6 +1498,50 @@ mod tests {
             &settings(),
         );
         assert_eq!(outcome, Outcome::Stuck(Blockage::NoActiveProject));
+    }
+
+    fn missed_trash(id: u128) -> TaskSummary {
+        TaskSummary {
+            is_deadline_chore: true,
+            ..below_task(id, 0)
+        }
+    }
+
+    #[test]
+    fn a_deadline_chore_below_the_horizon_is_never_suggested() {
+        let candidates = vec![missed_trash(1), below_task(2, 0)];
+        for seed in 0..50 {
+            let outcome = suggest(
+                ts(1_000_000),
+                seed,
+                &wide_board(),
+                &candidates,
+                &empty_graph(),
+                &settings(),
+            );
+            let offered: Vec<TaskId> = offer_of(outcome)
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    OfferItem::Task(t) => Some(t.task_id),
+                    OfferItem::Tangle(_) => None,
+                })
+                .collect();
+            assert_eq!(offered, vec![tid(2)], "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn a_backlog_of_only_deadline_chores_reads_as_empty() {
+        let outcome = suggest(
+            ts(1_000_000),
+            1,
+            &wide_board(),
+            &[missed_trash(1)],
+            &empty_graph(),
+            &settings(),
+        );
+        assert_eq!(outcome, Outcome::Stuck(Blockage::BacklogEmpty));
     }
 
     fn due_slot_fraction(percent: u8) -> f64 {

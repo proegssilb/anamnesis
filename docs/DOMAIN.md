@@ -291,6 +291,7 @@ actionable:
 ### Eligibility (all must hold)
 - not archived
 - `placement == Below`
+- not a deadline chore (a schedule with a pop-in time): those reach the board only by firing, so a missed trash night is never offered later
 - owning project `status == Active`
 - **unblocked**: no incoming `blocks` edge from a task that is not Done
 - **not in an unresolved Tangle** — a knotted task is not actionable
@@ -674,7 +675,7 @@ and it fires on the first tick after reactivation. An already-up, unfinished
 task keeps its placement and its existing expiry — expiring a card the user
 raised themselves would be the clock overriding them. A deadline chore whose
 window has already closed at catch-up is skipped to its next occurrence, not
-shown stale; a missed trash night quietly goes away.
+shown stale; a missed trash night quietly goes away — and stays away: deadline chores are never suggestion candidates, so it isn't offered (or bounced) on Thursday.
 
 **Calendar phase from the first occurrence, not the epoch.** For "every 2
 weeks on tue", the on-cycle week is the one containing the first matching date
