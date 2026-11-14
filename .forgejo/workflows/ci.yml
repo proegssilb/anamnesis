@@ -145,7 +145,7 @@ jobs:
         run: |
           npm install --global --ignore-scripts --omit=optional --no-audit --no-fund \
             --before="$(date -u -d '14 days ago' +%Y-%m-%dT%H:%M:%SZ)" \
-            socket@1.12.1
+            socket@1.12.2
 
       - name: socket ci
         env:
