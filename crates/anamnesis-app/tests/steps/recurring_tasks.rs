@@ -166,6 +166,15 @@ async fn a_task_that_was_archived(world: &mut AppWorld, task_name: String) {
     world.domain.seed_task(archived);
 }
 
+/// Archived in place, schedule untouched — what a sync-closed issue does,
+/// unlike archiving from the task page (which pauses the schedule).
+#[given(regex = r#"^"([^"]+)" was archived where it stood$"#)]
+async fn archived_where_it_stood(world: &mut AppWorld, task_name: String) {
+    let task = world.domain_task_state(&task_name);
+    let archived = anamnesis_core::archive_task(&task, world.clock.now()).unwrap();
+    world.domain.seed_task(archived);
+}
+
 #[given(regex = r#"^"([^"]+)" repeats "([^"]+)"$"#)]
 async fn repeats(world: &mut AppWorld, task_name: String, phrase: String) {
     world.set_domain_role("the scenario", Some(Role::SystemAdmin));

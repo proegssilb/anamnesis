@@ -141,6 +141,17 @@ Feature: Recurring tasks
     And task "Take out the trash" is on the board in "To-Do"
     And "Done" holds 0 items
 
+  Scenario: A chore archived where it stood on the board comes back below, not in place
+    Given a task "Something else" below the horizon in active project "Household"
+    And a task "Vacuum the stairs" on the board in "To-Do"
+    And "Vacuum the stairs" repeats "every sat"
+    And "Vacuum the stairs" was archived where it stood
+    When it is Saturday 2026-11-21 at 9:00am and recurring tasks are checked
+    Then task "Vacuum the stairs" is not archived
+    And "Vacuum the stairs" is below the horizon
+    And "Vacuum the stairs" is due
+    And "To-Do" holds 0 items
+
   Scenario: A 2:30am pop-in on spring-forward day fires at 3:30am
     Given it is Saturday 2027-03-13 at 9:00am
     And a task "Water the seedlings" below the horizon in active project "Household"

@@ -105,8 +105,12 @@ pub fn record_completion(task: &Task, now: Timestamp, next_due_at: Option<Timest
     })
 }
 
+/// On the board, outside a done column, and not archived. An archived task
+/// can still hold an on-board placement (a sync-closed issue is archived
+/// where it stands), but it is off the board as far as anyone can see, so
+/// firing must place it afresh rather than un-archive it in place.
 fn is_up_and_unfinished(task: &Task, in_done_column: bool) -> bool {
-    task.placement.is_on_board() && !in_done_column
+    task.archived_at.is_none() && task.placement.is_on_board() && !in_done_column
 }
 
 /// Fires a due occurrence. `entry_end` is the end of the board's entry
@@ -290,6 +294,20 @@ mod tests {
         let fired = fire(&t, false, entry_end(), firing(Some(900)), ts(200));
         assert_eq!(fired.placement, t.placement);
         assert_eq!(rec(&fired).next_due_at, Some(ts(1000)));
+    }
+
+    #[test]
+    fn an_archived_task_left_on_the_board_is_not_up() {
+        let interval = archive_task(&on_board(recurring(false)), ts(50)).unwrap();
+        let fired = fire(&interval, false, entry_end(), firing(None), ts(200));
+        assert_eq!(fired.archived_at, None);
+        assert_eq!(fired.placement, Placement::Below);
+        assert_eq!(rec(&fired).due_since, Some(ts(200)));
+
+        let deadline = archive_task(&on_board(recurring(true)), ts(50)).unwrap();
+        let fired = fire(&deadline, false, entry_end(), firing(Some(900)), ts(200));
+        assert_eq!(fired.placement, entry_end());
+        assert_eq!(rec(&fired).expires_at, Some(ts(900)));
     }
 
     #[test]
