@@ -44,11 +44,17 @@ jobs:
 
       - uses: https://github.com/docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      # Not the automatic job token: Forgejo lets it log in to the registry
+      # but answers its first blob upload with 401 (v1.8.2-rc.1's run). The
+      # image lives in the repository owner's namespace, which only the owner
+      # can write, so REGISTRY_TOKEN is an owner token scoped to packages
+      # (write:package) and nothing else. The release itself is still created
+      # with the automatic token below.
       - uses: https://github.com/docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
 
       - id: meta
         uses: https://github.com/docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
