@@ -20,9 +20,12 @@
 use anamnesis_core::policy::Role;
 use anamnesis_core::{self as core, ColumnId, Placement, TangleId, TaskId};
 
+use super::recurring::{DoneColumns, record_recurring_completion};
 use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
-use crate::ports::{BoardColumn, BoardItem, BoardQuery, Clock, TangleRepository, TaskRepository};
+use crate::ports::{
+    BoardColumn, BoardItem, BoardQuery, Clock, TangleRepository, TaskRepository, TimezoneResolver,
+};
 
 /// Which kind of board item [`reposition_board_item`] is moving — the two
 /// variants of [`BoardItem`], but carrying just the id a caller already has
@@ -50,12 +53,18 @@ fn identity_of(item: &BoardItem) -> BoardItemKind {
 /// The WIP limit is checked only when `item` is not already in `column`
 /// (reordering within a column already at its limit must still work,
 /// exactly like `crate::use_cases::task::raise_task`'s own exemption).
+///
+/// Dragging a recurring task into a done column from outside one completes
+/// it, exactly as raising it there does (`crate::use_cases::recurring`);
+/// `tz`/`zone` give the local calendar that is counted in.
 #[allow(clippy::too_many_arguments)]
 pub async fn reposition_board_item(
     task_repo: &dyn TaskRepository,
     tangle_repo: &dyn TangleRepository,
     board: &dyn BoardQuery,
     clock: &dyn Clock,
+    tz: &dyn TimezoneResolver,
+    zone: &str,
     role: Option<Role>,
     item: BoardItemKind,
     column: ColumnId,
@@ -73,19 +82,63 @@ pub async fn reposition_board_item(
     let (prev_column, already_in_dest, dest) = plan_column_order(&columns, item, column, position);
     check_wip_limit(board, column, already_in_dest).await?;
     renumber_column(task_repo, tangle_repo, clock, dest, column).await?;
-
-    if let Some(prev) = prev_column
-        && prev != column
-    {
-        let mut src: Vec<BoardItemKind> = columns
-            .iter()
-            .find(|bc| bc.column.id == prev)
-            .map(|bc| bc.items.iter().map(identity_of).collect())
-            .unwrap_or_default();
-        src.retain(|i| *i != item);
+    if let Some((prev, src)) = plan_source_order(&columns, item, prev_column, column) {
         renumber_column(task_repo, tangle_repo, clock, src, prev).await?;
     }
 
+    let entered_done = DoneColumns::from_board(&columns).entered(prev_column, column);
+    complete_if_entered_done(task_repo, clock, tz, zone, item, entered_done).await
+}
+
+/// The order the column `item` left behind should close up to, if it came
+/// from a column other than the destination — the source-side counterpart
+/// of [`plan_column_order`].
+fn plan_source_order(
+    columns: &[BoardColumn],
+    item: BoardItemKind,
+    prev_column: Option<ColumnId>,
+    column: ColumnId,
+) -> Option<(ColumnId, Vec<BoardItemKind>)> {
+    let prev = prev_column.filter(|prev| *prev != column)?;
+    let src = columns
+        .iter()
+        .find(|bc| bc.column.id == prev)
+        .map(|bc| {
+            bc.items
+                .iter()
+                .map(identity_of)
+                .filter(|i| *i != item)
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((prev, src))
+}
+
+/// Stamps a completion on the dragged `item` if it is a recurring task and
+/// the move `entered_done` (a done column, from outside one). Tangles have
+/// no recurrence.
+async fn complete_if_entered_done(
+    task_repo: &dyn TaskRepository,
+    clock: &dyn Clock,
+    tz: &dyn TimezoneResolver,
+    zone: &str,
+    item: BoardItemKind,
+    entered_done: bool,
+) -> Result<(), AppError> {
+    let BoardItemKind::Task(id) = item else {
+        return Ok(());
+    };
+    if !entered_done {
+        return Ok(());
+    }
+    let aggregate = task_repo.load(id).await?.ok_or(AppError::NotFound)?;
+    if aggregate.task.recurrence.is_none() {
+        return Ok(());
+    }
+    let completed = record_recurring_completion(&aggregate.task, clock.now(), tz, zone)?;
+    task_repo
+        .update(&completed, aggregate.task.last_touched_at)
+        .await?;
     Ok(())
 }
 

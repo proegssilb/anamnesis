@@ -135,6 +135,8 @@ pub(super) async fn raise_task_to_column(
         state.tasks.as_ref(),
         state.board.as_ref(),
         state.clock.as_ref(),
+        state.timezone.as_ref(),
+        &state.timezone_name,
         role,
         task_id,
         column,

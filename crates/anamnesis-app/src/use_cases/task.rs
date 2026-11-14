@@ -25,9 +25,12 @@ use anamnesis_core::{
 };
 
 use super::board::check_wip_limit;
+use super::recurring::{complete_on_entering_done, resume_recurrence};
 use crate::error::AppError;
 use crate::policy::{Action, is_allowed};
-use crate::ports::{BoardQuery, Clock, IdGen, SearchIndex, TaskAggregate, TaskRepository};
+use crate::ports::{
+    BoardQuery, Clock, IdGen, SearchIndex, TaskAggregate, TaskRepository, TimezoneResolver,
+};
 
 use super::bulk::{BulkCreateOutcome, bulk_create};
 use super::indexing::log_index_failure;
@@ -129,6 +132,12 @@ pub async fn edit_task(
 /// has no archived-vs-not-archived toggle of its own; leaving a stale entry
 /// indexed would surface an archived task as an ordinary hit. See
 /// [`create_task`]'s doc comment for the indexing-failure policy.
+///
+/// Archiving a recurring task explicitly (its page's Archive action) also
+/// pauses its recurrence: it stops coming back, but keeps its schedule so
+/// [`unarchive_task`] can resume it. The archive sweep
+/// (`crate::use_cases::archive_done_tasks`) deliberately does not pause —
+/// it only tidies Done, and the chore returns on schedule.
 pub async fn archive_task(
     repo: &dyn TaskRepository,
     clock: &dyn Clock,
@@ -140,7 +149,7 @@ pub async fn archive_task(
         return Err(AppError::Forbidden);
     }
     let aggregate = repo.load(id).await?.ok_or(AppError::NotFound)?;
-    let archived = core::archive_task(&aggregate.task, clock.now())?;
+    let archived = core::pause_recurrence(&core::archive_task(&aggregate.task, clock.now())?);
     repo.update(&archived, aggregate.task.last_touched_at)
         .await?;
     if let Err(err) = search.remove_task(archived.id).await {
@@ -152,9 +161,14 @@ pub async fn archive_task(
 /// Restores an archived task, then re-indexes it — see [`archive_task`] for
 /// why it was removed, and [`create_task`]'s doc comment for the
 /// indexing-failure policy.
+///
+/// A recurring task [`archive_task`] paused resumes its schedule from now
+/// (`tz`/`zone` give the local calendar that is counted in).
 pub async fn unarchive_task(
     repo: &dyn TaskRepository,
     clock: &dyn Clock,
+    tz: &dyn TimezoneResolver,
+    zone: &str,
     search: &dyn SearchIndex,
     role: Option<Role>,
     id: TaskId,
@@ -163,7 +177,8 @@ pub async fn unarchive_task(
         return Err(AppError::Forbidden);
     }
     let aggregate = repo.load(id).await?.ok_or(AppError::NotFound)?;
-    let restored = core::unarchive_task(&aggregate.task, clock.now())?;
+    let now = clock.now();
+    let restored = resume_recurrence(&core::unarchive_task(&aggregate.task, now)?, now, tz, zone)?;
     repo.update(&restored, aggregate.task.last_touched_at)
         .await?;
     if let Err(err) = search
@@ -180,10 +195,17 @@ pub async fn unarchive_task(
 /// `column`'s WIP limit first. Reordering *within* the column it is already
 /// in never adds to that column's occupancy, so it is exempt from the check
 /// even when the column is already full.
+///
+/// Raising a recurring task into a done column from outside one completes
+/// it (`crate::use_cases::recurring`), counted in the local calendar
+/// `tz`/`zone` give.
+#[allow(clippy::too_many_arguments)]
 pub async fn raise_task(
     task_repo: &dyn TaskRepository,
     board: &dyn BoardQuery,
     clock: &dyn Clock,
+    tz: &dyn TimezoneResolver,
+    zone: &str,
     role: Option<Role>,
     task_id: TaskId,
     column: ColumnId,
@@ -202,6 +224,7 @@ pub async fn raise_task(
         Placement::OnBoard { column, position },
         now,
     )?;
+    let moved = complete_on_entering_done(board, tz, zone, &aggregate.task, moved, now).await?;
     task_repo
         .update(&moved, aggregate.task.last_touched_at)
         .await?;

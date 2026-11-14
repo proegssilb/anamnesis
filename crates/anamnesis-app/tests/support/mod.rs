@@ -15,7 +15,7 @@ use bytes::Bytes;
 
 use anamnesis_app::{
     AuthenticatedIdentity, ByteStream, Clock, IdGen, IdentityError, IdentityProvider,
-    LoginCallback, LoginRedirect,
+    LoginCallback, LoginRedirect, RepoError, TimezoneResolver,
 };
 use anamnesis_core::{Timestamp, UserId};
 use uuid::Uuid;
@@ -48,6 +48,57 @@ impl Default for FixedClock {
 impl Clock for FixedClock {
     fn now(&self) -> Timestamp {
         self.0
+    }
+}
+
+/// A `TimezoneResolver` over `time-tz`'s embedded IANA database, so
+/// scenarios about local times (DST gaps included) run against real zone
+/// rules. Mirrors `anamnesis_adapters::TzTimezoneResolver`, which this crate
+/// cannot depend on (adapters depends on it); ambiguous times resolve to
+/// the earlier instant and gap times error, per the port's contract.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TzResolver;
+
+/// The zone tests that do not care about local time pass to [`TzResolver`].
+pub const UTC_ZONE: &str = "UTC";
+
+fn zone_named(name: &str) -> Result<&'static time_tz::Tz, RepoError> {
+    time_tz::timezones::get_by_name(name)
+        .ok_or_else(|| RepoError::new(format!("unknown timezone: {name}")))
+}
+
+fn utc_instant(instant: Timestamp) -> time::OffsetDateTime {
+    time::OffsetDateTime::from_unix_timestamp(instant.unix_seconds()).unwrap()
+}
+
+impl TimezoneResolver for TzResolver {
+    fn local_date(&self, zone: &str, instant: Timestamp) -> Result<time::Date, RepoError> {
+        use time_tz::OffsetDateTimeExt;
+        Ok(utc_instant(instant).to_timezone(zone_named(zone)?).date())
+    }
+
+    fn local_time(&self, zone: &str, instant: Timestamp) -> Result<time::Time, RepoError> {
+        use time_tz::OffsetDateTimeExt;
+        Ok(utc_instant(instant).to_timezone(zone_named(zone)?).time())
+    }
+
+    fn to_utc(
+        &self,
+        zone: &str,
+        date: time::Date,
+        time: time::Time,
+    ) -> Result<Timestamp, RepoError> {
+        use time_tz::{OffsetResult, PrimitiveDateTimeExt};
+        let local = time::PrimitiveDateTime::new(date, time);
+        let resolved = match local.assume_timezone(zone_named(zone)?) {
+            OffsetResult::Some(odt) | OffsetResult::Ambiguous(odt, _) => odt,
+            OffsetResult::None => {
+                return Err(RepoError::new(format!(
+                    "{local} falls in a DST gap in {zone}"
+                )));
+            }
+        };
+        Ok(Timestamp::from_unix_seconds(resolved.unix_timestamp()).unwrap())
     }
 }
 

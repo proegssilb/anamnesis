@@ -47,9 +47,16 @@ async fn archives_task(world: &mut AppWorld, user: String, task_name: String) {
 async fn unarchives_task(world: &mut AppWorld, user: String, task_name: String) {
     let role = world.domain_role(&user);
     let task_id = world.domain_task_id(&task_name);
-    let result =
-        anamnesis_app::unarchive_task(&world.domain, &world.clock, &world.domain, role, task_id)
-            .await;
+    let result = anamnesis_app::unarchive_task(
+        &world.domain,
+        &world.clock,
+        &crate::support::TzResolver,
+        world.zone(),
+        &world.domain,
+        role,
+        task_id,
+    )
+    .await;
     world.last_domain_error = result.err();
 }
 

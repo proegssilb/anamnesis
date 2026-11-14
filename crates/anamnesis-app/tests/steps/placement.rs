@@ -15,6 +15,7 @@ use anamnesis_app::{AppError, drop_task, raise_task};
 use anamnesis_core::Placement;
 
 use super::AppWorld;
+use crate::support::TzResolver;
 
 #[given(regex = r#"^"([^"]+)" is a column with no work-in-progress limit that is not done$"#)]
 async fn a_column_with_no_wip_limit_not_done(world: &mut AppWorld, column_name: String) {
@@ -42,6 +43,8 @@ async fn raises_into(world: &mut AppWorld, user: String, task_name: String, colu
         &world.domain,
         &world.domain,
         &world.clock,
+        &TzResolver,
+        world.zone(),
         role,
         task_id,
         column_id,

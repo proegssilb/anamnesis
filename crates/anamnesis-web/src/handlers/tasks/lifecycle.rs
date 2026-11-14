@@ -156,6 +156,8 @@ async fn unarchive_task_impl(
     unarchive_task(
         state.tasks.as_ref(),
         state.clock.as_ref(),
+        state.timezone.as_ref(),
+        &state.timezone_name,
         state.search_index.as_ref(),
         role,
         task_id,

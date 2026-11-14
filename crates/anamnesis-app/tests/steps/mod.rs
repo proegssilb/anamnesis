@@ -10,6 +10,7 @@ mod chunked_attachment_upload;
 mod collaboration;
 mod placement;
 mod project_lifecycle;
+mod recurring_tasks;
 mod relationships;
 mod suggestions;
 mod tangles;

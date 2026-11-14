@@ -16,6 +16,7 @@ mod indexing;
 mod membership;
 mod mentions;
 mod project;
+mod recurring;
 mod relationship;
 mod settings;
 mod suggestion;
@@ -53,6 +54,9 @@ pub use project::{
     add_field_definition, add_relationship_kind, archive_project, bulk_create_projects,
     create_project, edit_project, edit_project_fields, list_all_projects, list_projects_in_area,
     rename_field_definition, transition_project_status, unarchive_project, view_project,
+};
+pub use recurring::{
+    RecurrenceDeps, RecurrenceTick, next_due_instant, run_recurrence_tick, set_task_schedule,
 };
 pub use relationship::{create_relationship, delete_relationship, resolve_kind};
 pub use settings::{update_settings, view_settings};

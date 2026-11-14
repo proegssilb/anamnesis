@@ -7,7 +7,7 @@ mod domain_fakes;
 mod support;
 
 use domain_fakes::{FakeIssueTracker, Fakes};
-use support::{FixedClock, SequentialIdGen, byte_stream};
+use support::{FixedClock, SequentialIdGen, TzResolver, UTC_ZONE, byte_stream};
 
 // `anamnesis_app` and `anamnesis_core` both export same-named use-case /
 // pure-transition functions (`create_area`, `create_project`, `create_task`,
@@ -33,6 +33,30 @@ fn member() -> Option<Role> {
 }
 fn none() -> Option<Role> {
     None
+}
+
+/// `raise_task` in UTC, for tests where no recurring task's local calendar
+/// is in play (the time zone only matters when completing a chore).
+async fn raise_in_utc(
+    fakes: &Fakes,
+    clock: &dyn Clock,
+    role: Option<Role>,
+    task_id: TaskId,
+    column: ColumnId,
+    position: u32,
+) -> Result<Task, AppError> {
+    raise_task(
+        fakes,
+        fakes,
+        clock,
+        &TzResolver,
+        UTC_ZONE,
+        role,
+        task_id,
+        column,
+        position,
+    )
+    .await
 }
 
 fn alice() -> UserId {
@@ -409,7 +433,7 @@ async fn raise_task_is_refused_once_the_column_wip_limit_is_reached() {
     )
     .await
     .unwrap();
-    raise_task(&fakes, &fakes, &clock, member(), occupant.id, column.id, 0)
+    raise_in_utc(&fakes, &clock, member(), occupant.id, column.id, 0)
         .await
         .unwrap();
 
@@ -425,7 +449,7 @@ async fn raise_task_is_refused_once_the_column_wip_limit_is_reached() {
     )
     .await
     .unwrap();
-    let result = raise_task(&fakes, &fakes, &clock, member(), newcomer.id, column.id, 0).await;
+    let result = raise_in_utc(&fakes, &clock, member(), newcomer.id, column.id, 0).await;
     assert!(matches!(result, Err(AppError::WipLimitExceeded)));
 }
 
@@ -450,13 +474,13 @@ async fn raise_task_allows_reordering_within_an_already_full_column() {
     )
     .await
     .unwrap();
-    raise_task(&fakes, &fakes, &clock, member(), occupant.id, column.id, 0)
+    raise_in_utc(&fakes, &clock, member(), occupant.id, column.id, 0)
         .await
         .unwrap();
 
     // The column is now at its WIP limit of 1, but the *same* task moving to
     // a new position within it must not be treated as a new arrival.
-    let result = raise_task(&fakes, &fakes, &clock, member(), occupant.id, column.id, 5).await;
+    let result = raise_in_utc(&fakes, &clock, member(), occupant.id, column.id, 5).await;
     assert!(result.is_ok());
 }
 
@@ -481,7 +505,7 @@ async fn dropping_a_task_from_a_non_done_column_bounces_it() {
     )
     .await
     .unwrap();
-    raise_task(&fakes, &fakes, &clock, member(), task.id, column.id, 0)
+    raise_in_utc(&fakes, &clock, member(), task.id, column.id, 0)
         .await
         .unwrap();
 
@@ -514,7 +538,7 @@ async fn dropping_a_task_from_a_done_column_does_not_bounce_it() {
     )
     .await
     .unwrap();
-    raise_task(&fakes, &fakes, &clock, member(), task.id, done_column.id, 0)
+    raise_in_utc(&fakes, &clock, member(), task.id, done_column.id, 0)
         .await
         .unwrap();
 
@@ -809,7 +833,7 @@ async fn request_suggestion_is_full_silence_at_the_wip_limit() {
     let column = make_column(&ids, "To-Do", 0, Some(1), false);
     fakes.seed_column(column.clone());
     let occupant = add_task(&fakes, &ids, &clock, project.id, "Occupant").await;
-    raise_task(&fakes, &fakes, &clock, member(), occupant.id, column.id, 0)
+    raise_in_utc(&fakes, &clock, member(), occupant.id, column.id, 0)
         .await
         .unwrap();
 
@@ -998,7 +1022,7 @@ async fn a_task_and_a_tangle_together_fill_a_wip_limit_of_two() {
     )
     .await
     .unwrap();
-    raise_task(&fakes, &fakes, &clock, member(), occupant.id, column.id, 0)
+    raise_in_utc(&fakes, &clock, member(), occupant.id, column.id, 0)
         .await
         .unwrap();
 
@@ -1026,7 +1050,7 @@ async fn a_task_and_a_tangle_together_fill_a_wip_limit_of_two() {
     )
     .await
     .unwrap();
-    let result = raise_task(&fakes, &fakes, &clock, member(), newcomer.id, column.id, 1).await;
+    let result = raise_in_utc(&fakes, &clock, member(), newcomer.id, column.id, 1).await;
     assert!(matches!(result, Err(AppError::WipLimitExceeded)));
 }
 
@@ -1051,7 +1075,7 @@ async fn placing_a_tangle_is_itself_refused_once_the_column_is_already_at_its_wi
     )
     .await
     .unwrap();
-    raise_task(&fakes, &fakes, &clock, member(), occupant.id, column.id, 0)
+    raise_in_utc(&fakes, &clock, member(), occupant.id, column.id, 0)
         .await
         .unwrap();
 
@@ -1216,7 +1240,7 @@ async fn archive_done_tasks_archives_everything_in_an_is_done_column() {
     )
     .await
     .unwrap();
-    raise_task(&fakes, &fakes, &clock, member(), task.id, done.id, 0)
+    raise_in_utc(&fakes, &clock, member(), task.id, done.id, 0)
         .await
         .unwrap();
 
@@ -1371,17 +1395,9 @@ async fn two_tasks_in_done(fakes: &Fakes, ids: &SequentialIdGen, clock: &FixedCl
         let task = create_task(fakes, ids, clock, fakes, member(), project_id, title, "")
             .await
             .unwrap();
-        raise_task(
-            fakes,
-            fakes,
-            clock,
-            member(),
-            task.id,
-            done.id,
-            position as u32,
-        )
-        .await
-        .unwrap();
+        raise_in_utc(fakes, clock, member(), task.id, done.id, position as u32)
+            .await
+            .unwrap();
         tasks.push(task);
     }
     tasks
@@ -1763,9 +1779,17 @@ async fn unarchiving_a_task_through_the_use_case_alone_reindexes_it() {
         .unwrap();
     assert!(fakes.search("Reprieved").await.unwrap().is_empty());
 
-    unarchive_task(&fakes, &clock, &fakes, member(), task.id)
-        .await
-        .unwrap();
+    unarchive_task(
+        &fakes,
+        &clock,
+        &TzResolver,
+        UTC_ZONE,
+        &fakes,
+        member(),
+        task.id,
+    )
+    .await
+    .unwrap();
 
     let hits = fakes.search("Reprieved").await.unwrap();
     assert!(
@@ -1866,7 +1890,7 @@ async fn archive_done_tasks_removes_every_swept_task_from_the_index() {
     )
     .await
     .unwrap();
-    raise_task(&fakes, &fakes, &clock, member(), task.id, done.id, 0)
+    raise_in_utc(&fakes, &clock, member(), task.id, done.id, 0)
         .await
         .unwrap();
     assert!(!fakes.search("Swept").await.unwrap().is_empty());
@@ -3628,7 +3652,7 @@ async fn a_task_already_done_is_never_pushed_as_a_new_issue() {
     fakes.seed_column(done_column.clone());
 
     let task = add_task(&fakes, &ids, &clock0, project_id, "Already finished").await;
-    raise_task(&fakes, &fakes, &clock0, admin(), task.id, done_column.id, 0)
+    raise_in_utc(&fakes, &clock0, admin(), task.id, done_column.id, 0)
         .await
         .unwrap();
 
@@ -3703,6 +3727,30 @@ async fn archiving_a_linked_task_closes_its_issue_and_unarchiving_reopens_it() {
     run_and_record(&ports20, &tracker, admin(), &config)
         .await
         .unwrap();
+    assert_eq!(last_issue_state(&tracker), IssueState::Closed);
+
+    let clock30 = FixedClock::at(30);
+    unarchive_task(
+        &fakes,
+        &clock30,
+        &TzResolver,
+        UTC_ZONE,
+        &fakes,
+        admin(),
+        task.id,
+    )
+    .await
+    .unwrap();
+    let clock40 = FixedClock::at(40);
+    let ports40 = sync_ports(&fakes, &clock40, &ids);
+    run_and_record(&ports40, &tracker, admin(), &config)
+        .await
+        .unwrap();
+    assert_eq!(last_issue_state(&tracker), IssueState::Open);
+}
+
+/// The state the most recent issue update pushed to `tracker` set.
+fn last_issue_state(tracker: &FakeIssueTracker) -> IssueState {
     let (_, _, _, state) = tracker
         .updated_issues
         .lock()
@@ -3710,25 +3758,7 @@ async fn archiving_a_linked_task_closes_its_issue_and_unarchiving_reopens_it() {
         .last()
         .cloned()
         .unwrap();
-    assert_eq!(state, IssueState::Closed);
-
-    let clock30 = FixedClock::at(30);
-    unarchive_task(&fakes, &clock30, &fakes, admin(), task.id)
-        .await
-        .unwrap();
-    let clock40 = FixedClock::at(40);
-    let ports40 = sync_ports(&fakes, &clock40, &ids);
-    run_and_record(&ports40, &tracker, admin(), &config)
-        .await
-        .unwrap();
-    let (_, _, _, state2) = tracker
-        .updated_issues
-        .lock()
-        .unwrap()
-        .last()
-        .cloned()
-        .unwrap();
-    assert_eq!(state2, IssueState::Open);
+    state
 }
 
 #[tokio::test]

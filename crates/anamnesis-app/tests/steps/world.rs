@@ -107,6 +107,13 @@ pub struct AppWorld {
     /// distinct from [`Self::last_domain_error`], which only ever holds a
     /// batch-aborting failure, not a partial one.
     pub last_bulk_rejected: usize,
+
+    // --- recurring_tasks.feature ---
+    /// The IANA zone every local date/time in a scenario is read in. `None`
+    /// (never declared) means UTC.
+    pub zone: Option<String>,
+    /// The result of the most recent recurrence tick.
+    pub last_tick: Option<anamnesis_app::RecurrenceTick>,
 }
 
 impl AppWorld {
@@ -308,8 +315,12 @@ impl AppWorld {
             return *id;
         }
         let column_id = ColumnId::new(self.ids.next());
+        // Columns line up left to right in the order a scenario mentions
+        // them, so the first one mentioned is the board's entry column.
+        let position = self.domain_columns.len() as u32;
         let column =
-            anamnesis_core::create_column(column_id, column_name, 0, wip_limit, is_done).unwrap();
+            anamnesis_core::create_column(column_id, column_name, position, wip_limit, is_done)
+                .unwrap();
         self.domain.seed_column(column);
         self.domain_columns
             .insert(column_name.to_string(), column_id);
@@ -450,6 +461,20 @@ impl AppWorld {
     /// Records a chunked upload's id under `label` (its filename).
     pub fn set_domain_upload(&mut self, label: &str, id: AttachmentUploadId) {
         self.domain_uploads.insert(label.to_string(), id);
+    }
+
+    /// The zone scenario local times are read in (UTC unless declared).
+    pub fn zone(&self) -> &str {
+        self.zone.as_deref().unwrap_or(crate::support::UTC_ZONE)
+    }
+
+    /// Sets the clock to local wall-clock `date` at `time` in [`Self::zone`].
+    pub fn set_local_time(&mut self, date: time::Date, time: time::Time) {
+        use anamnesis_app::TimezoneResolver;
+        let instant = crate::support::TzResolver
+            .to_utc(self.zone(), date, time)
+            .expect("scenario local times must exist in the scenario's zone");
+        self.clock = FixedClock::at(instant.unix_seconds());
     }
 
     /// The upload id recorded under `label`.
