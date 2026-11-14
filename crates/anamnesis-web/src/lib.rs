@@ -13,6 +13,7 @@ pub mod error;
 pub mod handlers;
 pub mod health;
 pub mod hx;
+pub mod recurrence_ticker;
 pub mod reindex;
 pub mod routes;
 pub mod session;

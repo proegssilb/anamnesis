@@ -27,8 +27,8 @@ use anamnesis_app::{
 use anamnesis_web::config::Config;
 use anamnesis_web::state::AppState;
 use anamnesis_web::{
-    blob_gc, bootstrap, health, reindex, routes, session, sweep, sync_ticker, tangles, templates,
-    upload_gc,
+    blob_gc, bootstrap, health, recurrence_ticker, reindex, routes, session, sweep, sync_ticker,
+    tangles, templates, upload_gc,
 };
 
 #[tokio::main]
@@ -78,6 +78,9 @@ async fn main() {
     let blob_gc_handle = blob_gc::spawn_ticker(state.clone());
     let reindex_handle = reindex::spawn_ticker(state.clone());
     let sync_handle = sync_ticker::spawn_ticker(state.clone());
+    // The recurring-task ticker: fires and expires due chores close to their
+    // scheduled time (`recurrence_ticker`'s module doc).
+    let recurrence_handle = recurrence_ticker::spawn_ticker(state.clone());
 
     serve(routes::build_router(state), config.bind_addr).await;
 
@@ -103,6 +106,9 @@ async fn main() {
     blob_gc_handle.abort();
     reindex_handle.abort();
     sync_handle.abort();
+    // A recurrence tick cut short is safe to redo: firing and expiry act per
+    // task on state the next tick re-reads.
+    recurrence_handle.abort();
 }
 
 /// Probes an already-running server and exits 0 (healthy) or 1 (not),
