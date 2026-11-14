@@ -186,3 +186,8 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          # A `-` in the tag (v1.2.3-rc.1) is a pre-release: mark it so, or
+          # GitHub makes it "latest" and every releases/latest/download URL
+          # (deploy/cloud-init, docs/DEPLOYMENT.md) starts serving it. The
+          # image job's `latest` tag already follows the same rule.
+          prerelease: ${{ contains(github.ref_name, '-') }}
