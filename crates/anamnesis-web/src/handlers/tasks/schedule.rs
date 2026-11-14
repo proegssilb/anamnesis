@@ -142,11 +142,8 @@ impl ScheduleForm {
         }
         let defaults = Self::default();
         let (pop_in, until) = (values.contains_key("pop_in"), values.contains_key("until"));
-        let mut text = |key: &str, default: &str| {
-            values
-                .remove(key)
-                .unwrap_or_else(|| default.to_owned())
-        };
+        let mut text =
+            |key: &str, default: &str| values.remove(key).unwrap_or_else(|| default.to_owned());
         Self {
             csrf_token: text("csrf_token", ""),
             source: text("source", &defaults.source),
@@ -246,7 +243,11 @@ fn clock_parts(time: Time) -> (String, String, String) {
         time.hour() % 12
     };
     let ampm = if time.hour() < 12 { "am" } else { "pm" };
-    (hour12.to_string(), time.minute().to_string(), ampm.to_owned())
+    (
+        hour12.to_string(),
+        time.minute().to_string(),
+        ampm.to_owned(),
+    )
 }
 
 /// The code a dropdown uses for `value`.
@@ -362,11 +363,7 @@ fn pop_in_from_builder(form: &ScheduleForm) -> Result<Option<PopIn>, ParseError>
     if !form.pop_in {
         return Ok(None);
     }
-    let at = time_from_builder(
-        &form.pop_in_hour,
-        &form.pop_in_minute,
-        &form.pop_in_ampm,
-    )?;
+    let at = time_from_builder(&form.pop_in_hour, &form.pop_in_minute, &form.pop_in_ampm)?;
     let until = if form.until {
         Some(time_from_builder(
             &form.until_hour,
@@ -415,11 +412,16 @@ fn schedule_from_form(
 /// phases a multi-week or multi-month cadence, and `set_on` is the due date
 /// of an after-done chore nobody has finished yet.
 fn keep_stored_anchor(mut schedule: Schedule, stored: Option<&Schedule>) -> Schedule {
-    let Some(stored) = stored else { return schedule };
+    let Some(stored) = stored else {
+        return schedule;
+    };
     let same_kind = matches!(
         (stored.anchor, schedule.anchor),
         (Anchor::Calendar { .. }, Anchor::Calendar { .. })
-            | (Anchor::AfterCompletion { .. }, Anchor::AfterCompletion { .. })
+            | (
+                Anchor::AfterCompletion { .. },
+                Anchor::AfterCompletion { .. }
+            )
     );
     if same_kind && stored.rule == schedule.rule {
         schedule.anchor = stored.anchor;
@@ -437,6 +439,9 @@ pub(super) struct EditorView {
     error: Option<String>,
     /// "Tue Nov 17 6:00pm", up to three of them.
     next: Vec<String>,
+    /// The canonical phrase for what the form currently says, shown beside
+    /// (not in) the phrase box while the user is typing in it.
+    reads_as: Option<String>,
     saved: bool,
     at_minutes: Vec<u8>,
     until_minutes: Vec<u8>,
@@ -459,6 +464,7 @@ impl EditorView {
             form,
             error,
             next,
+            reads_as: None,
             saved: false,
         }
     }
@@ -599,7 +605,17 @@ async fn preview_impl(
         Ok(Some(schedule)) => {
             let last = last_completed_date(state, &task)?;
             let next = preview_dates(&schedule, today, last);
-            EditorView::new(user, task_id, ScheduleForm::from_schedule(&schedule), None, next)
+            let mut shown = ScheduleForm::from_schedule(&schedule);
+            let reads_as = shown.phrase.clone();
+            // Never rewrite what the user is typing: the canonical reading
+            // goes in its own line, and replaces the text only when the
+            // builder drove the change.
+            if form.source != "builder" {
+                shown.phrase.clone_from(&form.phrase);
+            }
+            let mut view = EditorView::new(user, task_id, shown, None, next);
+            view.reads_as = Some(reads_as);
+            view
         }
         Ok(None) => EditorView::new(user, task_id, form, None, Vec::new()),
         Err(err) => EditorView::new(user, task_id, form, Some(err.to_string()), Vec::new()),

@@ -76,8 +76,20 @@ async fn preview(app: &TestApp, path: &str, form: &[(&str, &str)]) -> String {
 #[tokio::test]
 async fn preview_from_phrase_shows_canonical_phrase_and_three_dates() {
     let (app, path, _) = setup().await;
-    let body = preview(&app, &path, &phrase_form("Every Tuesday at 18:00 until 08:00")).await;
-    assert!(body.contains("every tue at 6pm until 8am"), "{body}");
+    let body = preview(
+        &app,
+        &path,
+        &phrase_form("Every Tuesday at 18:00 until 08:00"),
+    )
+    .await;
+    assert!(
+        body.contains(r#"name="phrase" value="Every Tuesday at 18:00 until 08:00""#),
+        "the user's own text stays in the box: {body}"
+    );
+    assert!(
+        body.contains("Reads as: every tue at 6pm until 8am"),
+        "{body}"
+    );
     for date in next_three_tuesdays_at_6pm() {
         assert!(body.contains(&date), "missing {date} in {body}");
     }
@@ -87,14 +99,22 @@ async fn preview_from_phrase_shows_canonical_phrase_and_three_dates() {
 async fn preview_from_builder_fills_phrase() {
     let (app, path, _) = setup().await;
     let body = preview(&app, &path, &builder_form()).await;
-    assert!(body.contains("every month on the last fri"), "{body}");
+    assert!(
+        body.contains(r#"name="phrase" value="every month on the last fri""#),
+        "{body}"
+    );
 }
 
 #[tokio::test]
 async fn builder_and_phrase_agree_on_round_trip() {
     let (app, path, _) = setup().await;
     let phrase = "every tue, thu at 6pm until 8am";
-    let from_phrase = preview(&app, &path, &phrase_form(phrase)).await;
+    let from_phrase = preview(
+        &app,
+        &path,
+        &phrase_form("Every Tue, Thu at 18:00 until 08:00"),
+    )
+    .await;
 
     let builder = [
         ("csrf_token", DEV_CSRF_TOKEN),
@@ -115,10 +135,21 @@ async fn builder_and_phrase_agree_on_round_trip() {
         ("until_ampm", "am"),
     ];
     let from_builder = preview(&app, &path, &builder).await;
-    assert!(from_builder.contains(phrase), "{from_builder}");
+    assert!(
+        from_builder.contains(&format!(r#"name="phrase" value="{phrase}""#)),
+        "{from_builder}"
+    );
+    assert!(from_phrase.contains(&format!("Reads as: {phrase}")));
+    // Everything but the phrase box itself (which keeps the typed text) is
+    // identical: dropdown state, reads-as line and Next dates.
+    let tail = |body: &str| {
+        let from = body.find(r#"<div class="schedule-builder""#).unwrap();
+        body[from..].to_owned()
+    };
     assert_eq!(
-        from_phrase, from_builder,
-        "either editor yields the very same section"
+        tail(&from_phrase),
+        tail(&from_builder),
+        "either editor yields the same dropdowns and dates"
     );
 }
 
@@ -140,14 +171,32 @@ async fn save_sets_schedule_and_empty_phrase_clears_it() {
         .await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(location_of(&response), path);
-    assert!(app.store.load(id).await.unwrap().unwrap().task.recurrence.is_some());
+    assert!(
+        app.store
+            .load(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .task
+            .recurrence
+            .is_some()
+    );
 
     let page = body_text(app.get(&path, None).await).await;
     assert!(page.contains("every tue at 6pm until 8am"), "{page}");
 
     let response = app.post_form(&save, &phrase_form(""), None).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert!(app.store.load(id).await.unwrap().unwrap().task.recurrence.is_none());
+    assert!(
+        app.store
+            .load(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .task
+            .recurrence
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -174,7 +223,16 @@ async fn save_of_a_bad_phrase_changes_nothing_and_explains() {
         .await;
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert!(unescape(&body_text(response).await).contains("didn't understand 'fortnight'"));
-    assert!(app.store.load(id).await.unwrap().unwrap().task.recurrence.is_none());
+    assert!(
+        app.store
+            .load(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .task
+            .recurrence
+            .is_none()
+    );
 }
 
 #[tokio::test]

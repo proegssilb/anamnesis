@@ -90,6 +90,7 @@
     {% endif %}
   </div>
 
+  {% if ed.reads_as %}<p class="schedule-reads-as hint">Reads as: {{ ed.reads_as }}</p>{% endif %}
   {% if ed.next %}<p class="schedule-next hint">Next: {{ ed.next|join(" · ") }}</p>{% endif %}
   <button type="submit" hx-post="/tasks/{{ ed.task_id }}/schedule" hx-include="closest form">Save</button>
   {% if ed.saved %}<span class="hint" role="status">Saved.</span>{% endif %}
