@@ -64,6 +64,12 @@ pub fn sleep_for(now: Timestamp, earliest: Option<Timestamp>) -> Duration {
     Duration::from_secs(wait.unsigned_abs()).min(MAX_SLEEP)
 }
 
+/// Whether the earliest event is at or before `now`, i.e. there may be work.
+/// Nothing scheduled means nothing due.
+fn is_due(now: Timestamp, earliest: Option<Timestamp>) -> bool {
+    earliest.is_some_and(|e| e <= now)
+}
+
 /// What one [`tick_once`] resolved.
 enum Tick {
     /// The tick ran; the next wake is chosen from the data.
@@ -74,6 +80,16 @@ enum Tick {
 
 async fn tick_once(state: &AppState, owner: &str) -> Result<Tick, AppError> {
     let now = state.clock.now();
+    // Cheap pre-check, so a wake with nothing due never touches the lease
+    // table or scans tasks. A failing read falls through to the tick.
+    match state.tasks.earliest_recurrence_event().await {
+        Ok(earliest) if !is_due(now, earliest) => return Ok(Tick::Ran),
+        Ok(_) => {}
+        Err(err) => tracing::warn!(
+            error = %err,
+            "recurrence ticker: could not read the next event; ticking anyway"
+        ),
+    }
     if !state
         .leases
         .try_acquire(RECURRENCE_JOB, owner, now, LEASE_TTL)
@@ -152,6 +168,15 @@ mod tests {
 
     fn ts(seconds: i64) -> Timestamp {
         Timestamp::from_unix_seconds(seconds).unwrap()
+    }
+
+    #[test]
+    fn due_only_when_earliest_event_has_arrived() {
+        let now = ts(1_000_000);
+        assert!(!is_due(now, None));
+        assert!(!is_due(now, Some(ts(1_000_001))));
+        assert!(is_due(now, Some(now)));
+        assert!(is_due(now, Some(ts(10))));
     }
 
     #[test]
