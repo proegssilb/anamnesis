@@ -67,6 +67,10 @@ pub const DEFAULT_HIGH_BOUNCE_THRESHOLD: u32 = 3;
 /// (`docs/DOMAIN.md` §3's global invariant).
 pub const DEFAULT_ACTIVE_PROJECT_LIMIT: u32 = 5;
 
+/// Percent chance (0-100) that an offer with a due recurring chore gives
+/// its first slot to one.
+pub const DEFAULT_DUE_SLOT_PERCENT: u8 = 80;
+
 impl Default for Settings {
     /// A fresh install's starting point, seeded once at bootstrap
     /// (`anamnesis-web::bootstrap`) — no scheduled sweep configured until an
@@ -79,6 +83,7 @@ impl Default for Settings {
             suggestion: SuggestionSettings {
                 cooldown_seconds: DEFAULT_SUGGESTION_COOLDOWN_SECONDS,
                 high_bounce_threshold: DEFAULT_HIGH_BOUNCE_THRESHOLD,
+                due_slot_percent: DEFAULT_DUE_SLOT_PERCENT,
             },
             sweep_recurrence: Recurrence::Never,
             last_swept_at: None,

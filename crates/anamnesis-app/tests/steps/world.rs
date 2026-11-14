@@ -196,6 +196,7 @@ impl AppWorld {
                 last_touched_at: self.clock.now(),
                 last_offered_at: None,
                 bounce_count: 0,
+                due_since: None,
             },
         );
     }

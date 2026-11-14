@@ -60,6 +60,7 @@ async fn suggestion_requested(world: &mut AppWorld) {
     let settings = SuggestionSettings {
         cooldown_seconds: 3 * 24 * 3600,
         high_bounce_threshold: 3,
+        due_slot_percent: 80,
     };
 
     let now = Timestamp::from_unix_seconds(1_000).unwrap();

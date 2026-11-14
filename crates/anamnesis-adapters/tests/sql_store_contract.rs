@@ -2270,6 +2270,7 @@ fn default_settings() -> Settings {
         suggestion: SuggestionSettings {
             cooldown_seconds: 259_200,
             high_bounce_threshold: 3,
+            due_slot_percent: 80,
         },
         sweep_recurrence: Recurrence::Never,
         last_swept_at: None,
@@ -2297,6 +2298,7 @@ async fn settings_update_round_trip_contract(store: &SqlStore) -> Settings {
         suggestion: SuggestionSettings {
             cooldown_seconds: 42,
             high_bounce_threshold: 9,
+            due_slot_percent: 80,
         },
         sweep_recurrence: Recurrence::EveryNWeeks {
             n: 2,

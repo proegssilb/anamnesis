@@ -17,7 +17,7 @@ use axum::extract::State;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
 
-use anamnesis_app::{AppError, Settings, update_settings, view_settings};
+use anamnesis_app::{AppError, DEFAULT_DUE_SLOT_PERCENT, Settings, update_settings, view_settings};
 use anamnesis_core::policy::Role;
 use anamnesis_core::{Recurrence, SuggestionSettings};
 
@@ -146,6 +146,8 @@ async fn update_settings_impl(
                 &form.high_bounce_threshold,
                 "the high-bounce threshold",
             )?,
+            // Not on the form yet (Task 5 adds and persists it).
+            due_slot_percent: DEFAULT_DUE_SLOT_PERCENT,
         },
         sweep_recurrence: parse_recurrence(&form)?,
         // Ignored by `SettingsRepository::update` (see its doc comment) --

@@ -719,6 +719,7 @@ fn settings() -> SuggestionSettings {
     SuggestionSettings {
         cooldown_seconds: 3600,
         high_bounce_threshold: 3,
+        due_slot_percent: 80,
     }
 }
 

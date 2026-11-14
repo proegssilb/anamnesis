@@ -88,6 +88,8 @@ fn assemble(
             cooldown_seconds: suggestion_cooldown_seconds,
             high_bounce_threshold: u32::try_from(suggestion_high_bounce_threshold)
                 .map_err(|e| RepoError::from_source("invalid stored high_bounce_threshold", e))?,
+            // Task 5 persists this column; until then every load gets the default.
+            due_slot_percent: anamnesis_app::DEFAULT_DUE_SLOT_PERCENT,
         },
         sweep_recurrence: decode_recurrence(
             &sweep_recurrence_kind,

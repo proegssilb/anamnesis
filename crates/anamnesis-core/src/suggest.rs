@@ -68,6 +68,10 @@ pub struct TaskSummary {
     pub last_touched_at: Timestamp,
     pub last_offered_at: Option<Timestamp>,
     pub bounce_count: u32,
+    /// When a recurring chore came due below the horizon; `None` for
+    /// everything else. A due chore skips the offer cooldown and competes
+    /// for the due slot.
+    pub due_since: Option<Timestamp>,
 }
 
 impl TaskSummary {
@@ -84,6 +88,7 @@ impl TaskSummary {
             last_touched_at: task.last_touched_at,
             last_offered_at: task.last_offered_at,
             bounce_count: task.bounce_count,
+            due_since: task.recurrence.as_ref().and_then(|r| r.due_since),
         }
     }
 }
@@ -153,6 +158,9 @@ pub struct SuggestionSettings {
     /// coming back" prompt (via [`TaskOffer::high_bounce`]) instead of the
     /// plain one.
     pub high_bounce_threshold: u32,
+    /// Percent chance (0-100) that an offer with a due chore in play gives
+    /// its first slot to one.
+    pub due_slot_percent: u8,
 }
 
 /// The current state of the board relevant to sizing an offer: how big the
@@ -179,6 +187,8 @@ pub enum SuggestionReason {
     NextUp,
     /// Sampled from the staleness-weighted distribution over the older tail.
     Forgotten,
+    /// A recurring chore that has come due, drawn for the due slot.
+    Due,
 }
 
 /// One task offered up, with the reason it was picked and whether it has
@@ -253,7 +263,7 @@ fn is_eligible(
         && candidate.project_status == ProjectStatus::Active
         && !graph.is_blocked(candidate.task_id)
         && !tangled_ids.contains(&candidate.task_id)
-        && off_cooldown(candidate, now, settings)
+        && (candidate.due_since.is_some() || off_cooldown(candidate, now, settings))
 }
 
 fn off_cooldown(candidate: &TaskSummary, now: Timestamp, settings: &SuggestionSettings) -> bool {
@@ -422,12 +432,70 @@ pub fn suggest(
         .map(PoolItem::Task)
         .chain(offerable_tangles.into_iter().map(PoolItem::Tangle))
         .collect();
-    let items = draw_offer(now, seed, &pool, offer_size)
-        .into_iter()
-        .map(|(i, reason)| offer_item(&pool, i, reason, settings.high_bounce_threshold))
-        .collect();
+    Outcome::Offer(Offer {
+        items: fill_offer(now, seed, pool, offer_size, settings),
+    })
+}
 
-    Outcome::Offer(Offer { items })
+/// Salt mixed into the seed for the due-slot roll, so it is a stream of its
+/// own: it never consumes from (or shifts) the draw that fills the ordinary
+/// slots, which keeps offers with no due chore identical to what they were
+/// before the due slot existed.
+const DUE_SLOT_SALT: u64 = 0xD0E5_10D5_10D5_10D5;
+
+/// Added to a due chore's wait when weighting, so one that only just came due
+/// still has a real chance against one that has waited longer.
+const DUE_WEIGHT_FLOOR_SECONDS: i64 = 86_400;
+
+/// Builds the offer's items: the due slot first (when it fires), then the
+/// ordinary next-up/forgotten draw over whatever pool remains.
+fn fill_offer(
+    now: Timestamp,
+    seed: u64,
+    mut pool: Vec<PoolItem>,
+    offer_size: u32,
+    settings: &SuggestionSettings,
+) -> Vec<OfferItem> {
+    let threshold = settings.high_bounce_threshold;
+    let mut items = Vec::new();
+    let mut slots = offer_size;
+    if let Some(i) = draw_due_slot(now, seed, &pool, settings.due_slot_percent) {
+        let due = pool.remove(i);
+        items.push(offer_item(&[due], 0, SuggestionReason::Due, threshold));
+        slots -= 1;
+    }
+    items.extend(
+        draw_offer(now, seed, &pool, slots)
+            .into_iter()
+            .map(|(i, reason)| offer_item(&pool, i, reason, threshold)),
+    );
+    items
+}
+
+/// Rolls for the due slot. Returns the pool index of the due chore that takes
+/// it, or `None` when no chore is due or the roll fails. Longer-waiting
+/// chores are likelier, but every due chore keeps a non-zero chance.
+fn draw_due_slot(now: Timestamp, seed: u64, pool: &[PoolItem], percent: u8) -> Option<usize> {
+    let due: Vec<(usize, Timestamp)> = pool
+        .iter()
+        .enumerate()
+        .filter_map(|(i, item)| match item {
+            PoolItem::Task(t) => t.due_since.map(|since| (i, since)),
+            PoolItem::Tangle(_) => None,
+        })
+        .collect();
+    if due.is_empty() {
+        return None;
+    }
+    let mut rng = SplitMix64::new(seed ^ DUE_SLOT_SALT);
+    if rng.next_unit() >= f64::from(percent) / 100.0 {
+        return None;
+    }
+    let weights: Vec<f64> = due
+        .iter()
+        .map(|&(_, since)| (age_seconds(now, since) + DUE_WEIGHT_FLOOR_SECONDS) as f64)
+        .collect();
+    Some(due[weighted_index(&mut rng, &weights)].0)
 }
 
 /// Which pool items fill this offer's slots, and which kind of slot each one
@@ -621,6 +689,7 @@ mod tests {
         SuggestionSettings {
             cooldown_seconds: 3 * 24 * 3600,
             high_bounce_threshold: 3,
+            due_slot_percent: 80,
         }
     }
 
@@ -633,6 +702,7 @@ mod tests {
             last_touched_at: ts(last_touched),
             last_offered_at: None,
             bounce_count: 0,
+            due_since: None,
         }
     }
 
@@ -712,6 +782,7 @@ mod tests {
             last_touched_at: ts(0),
             last_offered_at: None,
             bounce_count: 0,
+            due_since: None,
         }];
         let outcome = suggest(
             ts(100),
@@ -1329,5 +1400,218 @@ mod tests {
         // No pointless write: the task comes back byte-for-byte identical,
         // `last_touched_at` included.
         assert_eq!(result, task);
+    }
+
+    // --- Recurring chores: cooldown exemption and the due slot ---
+
+    fn due_chore(id: u128, due_since: i64) -> TaskSummary {
+        TaskSummary {
+            due_since: Some(ts(due_since)),
+            ..below_task(id, 0)
+        }
+    }
+
+    fn wide_board() -> BoardState {
+        BoardState {
+            wip_limit: Some(3),
+            current_count: 0,
+        }
+    }
+
+    fn offer_of(outcome: Outcome) -> Offer {
+        let Outcome::Offer(offer) = outcome else {
+            panic!("expected an Offer, got {outcome:?}")
+        };
+        offer
+    }
+
+    fn has_due(offer: &Offer) -> bool {
+        offer
+            .items
+            .iter()
+            .any(|i| matches!(i, OfferItem::Task(t) if t.reason == SuggestionReason::Due))
+    }
+
+    #[test]
+    fn due_chore_offered_despite_recent_offer() {
+        let candidates = vec![TaskSummary {
+            last_offered_at: Some(ts(999_999)),
+            ..due_chore(1, 900_000)
+        }];
+        let outcome = suggest(
+            ts(1_000_000),
+            1,
+            &wide_board(),
+            &candidates,
+            &empty_graph(),
+            &settings(),
+        );
+        assert!(has_due(&offer_of(outcome)));
+    }
+
+    #[test]
+    fn non_due_task_still_respects_cooldown() {
+        let candidates = vec![TaskSummary {
+            last_offered_at: Some(ts(999_999)),
+            ..below_task(1, 0)
+        }];
+        let outcome = suggest(
+            ts(1_000_000),
+            1,
+            &wide_board(),
+            &candidates,
+            &empty_graph(),
+            &settings(),
+        );
+        assert_eq!(outcome, Outcome::Stuck(Blockage::AllOnCooldown));
+    }
+
+    #[test]
+    fn due_chore_still_obeys_every_other_eligibility_rule() {
+        let candidates = vec![TaskSummary {
+            project_status: ProjectStatus::Pending,
+            ..due_chore(1, 0)
+        }];
+        let outcome = suggest(
+            ts(1_000_000),
+            1,
+            &wide_board(),
+            &candidates,
+            &empty_graph(),
+            &settings(),
+        );
+        assert_eq!(outcome, Outcome::Stuck(Blockage::NoActiveProject));
+    }
+
+    fn due_slot_fraction(percent: u8) -> f64 {
+        let mut candidates: Vec<TaskSummary> =
+            (2..=21).map(|n| below_task(n, n as i64 * 1000)).collect();
+        candidates.push(due_chore(1, 40_000));
+        let settings = SuggestionSettings {
+            due_slot_percent: percent,
+            ..settings()
+        };
+        let hits = (0..2_000u64)
+            .filter(|&seed| {
+                let outcome = suggest(
+                    ts(1_000_000),
+                    seed,
+                    &wide_board(),
+                    &candidates,
+                    &empty_graph(),
+                    &settings,
+                );
+                has_due(&offer_of(outcome))
+            })
+            .count();
+        hits as f64 / 2_000.0
+    }
+
+    #[test]
+    fn due_slot_takes_first_slot_about_eighty_percent_of_seeds() {
+        let fraction = due_slot_fraction(80);
+        assert!((0.75..=0.85).contains(&fraction), "fraction was {fraction}");
+    }
+
+    #[test]
+    fn due_slot_percent_zero_never_and_hundred_always() {
+        // `has_due` looks for the Due reason, which only the due slot assigns.
+        assert_eq!(due_slot_fraction(0), 0.0);
+        assert_eq!(due_slot_fraction(100), 1.0);
+    }
+
+    #[test]
+    fn due_slot_fills_one_slot_and_the_rest_come_from_the_ordinary_draw() {
+        let mut candidates: Vec<TaskSummary> = (2..=21).map(|n| below_task(n, 1000)).collect();
+        candidates.push(due_chore(1, 40_000));
+        let settings = SuggestionSettings {
+            due_slot_percent: 100,
+            ..settings()
+        };
+        let offer = offer_of(suggest(
+            ts(1_000_000),
+            3,
+            &wide_board(),
+            &candidates,
+            &empty_graph(),
+            &settings,
+        ));
+        assert_eq!(offer.items.len(), 3);
+        let ids: BTreeSet<TaskId> = offer
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                OfferItem::Task(t) => Some(t.task_id),
+                OfferItem::Tangle(_) => None,
+            })
+            .collect();
+        assert_eq!(ids.len(), 3, "no task offered twice");
+        assert!(ids.contains(&tid(1)));
+    }
+
+    #[test]
+    fn a_due_chore_in_a_single_free_slot_takes_it() {
+        let candidates = vec![due_chore(1, 40_000), below_task(2, 10)];
+        let board = BoardState {
+            wip_limit: Some(3),
+            current_count: 2,
+        };
+        let settings = SuggestionSettings {
+            due_slot_percent: 100,
+            ..settings()
+        };
+        let offer = offer_of(suggest(
+            ts(1_000_000),
+            1,
+            &board,
+            &candidates,
+            &empty_graph(),
+            &settings,
+        ));
+        assert_eq!(offer.items.len(), 1);
+        assert!(has_due(&offer));
+    }
+
+    #[test]
+    fn full_board_stays_silent_with_due_chores() {
+        let board = BoardState {
+            wip_limit: Some(3),
+            current_count: 3,
+        };
+        let candidates = vec![due_chore(1, 0)];
+        let settings = SuggestionSettings {
+            due_slot_percent: 100,
+            ..settings()
+        };
+        let outcome = suggest(
+            ts(1_000_000),
+            1,
+            &board,
+            &candidates,
+            &empty_graph(),
+            &settings,
+        );
+        assert_eq!(outcome, Outcome::Full);
+    }
+
+    #[test]
+    fn due_slot_is_seed_stable() {
+        let mut candidates: Vec<TaskSummary> =
+            (2..=21).map(|n| below_task(n, n as i64 * 1000)).collect();
+        candidates.push(due_chore(1, 40_000));
+        candidates.push(due_chore(99, 20_000));
+        for seed in 0..50u64 {
+            let run = || {
+                suggest(
+                    ts(1_000_000),
+                    seed,
+                    &wide_board(),
+                    &candidates,
+                    &empty_graph(),
+                    &settings(),
+                )
+            };
+            assert_eq!(run(), run());
+        }
     }
 }
