@@ -100,7 +100,9 @@ Global invariant: `count(status == Active) <= settings.active_project_limit`.
 checklist_position, created_at, last_touched_at, archived_at,
 bounce_count, last_bounced_at, last_offered_at`
 
-Plus `FieldValue[]` (loaded with the task). Comments and attachments load
+Plus an optional `recurrence: TaskRecurrence` — `schedule` (the structured
+`Schedule`), `next_due_at`, `expires_at`, `last_completed_at`, `due_since` —
+present only on recurring tasks (§6). Plus `FieldValue[]` (loaded with the task). Comments and attachments load
 separately — append-heavy, rarely all needed at once.
 
 **Checklists are containment**: a task's checklist items *are* tasks, via
@@ -293,7 +295,10 @@ actionable:
 - **unblocked**: no incoming `blocks` edge from a task that is not Done
 - **not in an unresolved Tangle** — a knotted task is not actionable
 - **off cooldown**: `last_offered_at` older than the decline cooldown, so
-  declining something does not immediately re-offer it
+  declining something does not immediately re-offer it — **except a due
+  chore** (`due_since` set), which is exempt: declining the vacuuming
+  shouldn't hide it for days when it is genuinely due. It still has to pass
+  every other rule above.
 
 ### Composition — weighted sampling, not ranking
 
@@ -315,6 +320,17 @@ eligible task has non-zero probability, so the net widens over time.
 same three suggestions persist across a page refresh and change when the
 situation changes. Re-rolling on every F5 would let the user slot-machine for
 an easy task, which defeats the gentle-nudge intent.
+
+**The due slot.** When the offer has at least one slot and an eligible due
+chore exists, a roll with probability `suggestion_due_slot_percent` (0-100,
+default 80, a `SuggestionSettings` field) gives the first slot to a due chore,
+chosen by weight that grows with how long it has been due (plus a one-day floor
+so a freshly-due chore still has a real chance). It surfaces as
+`SuggestionReason::Due`, shown as "due again". The roll uses its own salted
+stream (`seed ^ DUE_SLOT_SALT`) rather than the main draw, so offers with no due
+chore are bit-for-bit what they were before the feature existed, and the seed
+stability above still holds. A full board is still silence: a due interval
+chore never pushes onto it.
 
 Bounce accounting: moving a task `OnBoard → Below` without reaching an
 `is_done` column increments `bounce_count` and stamps `last_bounced_at`.
@@ -344,8 +360,22 @@ whether a sweep is due and applies the result. Timezone comes from settings.
   whether a schedule is configured. The manual path must work even if the
   scheduled one never fires.
 
-`Recurrence` is deliberately a reusable value type — recurring *tasks* are an
-obvious future feature — but **recurring tasks are not in scope now.**
+`Recurrence` stays as it is, driving only the archive sweep. Recurring
+*tasks* (household chores) are a separate feature with their own type,
+`Schedule` (`anamnesis-core::schedule`): a rule (every N days / weeks / months,
+weekday sets, day of month, last day, Nth weekday), an anchor (a calendar date,
+or counted from last completion) and an optional pop-in time of day. A typed
+phrase ("every tue at 6pm until 8am", "3 months after done") parses to and
+describes back from it, and the task page offers dropdowns over the same value.
+
+A recurring task is one task that cycles. A deadline chore (it has a pop-in
+time) is placed on the board's entry column at that local time even over the
+WIP limit, and goes back down at its `until` without counting as a bounce; an
+interval chore comes up below the horizon marked due and gets the suggestion
+engine's cooldown exemption and due slot (§5). Firing also resets any finished
+checklist items. A separate ticker (`recurrence_ticker.rs`, job-lease guarded)
+fires and expires them; the sweep's daily poll is too coarse for "at 6pm". Full
+design: `docs/superpowers/specs/2026-11-12-recurring-tasks-design.md`.
 
 ---
 
@@ -619,6 +649,59 @@ leap-aware. The alternative readings — reject the recurrence outright, or
 silently skip the short month entirely — both fail the plain-language intent
 of "the 15th" worse than clamping does; clamping is the reading a person
 would actually expect.
+
+### Recurring tasks (issue #37)
+
+The design is in `docs/superpowers/specs/2026-11-12-recurring-tasks-design.md`;
+these are the calls worth remembering the reasons for.
+
+**Time of day makes a deadline chore.** There is no hard/soft toggle. A
+schedule with a pop-in time ("at 6pm") is a deadline chore: it must reach the
+board at that moment, and is the only kind allowed past the WIP limit — the
+user really does have one more thing to do that evening. A schedule without
+one is an interval chore and goes through the suggestion engine, so "Full is
+silence" survives. One property of the schedule decides it, so the two can't
+drift out of agreement with a separate flag.
+
+**One task cycles.** Firing moves the same task back into play rather than
+stamping out copies, so comments, fields, checklist and history stay with it
+and there is no pile of archived "Take out trash (week 37)". Several missed
+occurrences (downtime, a paused project) collapse into one firing. Firing and
+expiry never touch `bounce_count`, `last_bounced_at`, `last_offered_at` or
+`last_touched_at`: bounces measure the user's resistance, not the clock. A
+task whose project isn't Active simply doesn't fire; its `next_due_at` waits
+and it fires on the first tick after reactivation. An already-up, unfinished
+task keeps its placement and its existing expiry — expiring a card the user
+raised themselves would be the clock overriding them. A deadline chore whose
+window has already closed at catch-up is skipped to its next occurrence, not
+shown stale; a missed trash night quietly goes away.
+
+**Calendar phase from the first occurrence, not the epoch.** For "every 2
+weeks on tue", the on-cycle week is the one containing the first matching date
+on or after the day the schedule was saved, stored as `Anchor::Calendar {
+start }`. This differs from the sweep's fixed-epoch anchor (above) on purpose:
+for a task, "every other Tuesday starting this coming Tuesday" is what a
+person means, and storing `start` keeps the no-drift property. Counted
+"after done" chores ignore the phase and instead stay due until completed; for
+those the next date is the last completion plus the interval (or the day the
+schedule was set, if never completed), and an undone one re-fires once per
+interval rather than every tick. Calendar chores deliberately ignore early
+completion. The next due moment is the first pop-in after *now*, not after
+today, so a same-day catch-up isn't skipped. A pop-in time that falls in a
+spring-forward gap shifts forward by the gap length (2:30am becomes 3:30am
+EDT), the same rule `TimezoneResolver` retries with.
+
+**Explicit archive stops recurrence.** Archiving a recurring task from its own
+page clears `next_due_at` (the schedule is kept), because that is the user
+saying they're done with it. The sweep and "Archive all" don't, since they
+only tidy Done and the task should come back on schedule. Restoring recomputes
+`next_due_at` from today.
+
+**Ticker timing.** The recurrence ticker sleeps until the earliest
+`next_due_at` or `expires_at`, capped at 15 minutes so an edit made on another
+instance is picked up, and floored at 60 seconds when that earliest event is
+already past — a paused-project task stays "earliest" forever and would
+otherwise make it spin.
 
 ### Hand-rolled DST replaced by a real IANA tzdb
 

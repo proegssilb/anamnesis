@@ -69,6 +69,21 @@ ranking, so that a task which was last touched 6 months ago still has a real
 chance of surfacing instead of waiting behind whatever's already most-recent 
 or truly oldest.
 
+### Recurring chores
+
+Some things come back whether you want them to or not. Give a task a
+schedule in the Repeats section by typing it — `every tue at 6pm until 8am`,
+`3 months after done`, `every 2 weeks on sat`, `every month on the last fri` —
+or by picking from dropdowns; both edit the same schedule, and a preview shows
+the next few dates. It stays one task, not a stack of copies.
+
+A schedule with a time of day is a deadline chore: trash night puts itself on
+the board at 6pm, even if the board is full, because you really do have to
+take the trash out. Without a time it's an interval chore, like the furnace
+filter: it comes back below the horizon and the suggestion engine favours it
+when it's due, without letting it push onto a full board. Miss trash night and
+the card quietly goes back down; nothing turns red and nobody counts.
+
 ## Quickstart (SQLite + dev auth bypass)
 
 This is the fast path for running Anamnesis locally with no external
@@ -294,10 +309,6 @@ Stated plainly rather than discovered the hard way:
   task to another as a checklist item is pasting the parent's raw task id
   into a plain text field on the task page — there is no "add checklist
   item" affordance from the parent's own view yet.
-- **No recurring tasks.** `Recurrence` (`EveryNWeeks` / `DayOfMonth` /
-  `Never`) exists purely to drive the archive sweep's schedule; nothing lets
-  a _task itself_ recur. `docs/DOMAIN.md` §6 names this as a deliberate,
-  reusable-later type, not an oversight.
 - **Nothing is archived on a schedule until an admin sets one.** The
   background sweep ticker is wired into `anamnesis-web`'s startup and runs,
   but a fresh install's `sweep_recurrence` is `Never` — guessing an owner's
