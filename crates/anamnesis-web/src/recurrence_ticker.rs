@@ -42,6 +42,14 @@ pub const PAST_EVENT_SLEEP: Duration = Duration::from_secs(60);
 
 /// How long the recurrence lease is held; bounds only a crash, since the
 /// ticker releases it as soon as the tick finishes.
+///
+/// A tick never renews it, so one slower than this can overlap another
+/// instance's tick. That is safe: firing and expiry are idempotent per task
+/// at a given `now` (two ticks that read the same row write the same
+/// result, give or take a deadline chore's end-of-column position; tick
+/// writes leave `last_touched_at` alone, so neither rejects the other), and
+/// a user edit landing between a tick's read and write makes that write a
+/// Conflict, which the tick skips.
 const LEASE_TTL: Duration = Duration::from_secs(2 * 60);
 
 /// One minute past [`LEASE_TTL`], so a lease held by a dead instance has

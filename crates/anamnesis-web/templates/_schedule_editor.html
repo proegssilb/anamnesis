@@ -5,7 +5,7 @@
    the only interpreter, so the two cannot disagree. Rows show or hide by
    unit/anchor/mode here, server-side; there is no client logic beyond the
    `hx-*` attributes. Without JavaScript it is a plain form posting to the
-   save route. #}
+   save route, and the phrase field is how a schedule gets set. #}
 {% macro choice(value, current, label) -%}
   <option value="{{ value }}"{% if value == current %} selected{% endif %}>{{ label }}</option>
 {%- endmacro %}

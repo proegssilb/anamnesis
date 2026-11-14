@@ -343,6 +343,15 @@ impl DoneColumns {
 /// retried next tick while every other chore still fires. Only the reads
 /// the whole pass depends on (the board's columns, the actionable list)
 /// fail the tick.
+///
+/// **Known narrow race.** By spec, tick writes leave `last_touched_at`
+/// alone, so the concurrency token does not move when a chore fires: a
+/// user write that loaded the task before the firing and saves after it
+/// passes its check and can overwrite the firing (and `set_checklist_position`
+/// and `mark_offered` don't stamp `last_touched_at` either). It self-heals —
+/// the next tick fires again from the stored `next_due_at` — except for a
+/// completion recorded in that same instant, which can be lost. A
+/// row-version column, separate from `last_touched_at`, is the real fix.
 pub async fn run_recurrence_tick(
     deps: &RecurrenceDeps<'_>,
     now: Timestamp,

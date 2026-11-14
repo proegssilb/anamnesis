@@ -465,10 +465,10 @@ mod sqlite_impl {
         pool: &SqlitePool,
     ) -> Result<Option<Timestamp>, RepoError> {
         let earliest: Option<i64> = sqlx::query_scalar(
-            "SELECT MIN(at) FROM (\
-               SELECT next_due_at AS at FROM tasks WHERE schedule_json IS NOT NULL \
+            "SELECT MIN(event_at) FROM (\
+               SELECT next_due_at AS event_at FROM tasks WHERE schedule_json IS NOT NULL \
                UNION ALL \
-               SELECT expires_at AS at FROM tasks WHERE expires_at IS NOT NULL) AS events",
+               SELECT expires_at AS event_at FROM tasks WHERE expires_at IS NOT NULL) AS events",
         )
         .fetch_one(pool)
         .await
@@ -767,10 +767,10 @@ mod postgres_impl {
         pool: &PgPool,
     ) -> Result<Option<Timestamp>, RepoError> {
         let earliest: Option<i64> = sqlx::query_scalar(
-            "SELECT MIN(at) FROM (\
-               SELECT next_due_at AS at FROM tasks WHERE schedule_json IS NOT NULL \
+            "SELECT MIN(event_at) FROM (\
+               SELECT next_due_at AS event_at FROM tasks WHERE schedule_json IS NOT NULL \
                UNION ALL \
-               SELECT expires_at AS at FROM tasks WHERE expires_at IS NOT NULL) AS events",
+               SELECT expires_at AS event_at FROM tasks WHERE expires_at IS NOT NULL) AS events",
         )
         .fetch_one(pool)
         .await

@@ -10,9 +10,11 @@
 //! is no client-side parser, so the two editors cannot disagree.
 //! [`save_schedule_handler`] stores it; an empty phrase clears it.
 //!
-//! The form is a plain HTML form too: submitted without JavaScript it goes
-//! to the save route, where the phrase wins if it was changed and the
-//! dropdowns win if it was not.
+//! Without JavaScript the form still posts to the save route, and the
+//! phrase field is the no-JS path: the builder's rows only show and hide
+//! through the preview round-trip, so the dropdowns alone cannot create a
+//! schedule there. (A post whose phrase was left as rendered reads the
+//! dropdowns, so visible fields of a saved schedule can still be adjusted.)
 
 use std::collections::HashMap;
 
