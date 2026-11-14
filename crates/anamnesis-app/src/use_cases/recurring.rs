@@ -161,13 +161,18 @@ fn local_date_of(
 }
 
 /// Sets (`Some`) or clears (`None`) a task's repeat schedule. Setting one
-/// computes `next_due_at` as the first occurrence still ahead of now and
-/// clears any due-ness or open window; placement is untouched.
+/// computes `next_due_at` as the first occurrence still ahead of now; an
+/// open window or due-ness that still applies is kept
+/// ([`core::set_schedule`]), and placement is untouched.
 ///
-/// This is a user edit, so it stamps `last_touched_at` like `edit_task`
-/// does. That stamp is the optimistic-concurrency token: a tick that read
-/// the task before this edit then has its write rejected as a conflict
-/// (and skips the task), instead of writing back the old schedule.
+/// Saving the schedule the task already has writes nothing and returns the
+/// task as stored: the editor posts the whole form on every save, and an
+/// unchanged schedule must not move `next_due_at` or reset live state.
+///
+/// A real change is a user edit, so it stamps `last_touched_at` like
+/// `edit_task` does. That stamp is the optimistic-concurrency token: a tick
+/// that read the task before this edit then has its write rejected as a
+/// conflict (and skips the task), instead of writing back the old schedule.
 pub async fn set_task_schedule(
     repo: &dyn TaskRepository,
     clock: &dyn Clock,
@@ -182,6 +187,9 @@ pub async fn set_task_schedule(
     }
     let aggregate = repo.load(task_id).await?.ok_or(AppError::NotFound)?;
     let task = &aggregate.task;
+    if task.recurrence.as_ref().map(|r| &r.schedule) == schedule.as_ref() {
+        return Ok(aggregate.task);
+    }
     let now = clock.now();
     let rescheduled = match schedule {
         None => core::clear_schedule(task),

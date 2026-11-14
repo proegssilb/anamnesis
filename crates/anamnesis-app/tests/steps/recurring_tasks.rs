@@ -256,6 +256,25 @@ async fn clears_the_schedule(world: &mut AppWorld, user: String, task: String) {
     change_schedule(world, &user, &task, None).await;
 }
 
+/// Saves the stored schedule back as it is — what the Repeats editor posts
+/// when nothing in it was changed.
+#[when(regex = r#"^"([^"]+)" saves the schedule of "([^"]+)" unchanged$"#)]
+async fn saves_the_schedule_unchanged(world: &mut AppWorld, user: String, task_name: String) {
+    let role = world.domain_role(&user);
+    let schedule = recurrence(world, &task_name).schedule;
+    let result = set_task_schedule(
+        &world.domain,
+        &world.clock,
+        &TzResolver,
+        world.zone(),
+        role,
+        world.domain_task_id(&task_name),
+        Some(schedule),
+    )
+    .await;
+    world.last_domain_error = result.err();
+}
+
 // --- Then ---
 
 #[then(regex = r#"^task "([^"]+)" is on the board in "([^"]+)"$"#)]
@@ -316,6 +335,12 @@ async fn is_due(world: &mut AppWorld, task_name: String) {
 #[then(regex = r#"^"([^"]+)" is not due$"#)]
 async fn is_not_due(world: &mut AppWorld, task_name: String) {
     assert_eq!(recurrence(world, &task_name).due_since, None);
+}
+
+#[then(regex = r#"^"([^"]+)" was not touched just now$"#)]
+async fn not_touched_just_now(world: &mut AppWorld, task_name: String) {
+    assert!(world.last_domain_error.is_none());
+    assert!(world.domain_task_state(&task_name).last_touched_at < world.clock.now());
 }
 
 #[then(regex = r#"^"([^"]+)" is not scheduled to come back$"#)]

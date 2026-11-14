@@ -152,15 +152,35 @@ Feature: Recurring tasks
     Then task "Water the seedlings" is on the board in "To-Do"
     And "Water the seedlings" is next due at 2027-03-15 2:30am
 
-  Scenario: Changing the schedule while it is due clears due-ness and recomputes next due
+  Scenario: Changing the schedule while it is due keeps it due and recomputes next due
     Given a task "Water the plants" below the horizon in active project "Household"
     And "Water the plants" repeats "every day"
     When it is Tuesday 2026-11-17 at 9:00am and recurring tasks are checked
     Then "Water the plants" is due
     When "Alice" changes the schedule of "Water the plants" to "every sat"
-    Then "Water the plants" is not due
+    Then "Water the plants" is due
     And "Water the plants" is next due on 2026-11-21
     And "Water the plants" is below the horizon
+
+  Scenario: Saving an unchanged schedule leaves a due chore exactly as it was
+    Given a task "Vacuum the stairs" below the horizon in active project "Household"
+    And "Vacuum the stairs" repeats "every sat"
+    When it is Saturday 2026-11-21 at 9:00am and recurring tasks are checked
+    And it is Monday 2026-11-23 at 9:00am
+    And "Alice" saves the schedule of "Vacuum the stairs" unchanged
+    Then "Vacuum the stairs" is due
+    And "Vacuum the stairs" is next due on 2026-11-28
+    And "Vacuum the stairs" was not touched just now
+
+  Scenario: Changing an up trash chore's schedule keeps tonight's window
+    Given a task "Take out the trash" below the horizon in active project "Household"
+    And "Take out the trash" repeats "every tue at 6pm until 8am"
+    When it is Tuesday 2026-11-17 at 6:00pm and recurring tasks are checked
+    And "Alice" changes the schedule of "Take out the trash" to "every tue at 7pm until 8am"
+    Then task "Take out the trash" is on the board in "To-Do"
+    When it is Wednesday 2026-11-18 at 8:00am and recurring tasks are checked
+    Then "Take out the trash" is below the horizon
+    And "Take out the trash" has bounced 0 times
 
   Scenario: Clearing the schedule stops a task repeating
     Given a task "Water the plants" below the horizon in active project "Household"

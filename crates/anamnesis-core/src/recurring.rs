@@ -54,18 +54,30 @@ pub fn pause_recurrence(task: &Task) -> Task {
     })
 }
 
-/// Replaces the recurrence with a fresh one for `schedule`, due at
-/// `next_due_at`. Keeps `last_completed_at` if one existed; placement is
-/// untouched.
+/// Sets the recurrence to `schedule`, due at `next_due_at`. Placement is
+/// untouched, and so is the live state that still applies under the new
+/// schedule, so editing a chore never takes back what has already happened:
+///
+/// - `last_completed_at` is always kept.
+/// - An armed window (`expires_at`) is kept while the task is up (on the
+///   board, not archived) and the new schedule is still a deadline chore.
+///   A completed chore's window was already cleared by
+///   [`record_completion`], so a chore sitting in a done column has none.
+/// - `due_since` is kept while the task is still below the horizon and the
+///   new schedule is still an interval chore.
 pub fn set_schedule(task: &Task, schedule: Schedule, next_due_at: Timestamp) -> Task {
-    let last_completed_at = task.recurrence.as_ref().and_then(|r| r.last_completed_at);
+    let old = task.recurrence.as_ref();
+    let up = task.archived_at.is_none() && task.placement.is_on_board();
+    let deadline = schedule.is_deadline();
     Task {
         recurrence: Some(TaskRecurrence {
             schedule,
             next_due_at: Some(next_due_at),
-            expires_at: None,
-            last_completed_at,
-            due_since: None,
+            expires_at: old.and_then(|r| r.expires_at).filter(|_| up && deadline),
+            last_completed_at: old.and_then(|r| r.last_completed_at),
+            due_since: old
+                .and_then(|r| r.due_since)
+                .filter(|_| task.placement.is_below() && !deadline),
         }),
         ..task.clone()
     }
@@ -360,21 +372,65 @@ mod tests {
         assert_eq!(rec(&replaced).next_due_at, Some(ts(5000)));
     }
 
+    fn with_live_state(mut t: Task) -> Task {
+        let r = t.recurrence.as_mut().unwrap();
+        r.last_completed_at = Some(ts(40));
+        r.due_since = Some(ts(60));
+        r.expires_at = Some(ts(70));
+        t
+    }
+
     #[test]
-    fn set_schedule_keeps_last_completed_and_clears_due_since() {
-        let mut t = on_board(recurring(false));
-        {
-            let r = t.recurrence.as_mut().unwrap();
-            r.last_completed_at = Some(ts(40));
-            r.due_since = Some(ts(60));
-            r.expires_at = Some(ts(70));
-        }
+    fn set_schedule_keeps_an_armed_window_only_on_a_deadline_chore_that_is_up() {
+        let up = with_live_state(on_board(recurring(true)));
+        assert_eq!(
+            rec(&set_schedule(&up, schedule(true), ts(777))).expires_at,
+            Some(ts(70))
+        );
+        assert_eq!(
+            rec(&set_schedule(&up, schedule(false), ts(777))).expires_at,
+            None,
+            "an interval chore has no window to keep"
+        );
+        let below = with_live_state(recurring(true));
+        assert_eq!(
+            rec(&set_schedule(&below, schedule(true), ts(777))).expires_at,
+            None
+        );
+        let archived = archive_task(&up, ts(80)).unwrap();
+        assert_eq!(
+            rec(&set_schedule(&archived, schedule(true), ts(777))).expires_at,
+            None
+        );
+    }
+
+    #[test]
+    fn set_schedule_keeps_due_since_only_on_an_interval_chore_still_below() {
+        let below = with_live_state(recurring(false));
+        assert_eq!(
+            rec(&set_schedule(&below, schedule(false), ts(777))).due_since,
+            Some(ts(60))
+        );
+        assert_eq!(
+            rec(&set_schedule(&below, schedule(true), ts(777))).due_since,
+            None,
+            "a deadline chore is never due below the horizon"
+        );
+        let up = with_live_state(on_board(recurring(false)));
+        assert_eq!(
+            rec(&set_schedule(&up, schedule(false), ts(777))).due_since,
+            None
+        );
+    }
+
+    #[test]
+    fn set_schedule_keeps_last_completed_and_placement() {
+        let t = with_live_state(on_board(recurring(false)));
         let out = set_schedule(&t, schedule(true), ts(777));
         assert_eq!(rec(&out).schedule, schedule(true));
         assert_eq!(rec(&out).next_due_at, Some(ts(777)));
         assert_eq!(rec(&out).last_completed_at, Some(ts(40)));
         assert_eq!(rec(&out).due_since, None);
-        assert_eq!(rec(&out).expires_at, None);
         assert_eq!(out.placement, t.placement);
         let fresh = set_schedule(&recurring(false).clone(), schedule(false), ts(1));
         assert_eq!(rec(&fresh).last_completed_at, None);
