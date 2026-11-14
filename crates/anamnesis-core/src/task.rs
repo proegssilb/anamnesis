@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::DomainError;
 use crate::ids::{ProjectId, TaskId, Timestamp};
 use crate::placement::Placement;
+use crate::recurring::TaskRecurrence;
 use crate::title::Title;
 
 /// A single unit of work.
@@ -36,6 +37,7 @@ pub struct Task {
     pub bounce_count: u32,
     pub last_bounced_at: Option<Timestamp>,
     pub last_offered_at: Option<Timestamp>,
+    pub recurrence: Option<TaskRecurrence>,
 }
 
 /// Creates a new task, below the horizon, with no parent.
@@ -61,6 +63,7 @@ pub fn create_task(
         bounce_count: 0,
         last_bounced_at: None,
         last_offered_at: None,
+        recurrence: None,
     })
 }
 

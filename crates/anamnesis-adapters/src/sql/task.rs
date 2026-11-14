@@ -249,6 +249,7 @@ pub(super) fn assemble_task(
             .map_err(|e| RepoError::from_source("stored bounce count out of range", e))?,
         last_bounced_at: last_bounced_at.map(timestamp_from_seconds).transpose()?,
         last_offered_at: last_offered_at.map(timestamp_from_seconds).transpose()?,
+        recurrence: None,
     })
 }
 

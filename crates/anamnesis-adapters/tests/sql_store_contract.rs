@@ -89,6 +89,7 @@ fn task(project_id: ProjectId) -> Task {
         bounce_count: 0,
         last_bounced_at: None,
         last_offered_at: None,
+        recurrence: None,
     }
 }
 

@@ -19,6 +19,7 @@ mod placement;
 pub mod policy;
 mod project;
 mod recurrence;
+mod recurring;
 mod relationship;
 mod schedule;
 mod suggest;
@@ -46,6 +47,10 @@ pub use project::{
     unarchive_project,
 };
 pub use recurrence::{Recurrence, next_run, sweep_done, sweep_done_tangles};
+pub use recurring::{
+    Firing, TaskRecurrence, clear_schedule, expire, fire, pause_recurrence, record_completion,
+    reset_checklist_item, set_schedule,
+};
 pub use relationship::{
     Relationship, RelationshipKind, builtin_blocks, builtin_duplicates, builtin_relates_to,
     create_relationship, create_relationship_kind, is_blocking,
