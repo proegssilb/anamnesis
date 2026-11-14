@@ -1276,6 +1276,9 @@ enum Rival {
     /// `set_task_schedule` use case — a user editing a chore while a
     /// recurrence tick holds an older copy of it.
     ClearsSchedule,
+    /// No rival at all: the store fails the write outright (a database
+    /// error), so the caller sees `TaskUpdateError::Repo`, not a conflict.
+    Breaks,
 }
 
 /// A `TaskRepository` that lets exactly one rival writer in, immediately
@@ -1330,6 +1333,7 @@ impl<'a> Contended<'a> {
                 .unwrap();
                 return;
             }
+            Rival::Breaks => unreachable!("`Breaks` fails the write instead"),
         };
         TaskRepository::update(self.inner, &next, was)
             .await
@@ -1370,6 +1374,9 @@ impl TaskRepository for Contended<'_> {
             *fired |= first;
             first
         };
+        if open_the_window && matches!(self.rival, Rival::Breaks) {
+            return Err(TaskUpdateError::Repo(RepoError::new("the disk is full")));
+        }
         if open_the_window {
             self.interfere().await;
         }
@@ -1532,11 +1539,41 @@ async fn a_tick_holding_a_stale_copy_never_reverts_a_users_schedule_edit() {
         "the user's cleared schedule must survive the tick's stale write"
     );
     assert_eq!(tick.fired, 1, "the contested chore is skipped, not fired");
+    assert_eq!(tick.failed, 0, "losing a race is not a failure");
     let other = fakes.task(chores[1].id).recurrence.unwrap();
     assert!(
         other.due_since.is_some(),
         "losing one chore must not end the tick"
     );
+}
+
+#[tokio::test]
+async fn one_chore_failing_to_save_does_not_stop_the_rest_of_the_tick() {
+    // Whichever order the tick visits them in, breaking either one must
+    // still fire the other.
+    for broken_index in [0, 1] {
+        let fresh = Fakes::new();
+        let chores = two_daily_chores(&fresh, &SequentialIdGen::new(), &FixedClock::at(0)).await;
+        let (broken, healthy) = (chores[broken_index].id, chores[1 - broken_index].id);
+        let repo = Contended::new(&fresh, broken, Rival::Breaks);
+        let deps = RecurrenceDeps {
+            tasks: &repo,
+            projects: &fresh,
+            board: &fresh,
+            search: &fresh,
+            tz: &TzResolver,
+            zone: UTC_ZONE,
+        };
+
+        let two_days_on = Timestamp::from_unix_seconds(2 * 24 * 60 * 60).unwrap();
+        let tick = run_recurrence_tick(&deps, two_days_on)
+            .await
+            .expect("one chore's error must not fail the whole tick");
+
+        assert_eq!((tick.fired, tick.failed), (1, 1), "{tick:?}");
+        assert!(fresh.task(healthy).recurrence.unwrap().due_since.is_some());
+        assert_eq!(fresh.task(broken).recurrence.unwrap().due_since, None);
+    }
 }
 
 #[tokio::test]

@@ -52,6 +52,9 @@ pub struct RecurrenceTick {
     pub expired: u32,
     /// Due, but left pending because the task's project is not Active.
     pub skipped_inactive: u32,
+    /// Due, but an error stopped this task (logged with its id); left as
+    /// stored for the next tick. Never stops the other tasks.
+    pub failed: u32,
 }
 
 /// The firing timing for the first occurrence of `schedule` strictly after
@@ -318,6 +321,13 @@ impl DoneColumns {
 /// `next_due_at` left pending, so it fires once on the first tick after
 /// reactivation. A task someone else wrote to mid-tick is left for the next
 /// tick.
+///
+/// **One task's error never stops the others.** A task that fails (a
+/// storage error, a pop-in its zone cannot place) is logged with its id,
+/// counted in [`RecurrenceTick::failed`], and left as stored, so it is
+/// retried next tick while every other chore still fires. Only the reads
+/// the whole pass depends on (the board's columns, the actionable list)
+/// fail the tick.
 pub async fn run_recurrence_tick(
     deps: &RecurrenceDeps<'_>,
     now: Timestamp,
@@ -325,17 +335,55 @@ pub async fn run_recurrence_tick(
     let columns = DoneColumns::from_board(&deps.board.columns_with_items().await?);
     let mut tick = RecurrenceTick::default();
     for task in deps.tasks.list_recurrence_actionable(now).await? {
-        if !project_is_active(deps.projects, task.project_id).await? {
-            tick.skipped_inactive += 1;
-            continue;
+        match tick_task(deps, &columns, &task, now).await {
+            Ok(step) => tick.record(step),
+            Err(err) => {
+                log_tick_failure(task.id, &err);
+                tick.failed += 1;
+            }
         }
-        let Some(advanced) = advance_task(deps, &columns, &task, now).await? else {
-            continue;
-        };
-        tick.expired += u32::from(advanced.expired);
-        tick.fired += u32::from(advanced.fired);
     }
     Ok(tick)
+}
+
+/// What the tick did with one actionable task.
+enum TaskStep {
+    SkippedInactive,
+    /// Someone else wrote to it first; left for the next tick.
+    Conflicted,
+    Advanced(Advanced),
+}
+
+impl RecurrenceTick {
+    fn record(&mut self, step: TaskStep) {
+        match step {
+            TaskStep::SkippedInactive => self.skipped_inactive += 1,
+            TaskStep::Conflicted => {}
+            TaskStep::Advanced(advanced) => {
+                self.expired += u32::from(advanced.expired);
+                self.fired += u32::from(advanced.fired);
+            }
+        }
+    }
+}
+
+async fn tick_task(
+    deps: &RecurrenceDeps<'_>,
+    columns: &DoneColumns,
+    task: &Task,
+    now: Timestamp,
+) -> Result<TaskStep, AppError> {
+    if !project_is_active(deps.projects, task.project_id).await? {
+        return Ok(TaskStep::SkippedInactive);
+    }
+    let advanced = advance_task(deps, columns, task, now).await?;
+    Ok(advanced.map_or(TaskStep::Conflicted, TaskStep::Advanced))
+}
+
+/// `anamnesis-app` has no logging crate (see
+/// `super::indexing::log_index_failure`), so this goes to stderr.
+fn log_tick_failure(task_id: TaskId, err: &AppError) {
+    eprintln!("anamnesis: recurrence tick could not update task {task_id}: {err}");
 }
 
 async fn project_is_active(
@@ -376,7 +424,7 @@ async fn advance_task(
     }
     if fired {
         reindex_if_restored(deps.search, task, &next).await;
-        reset_checklist(deps, columns, next.id).await?;
+        reset_checklist(deps, columns, next.id).await;
     }
     Ok(Some(Advanced { expired, fired }))
 }
@@ -500,20 +548,24 @@ async fn reindex_if_restored(search: &dyn SearchIndex, before: &Task, after: &Ta
 /// Resets a fired chore's finished checklist: every item that is archived
 /// or in a done column goes back below the horizon, un-archived. Unfinished
 /// items stay where they are.
-async fn reset_checklist(
-    deps: &RecurrenceDeps<'_>,
-    columns: &DoneColumns,
-    parent: TaskId,
-) -> Result<(), AppError> {
-    for item in deps.tasks.list_checklist_including_archived(parent).await? {
+///
+/// The chore itself has already been written by now, so an error here is
+/// logged per item and the rest carry on; it cannot un-fire the chore.
+async fn reset_checklist(deps: &RecurrenceDeps<'_>, columns: &DoneColumns, parent: TaskId) {
+    let items = match deps.tasks.list_checklist_including_archived(parent).await {
+        Ok(items) => items,
+        Err(err) => return log_tick_failure(parent, &err.into()),
+    };
+    for item in items {
         let Some(reset) = core::reset_checklist_item(&item, columns.holds(item.placement)) else {
             continue;
         };
-        if write_back(deps.tasks, &reset, item.last_touched_at).await? {
-            reindex_if_restored(deps.search, &item, &reset).await;
+        match write_back(deps.tasks, &reset, item.last_touched_at).await {
+            Ok(true) => reindex_if_restored(deps.search, &item, &reset).await,
+            Ok(false) => {}
+            Err(err) => log_tick_failure(item.id, &err),
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]

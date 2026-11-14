@@ -124,10 +124,17 @@ async fn run_tick(state: &AppState, now: Timestamp) -> Result<RecurrenceTick, Ap
 }
 
 fn log_tick(tick: RecurrenceTick) {
+    if tick.failed > 0 {
+        tracing::warn!(
+            failed = tick.failed,
+            "recurrence tick: some chores could not be updated (each is logged); retrying them next tick"
+        );
+    }
     tracing::debug!(
         fired = tick.fired,
         expired = tick.expired,
         skipped_inactive = tick.skipped_inactive,
+        failed = tick.failed,
         "recurrence tick ran"
     );
 }
