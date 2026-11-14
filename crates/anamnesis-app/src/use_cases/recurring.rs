@@ -154,6 +154,21 @@ fn upcoming_firing(
     next_due_instant(schedule, today, last_completed, tz, zone)
 }
 
+/// The local date [`set_task_schedule`] would make `schedule` next due on if
+/// saved at `now`: the first occurrence whose pop-in is still ahead. What a
+/// preview of an edited schedule should start from, so it never shows a
+/// date that will not fire (tonight's 6pm, once it is 8pm).
+pub fn upcoming_due_date(
+    schedule: &Schedule,
+    now: Timestamp,
+    last_completed: Option<Date>,
+    tz: &dyn TimezoneResolver,
+    zone: &str,
+) -> Result<Date, AppError> {
+    let firing = upcoming_firing(schedule, now, last_completed, tz, zone)?;
+    Ok(tz.local_date(zone, firing.next_due_at)?)
+}
+
 /// `instant`'s local date, if any.
 fn local_date_of(
     instant: Option<Timestamp>,

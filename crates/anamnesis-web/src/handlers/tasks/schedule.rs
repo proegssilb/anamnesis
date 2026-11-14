@@ -26,11 +26,11 @@ use serde::Serialize;
 use time::{Date, Duration, Time, Weekday};
 
 use anamnesis_app::policy::{Action, is_allowed};
-use anamnesis_app::{AppError, set_task_schedule};
+use anamnesis_app::{AppError, TimezoneResolver, set_task_schedule, upcoming_due_date};
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
-    Anchor, MonthDay, Nth, ParseError, PopIn, Rule, Schedule, Task, TaskId, WeekdaySet, describe,
-    first_start, parse, upcoming,
+    Anchor, MonthDay, Nth, ParseError, PopIn, Rule, Schedule, Task, TaskId, Timestamp, WeekdaySet,
+    describe, first_start, parse, upcoming,
 };
 
 use crate::auth::CurrentUser;
@@ -506,14 +506,62 @@ fn format_occurrence(date: Date, at: Option<Time>) -> String {
     }
 }
 
-/// The next dates `schedule` comes due, counting today.
-fn preview_dates(schedule: &Schedule, today: Date, last_completed: Option<Date>) -> Vec<String> {
-    let after = today - Duration::DAY;
+/// The dates `schedule` comes due, starting with `first` (itself an
+/// occurrence: the date it will next fire on).
+fn preview_dates(schedule: &Schedule, first: Date, last_completed: Option<Date>) -> Vec<String> {
     let at = schedule.pop_in.map(|p| p.at);
-    upcoming(schedule, after, last_completed, PREVIEW_COUNT)
-        .into_iter()
-        .map(|date| format_occurrence(date, at))
-        .collect()
+    upcoming(
+        schedule,
+        first - Duration::DAY,
+        last_completed,
+        PREVIEW_COUNT,
+    )
+    .into_iter()
+    .map(|date| format_occurrence(date, at))
+    .collect()
+}
+
+/// The preview for `schedule` saved at `now`, starting from the date
+/// `set_task_schedule` would make it next due on — never tonight's pop-in
+/// once it has passed.
+fn preview_from_now(
+    schedule: &Schedule,
+    now: Timestamp,
+    last_completed: Option<Date>,
+    tz: &dyn TimezoneResolver,
+    zone: &str,
+) -> Result<Vec<String>, AppError> {
+    let first = upcoming_due_date(schedule, now, last_completed, tz, zone)?;
+    Ok(preview_dates(schedule, first, last_completed))
+}
+
+/// The "Next:" dates for `schedule` on `task`. The task's own schedule
+/// starts from its stored `next_due_at` (which an unchanged save keeps);
+/// anything else, or a paused one, from the first pop-in after now.
+fn preview_for_task(
+    state: &AppState,
+    task: &Task,
+    schedule: &Schedule,
+) -> Result<Vec<String>, WebError> {
+    let last = last_completed_date(state, task)?;
+    let stored_next = task
+        .recurrence
+        .as_ref()
+        .filter(|r| r.schedule == *schedule)
+        .and_then(|r| r.next_due_at);
+    let zone = &state.timezone_name;
+    if let Some(next) = stored_next {
+        let first = state.timezone.local_date(zone, next)?;
+        return Ok(preview_dates(schedule, first, last));
+    }
+    let now = state.clock.now();
+    Ok(preview_from_now(
+        schedule,
+        now,
+        last,
+        state.timezone.as_ref(),
+        zone,
+    )?)
 }
 
 fn local_today(state: &AppState) -> Result<Date, WebError> {
@@ -538,14 +586,10 @@ pub(super) fn editor_for_task(
     task: &Task,
 ) -> Result<EditorView, WebError> {
     let (form, next) = match task.recurrence.as_ref() {
-        Some(recurrence) => {
-            let today = local_today(state)?;
-            let last = last_completed_date(state, task)?;
-            (
-                ScheduleForm::from_schedule(&recurrence.schedule),
-                preview_dates(&recurrence.schedule, today, last),
-            )
-        }
+        Some(recurrence) => (
+            ScheduleForm::from_schedule(&recurrence.schedule),
+            preview_for_task(state, task, &recurrence.schedule)?,
+        ),
         None => (ScheduleForm::default(), Vec::new()),
     };
     Ok(EditorView::new(user, task.id, form, None, next))
@@ -607,8 +651,7 @@ async fn preview_impl(
     let stored = task.recurrence.as_ref().map(|r| &r.schedule);
     let view = match schedule_from_form(&form, today, stored) {
         Ok(Some(schedule)) => {
-            let last = last_completed_date(state, &task)?;
-            let next = preview_dates(&schedule, today, last);
+            let next = preview_for_task(state, &task, &schedule)?;
             let mut shown = ScheduleForm::from_schedule(&schedule);
             let reads_as = shown.phrase.clone();
             // Never rewrite what the user is typing: the canonical reading
@@ -737,6 +780,33 @@ mod tests {
         assert_eq!(from_phrase, Some(stored));
         let from_builder = schedule_from_form(&after_done_months(), LATER, Some(&stored)).unwrap();
         assert_eq!(from_builder, Some(stored));
+    }
+
+    /// `date` at `hh:00` UTC.
+    fn utc(date: Date, hour: u8) -> anamnesis_core::Timestamp {
+        let at = date.with_hms(hour, 0, 0).unwrap().assume_utc();
+        anamnesis_core::Timestamp::from_unix_seconds(at.unix_timestamp()).unwrap()
+    }
+
+    #[test]
+    fn preview_after_tonights_pop_in_starts_next_week() {
+        let tuesday = date!(2026 - 11 - 17);
+        let schedule = parse("every tue at 6pm", tuesday).unwrap();
+        let tz = anamnesis_adapters::TzTimezoneResolver::new();
+        let evening = preview_from_now(&schedule, utc(tuesday, 20), None, &tz, "UTC").unwrap();
+        assert_eq!(
+            evening,
+            ["Tue Nov 24 6:00pm", "Tue Dec 1 6:00pm", "Tue Dec 8 6:00pm"]
+        );
+        let morning = preview_from_now(&schedule, utc(tuesday, 9), None, &tz, "UTC").unwrap();
+        assert_eq!(morning[0], "Tue Nov 17 6:00pm");
+    }
+
+    #[test]
+    fn a_saved_schedules_preview_starts_at_its_stored_next_due_date() {
+        let schedule = parse("every tue at 6pm", date!(2026 - 11 - 17)).unwrap();
+        let next = preview_dates(&schedule, date!(2026 - 12 - 1), None);
+        assert_eq!(next[0], "Tue Dec 1 6:00pm");
     }
 
     fn phrase_form(phrase: &str) -> ScheduleForm {

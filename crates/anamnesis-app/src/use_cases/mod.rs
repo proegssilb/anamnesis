@@ -57,6 +57,7 @@ pub use project::{
 };
 pub use recurring::{
     RecurrenceDeps, RecurrenceTick, next_due_instant, run_recurrence_tick, set_task_schedule,
+    upcoming_due_date,
 };
 pub use relationship::{create_relationship, delete_relationship, resolve_kind};
 pub use settings::{update_settings, view_settings};

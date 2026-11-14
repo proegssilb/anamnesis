@@ -68,6 +68,6 @@ pub use use_cases::{
     revoke_project_group_role, revoke_project_role, revoke_system_admin, run_and_record,
     run_recurrence_tick, run_tangle_detection, set_checklist_position, set_task_field_value,
     set_task_parent, set_task_schedule, transition_project_status, unarchive_project,
-    unarchive_task, update_settings, upload_file_part, view_area, view_project, view_settings,
-    view_sync_status, view_task,
+    unarchive_task, upcoming_due_date, update_settings, upload_file_part, view_area, view_project,
+    view_settings, view_sync_status, view_task,
 };

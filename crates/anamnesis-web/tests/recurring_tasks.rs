@@ -12,10 +12,14 @@ use anamnesis_app::{BoardQuery, TaskRepository};
 use anamnesis_core::TaskId;
 use support::{DEV_CSRF_TOKEN, TestApp, body_text, location_of};
 
-/// The next three Tuesdays on or after today (UTC is the test zone), as the
-/// preview formats them for an `at 6pm` schedule.
+/// The next three Tuesday 6pms still ahead (UTC is the test zone), as the
+/// preview formats them — after 6pm on a Tuesday, today's has passed.
 fn next_three_tuesdays_at_6pm() -> Vec<String> {
-    let mut day: Date = OffsetDateTime::now_utc().date();
+    let now = OffsetDateTime::now_utc();
+    let mut day: Date = now.date();
+    if day.weekday() == Weekday::Tuesday && now.hour() >= 18 {
+        day += Duration::DAY;
+    }
     while day.weekday() != Weekday::Tuesday {
         day += Duration::DAY;
     }
