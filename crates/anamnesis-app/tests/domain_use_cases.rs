@@ -1336,6 +1336,28 @@ impl TaskRepository for Contended<'_> {
     async fn set_field_value(&self, value: &anamnesis_core::FieldValue) -> Result<(), RepoError> {
         self.inner.set_field_value(value).await
     }
+
+    async fn list_recurrence_actionable(
+        &self,
+        now: anamnesis_core::Timestamp,
+    ) -> Result<Vec<Task>, RepoError> {
+        self.inner.list_recurrence_actionable(now).await
+    }
+
+    async fn earliest_recurrence_event(
+        &self,
+    ) -> Result<Option<anamnesis_core::Timestamp>, RepoError> {
+        self.inner.earliest_recurrence_event().await
+    }
+
+    async fn list_checklist_including_archived(
+        &self,
+        parent_id: TaskId,
+    ) -> Result<Vec<Task>, RepoError> {
+        self.inner
+            .list_checklist_including_archived(parent_id)
+            .await
+    }
 }
 
 /// Two tasks sitting in one Done column, ready to be swept.

@@ -17,7 +17,7 @@ use axum::extract::State;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use minijinja::context;
 
-use anamnesis_app::{AppError, DEFAULT_DUE_SLOT_PERCENT, Settings, update_settings, view_settings};
+use anamnesis_app::{AppError, Settings, update_settings, view_settings};
 use anamnesis_core::policy::Role;
 use anamnesis_core::{Recurrence, SuggestionSettings};
 
@@ -137,6 +137,9 @@ async fn update_settings_impl(
     }
     let admin = access::is_system_admin(state, &user.user_id).await?;
     let role = admin.then_some(Role::SystemAdmin);
+    // The due-slot percentage is not on the form yet, so saving keeps
+    // whatever is stored rather than resetting it.
+    let stored = view_settings(state.settings.as_ref(), role).await?;
 
     let new_settings = Settings {
         active_project_limit: parse_u32(&form.active_project_limit, "the active project limit")?,
@@ -146,8 +149,7 @@ async fn update_settings_impl(
                 &form.high_bounce_threshold,
                 "the high-bounce threshold",
             )?,
-            // Not on the form yet (Task 5 adds and persists it).
-            due_slot_percent: DEFAULT_DUE_SLOT_PERCENT,
+            due_slot_percent: stored.suggestion.due_slot_percent,
         },
         sweep_recurrence: parse_recurrence(&form)?,
         // Ignored by `SettingsRepository::update` (see its doc comment) --

@@ -157,6 +157,22 @@ pub trait TaskRepository: Send + Sync {
         expected_last_touched_at: Timestamp,
     ) -> Result<(), TaskUpdateError>;
     async fn set_field_value(&self, value: &FieldValue) -> Result<(), RepoError>;
+    /// Every recurring task (archived included) whose `next_due_at` or
+    /// `expires_at` is at or before `now` -- the recurrence ticker's
+    /// worklist. A paused task has no `next_due_at`, so it never matches
+    /// on that account.
+    async fn list_recurrence_actionable(&self, now: Timestamp) -> Result<Vec<Task>, RepoError>;
+    /// The earliest upcoming `next_due_at` or `expires_at` over every
+    /// recurring task, or `None` when nothing is scheduled -- how long the
+    /// recurrence ticker may sleep.
+    async fn earliest_recurrence_event(&self) -> Result<Option<Timestamp>, RepoError>;
+    /// A task's immediate checklist children, archived items included
+    /// (unlike [`Self::list_children`]) -- a recurring chore's checklist
+    /// reset must reach items the user has archived.
+    async fn list_checklist_including_archived(
+        &self,
+        parent_id: TaskId,
+    ) -> Result<Vec<Task>, RepoError>;
 }
 
 /// Loads, lists, and writes [`Relationship`] edges and looks up the

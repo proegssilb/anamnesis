@@ -20,7 +20,7 @@
 use anamnesis_app::{RepoError, TaskAggregate, TaskRepository, TaskUpdateError};
 use anamnesis_core::{
     ColumnId, CurrencyAmount, CurrencyCode, FieldData, FieldId, FieldKind, NumberValue, Placement,
-    ProjectId, Task, TaskId, Timestamp,
+    ProjectId, Task, TaskId, TaskRecurrence, Timestamp,
 };
 use async_trait::async_trait;
 use sqlx::{PgPool, Row, SqlitePool};
@@ -215,6 +215,81 @@ pub(super) fn decode_placement(
     }
 }
 
+/// The five stored columns a [`TaskRecurrence`] spreads over. Identical in
+/// both backends (text plus nullable integer seconds).
+pub(super) struct RecurrenceColumns {
+    pub(super) schedule_json: Option<String>,
+    pub(super) next_due_at: Option<i64>,
+    pub(super) expires_at: Option<i64>,
+    pub(super) last_completed_at: Option<i64>,
+    pub(super) due_since: Option<i64>,
+}
+
+fn encode_recurrence(recurrence: Option<&TaskRecurrence>) -> Result<RecurrenceColumns, RepoError> {
+    let Some(r) = recurrence else {
+        return Ok(RecurrenceColumns {
+            schedule_json: None,
+            next_due_at: None,
+            expires_at: None,
+            last_completed_at: None,
+            due_since: None,
+        });
+    };
+    let seconds = |t: Option<Timestamp>| t.map(|t| t.unix_seconds());
+    Ok(RecurrenceColumns {
+        schedule_json: Some(
+            serde_json::to_string(&r.schedule)
+                .map_err(|e| RepoError::from_source("failed to encode task schedule", e))?,
+        ),
+        next_due_at: seconds(r.next_due_at),
+        expires_at: seconds(r.expires_at),
+        last_completed_at: seconds(r.last_completed_at),
+        due_since: seconds(r.due_since),
+    })
+}
+
+/// `schedule_json IS NULL` means not recurring; an unparseable one is a
+/// corrupt row, reported rather than silently dropped.
+fn decode_recurrence(cols: RecurrenceColumns) -> Result<Option<TaskRecurrence>, RepoError> {
+    let Some(json) = cols.schedule_json else {
+        return Ok(None);
+    };
+    let schedule = serde_json::from_str(&json)
+        .map_err(|e| RepoError::from_source("stored task schedule is not valid", e))?;
+    let seconds = |t: Option<i64>| t.map(timestamp_from_seconds).transpose();
+    Ok(Some(TaskRecurrence {
+        schedule,
+        next_due_at: seconds(cols.next_due_at)?,
+        expires_at: seconds(cols.expires_at)?,
+        last_completed_at: seconds(cols.last_completed_at)?,
+        due_since: seconds(cols.due_since)?,
+    }))
+}
+
+pub(super) fn sqlite_recurrence(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<Option<TaskRecurrence>, RepoError> {
+    decode_recurrence(RecurrenceColumns {
+        schedule_json: row.get("schedule_json"),
+        next_due_at: row.get("next_due_at"),
+        expires_at: row.get("expires_at"),
+        last_completed_at: row.get("last_completed_at"),
+        due_since: row.get("due_since"),
+    })
+}
+
+pub(super) fn postgres_recurrence(
+    row: &sqlx::postgres::PgRow,
+) -> Result<Option<TaskRecurrence>, RepoError> {
+    decode_recurrence(RecurrenceColumns {
+        schedule_json: row.get("schedule_json"),
+        next_due_at: row.get("next_due_at"),
+        expires_at: row.get("expires_at"),
+        last_completed_at: row.get("last_completed_at"),
+        due_since: row.get("due_since"),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn assemble_task(
     id: uuid::Uuid,
@@ -232,6 +307,7 @@ pub(super) fn assemble_task(
     bounce_count: i64,
     last_bounced_at: Option<i64>,
     last_offered_at: Option<i64>,
+    recurrence: Option<TaskRecurrence>,
 ) -> Result<Task, RepoError> {
     Ok(Task {
         id: TaskId::new(id),
@@ -249,13 +325,14 @@ pub(super) fn assemble_task(
             .map_err(|e| RepoError::from_source("stored bounce count out of range", e))?,
         last_bounced_at: last_bounced_at.map(timestamp_from_seconds).transpose()?,
         last_offered_at: last_offered_at.map(timestamp_from_seconds).transpose()?,
-        recurrence: None,
+        recurrence,
     })
 }
 
 pub(super) const TASK_COLUMNS: &str = "id, project_id, title, description, placement_kind, column_id, \
      board_position, parent_task_id, checklist_position, created_at, last_touched_at, \
-     archived_at, bounce_count, last_bounced_at, last_offered_at";
+     archived_at, bounce_count, last_bounced_at, last_offered_at, schedule_json, next_due_at, \
+     expires_at, last_completed_at, due_since";
 
 mod sqlite_impl {
     use super::*;
@@ -279,6 +356,7 @@ mod sqlite_impl {
             row.get::<i64, _>("bounce_count"),
             row.get::<Option<i64>, _>("last_bounced_at"),
             row.get::<Option<i64>, _>("last_offered_at"),
+            sqlite_recurrence(row)?,
         )
     }
 
@@ -350,6 +428,54 @@ mod sqlite_impl {
         rows.iter().map(task_from_row).collect()
     }
 
+    pub(super) async fn list_checklist_including_archived(
+        pool: &SqlitePool,
+        parent_id: TaskId,
+    ) -> Result<Vec<Task>, RepoError> {
+        let query = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE parent_task_id = ? \
+             ORDER BY checklist_position"
+        );
+        let rows = sqlx::query(sqlx::AssertSqlSafe(query))
+            .bind(parent_id.as_uuid().to_string())
+            .fetch_all(pool)
+            .await
+            .map_err(|e| RepoError::from_source("failed to list checklist items", e))?;
+        rows.iter().map(task_from_row).collect()
+    }
+
+    pub(super) async fn list_recurrence_actionable(
+        pool: &SqlitePool,
+        now: Timestamp,
+    ) -> Result<Vec<Task>, RepoError> {
+        let query = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE schedule_json IS NOT NULL \
+             AND (next_due_at <= ? OR expires_at <= ?) ORDER BY created_at"
+        );
+        let rows = sqlx::query(sqlx::AssertSqlSafe(query))
+            .bind(now.unix_seconds())
+            .bind(now.unix_seconds())
+            .fetch_all(pool)
+            .await
+            .map_err(|e| RepoError::from_source("failed to list actionable recurring tasks", e))?;
+        rows.iter().map(task_from_row).collect()
+    }
+
+    pub(super) async fn earliest_recurrence_event(
+        pool: &SqlitePool,
+    ) -> Result<Option<Timestamp>, RepoError> {
+        let earliest: Option<i64> = sqlx::query_scalar(
+            "SELECT MIN(at) FROM (\
+               SELECT next_due_at AS at FROM tasks WHERE schedule_json IS NOT NULL \
+               UNION ALL \
+               SELECT expires_at AS at FROM tasks WHERE expires_at IS NOT NULL) AS events",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(|e| RepoError::from_source("failed to find the earliest recurrence event", e))?;
+        earliest.map(timestamp_from_seconds).transpose()
+    }
+
     pub(super) async fn list_by_project(
         pool: &SqlitePool,
         project_id: ProjectId,
@@ -377,12 +503,14 @@ mod sqlite_impl {
 
     pub(super) async fn insert(pool: &SqlitePool, task: &Task) -> Result<(), RepoError> {
         let (placement_kind, column_id, board_position) = encode_placement(&task.placement);
+        let rec = encode_recurrence(task.recurrence.as_ref())?;
         sqlx::query(
             "INSERT INTO tasks \
              (id, project_id, title, description, placement_kind, column_id, board_position, \
               parent_task_id, checklist_position, created_at, last_touched_at, archived_at, \
-              bounce_count, last_bounced_at, last_offered_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              bounce_count, last_bounced_at, last_offered_at, schedule_json, next_due_at, \
+              expires_at, last_completed_at, due_since) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(task.id.as_uuid().to_string())
         .bind(task.project_id.as_uuid().to_string())
@@ -399,6 +527,11 @@ mod sqlite_impl {
         .bind(i64::from(task.bounce_count))
         .bind(task.last_bounced_at.map(|t| t.unix_seconds()))
         .bind(task.last_offered_at.map(|t| t.unix_seconds()))
+        .bind(rec.schedule_json)
+        .bind(rec.next_due_at)
+        .bind(rec.expires_at)
+        .bind(rec.last_completed_at)
+        .bind(rec.due_since)
         .execute(pool)
         .await
         .map_err(|e| RepoError::from_source("failed to insert task", e))?;
@@ -413,13 +546,16 @@ mod sqlite_impl {
     fn bind_task_update<'a>(
         task: &'a Task,
         id_text: &'a str,
-    ) -> sqlx::query::Query<'a, sqlx::Sqlite, sqlx::sqlite::SqliteArguments> {
+    ) -> Result<sqlx::query::Query<'a, sqlx::Sqlite, sqlx::sqlite::SqliteArguments>, RepoError>
+    {
         let (placement_kind, column_id, board_position) = encode_placement(&task.placement);
-        sqlx::query(
+        let rec = encode_recurrence(task.recurrence.as_ref())?;
+        Ok(sqlx::query(
             "UPDATE tasks SET title = ?, description = ?, placement_kind = ?, column_id = ?, \
              board_position = ?, parent_task_id = ?, checklist_position = ?, \
              last_touched_at = ?, archived_at = ?, bounce_count = ?, last_bounced_at = ?, \
-             last_offered_at = ? WHERE id = ?",
+             last_offered_at = ?, schedule_json = ?, next_due_at = ?, expires_at = ?, \
+             last_completed_at = ?, due_since = ? WHERE id = ?",
         )
         .bind(task.title.as_str())
         .bind(&task.description)
@@ -433,7 +569,12 @@ mod sqlite_impl {
         .bind(i64::from(task.bounce_count))
         .bind(task.last_bounced_at.map(|t| t.unix_seconds()))
         .bind(task.last_offered_at.map(|t| t.unix_seconds()))
-        .bind(id_text)
+        .bind(rec.schedule_json)
+        .bind(rec.next_due_at)
+        .bind(rec.expires_at)
+        .bind(rec.last_completed_at)
+        .bind(rec.due_since)
+        .bind(id_text))
     }
 
     pub(super) async fn update(
@@ -461,7 +602,7 @@ mod sqlite_impl {
             _ => {}
         }
 
-        bind_task_update(task, &id_text)
+        bind_task_update(task, &id_text)?
             .execute(&mut *tx)
             .await
             .map_err(|e| RepoError::from_source("failed to update task", e))?;
@@ -520,6 +661,7 @@ mod postgres_impl {
             i64::from(row.get::<i32, _>("bounce_count")),
             row.get::<Option<i64>, _>("last_bounced_at"),
             row.get::<Option<i64>, _>("last_offered_at"),
+            postgres_recurrence(row)?,
         )
     }
 
@@ -589,6 +731,53 @@ mod postgres_impl {
         rows.iter().map(task_from_row).collect()
     }
 
+    pub(super) async fn list_checklist_including_archived(
+        pool: &PgPool,
+        parent_id: TaskId,
+    ) -> Result<Vec<Task>, RepoError> {
+        let query = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE parent_task_id = $1 \
+             ORDER BY checklist_position"
+        );
+        let rows = sqlx::query(sqlx::AssertSqlSafe(query))
+            .bind(parent_id.as_uuid())
+            .fetch_all(pool)
+            .await
+            .map_err(|e| RepoError::from_source("failed to list checklist items", e))?;
+        rows.iter().map(task_from_row).collect()
+    }
+
+    pub(super) async fn list_recurrence_actionable(
+        pool: &PgPool,
+        now: Timestamp,
+    ) -> Result<Vec<Task>, RepoError> {
+        let query = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE schedule_json IS NOT NULL \
+             AND (next_due_at <= $1 OR expires_at <= $1) ORDER BY created_at"
+        );
+        let rows = sqlx::query(sqlx::AssertSqlSafe(query))
+            .bind(now.unix_seconds())
+            .fetch_all(pool)
+            .await
+            .map_err(|e| RepoError::from_source("failed to list actionable recurring tasks", e))?;
+        rows.iter().map(task_from_row).collect()
+    }
+
+    pub(super) async fn earliest_recurrence_event(
+        pool: &PgPool,
+    ) -> Result<Option<Timestamp>, RepoError> {
+        let earliest: Option<i64> = sqlx::query_scalar(
+            "SELECT MIN(at) FROM (\
+               SELECT next_due_at AS at FROM tasks WHERE schedule_json IS NOT NULL \
+               UNION ALL \
+               SELECT expires_at AS at FROM tasks WHERE expires_at IS NOT NULL) AS events",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(|e| RepoError::from_source("failed to find the earliest recurrence event", e))?;
+        earliest.map(timestamp_from_seconds).transpose()
+    }
+
     pub(super) async fn list_by_project(
         pool: &PgPool,
         project_id: ProjectId,
@@ -624,12 +813,15 @@ mod postgres_impl {
             .map_err(|e| RepoError::from_source("checklist position out of range", e))?;
         let bounce_count = i32::try_from(task.bounce_count)
             .map_err(|e| RepoError::from_source("bounce count out of range", e))?;
+        let rec = encode_recurrence(task.recurrence.as_ref())?;
         sqlx::query(
             "INSERT INTO tasks \
              (id, project_id, title, description, placement_kind, column_id, board_position, \
               parent_task_id, checklist_position, created_at, last_touched_at, archived_at, \
-              bounce_count, last_bounced_at, last_offered_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+              bounce_count, last_bounced_at, last_offered_at, schedule_json, next_due_at, \
+              expires_at, last_completed_at, due_since) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
+                     $17, $18, $19, $20)",
         )
         .bind(task.id.as_uuid())
         .bind(task.project_id.as_uuid())
@@ -646,6 +838,11 @@ mod postgres_impl {
         .bind(bounce_count)
         .bind(task.last_bounced_at.map(|t| t.unix_seconds()))
         .bind(task.last_offered_at.map(|t| t.unix_seconds()))
+        .bind(rec.schedule_json)
+        .bind(rec.next_due_at)
+        .bind(rec.expires_at)
+        .bind(rec.last_completed_at)
+        .bind(rec.due_since)
         .execute(pool)
         .await
         .map_err(|e| RepoError::from_source("failed to insert task", e))?;
@@ -668,11 +865,13 @@ mod postgres_impl {
             .map_err(|e| RepoError::from_source("checklist position out of range", e))?;
         let bounce_count = i32::try_from(task.bounce_count)
             .map_err(|e| RepoError::from_source("bounce count out of range", e))?;
+        let rec = encode_recurrence(task.recurrence.as_ref())?;
         Ok(sqlx::query(
             "UPDATE tasks SET title = $1, description = $2, placement_kind = $3, column_id = $4, \
              board_position = $5, parent_task_id = $6, checklist_position = $7, \
              last_touched_at = $8, archived_at = $9, bounce_count = $10, last_bounced_at = $11, \
-             last_offered_at = $12 WHERE id = $13",
+             last_offered_at = $12, schedule_json = $13, next_due_at = $14, expires_at = $15, \
+             last_completed_at = $16, due_since = $17 WHERE id = $18",
         )
         .bind(task.title.as_str())
         .bind(&task.description)
@@ -686,6 +885,11 @@ mod postgres_impl {
         .bind(bounce_count)
         .bind(task.last_bounced_at.map(|t| t.unix_seconds()))
         .bind(task.last_offered_at.map(|t| t.unix_seconds()))
+        .bind(rec.schedule_json)
+        .bind(rec.next_due_at)
+        .bind(rec.expires_at)
+        .bind(rec.last_completed_at)
+        .bind(rec.due_since)
         .bind(task.id.as_uuid()))
     }
 
@@ -808,6 +1012,34 @@ impl TaskRepository for SqlStore {
         match &self.backend {
             Backend::Sqlite(pool) => sqlite_impl::set_field_value(pool, value).await,
             Backend::Postgres(pool) => postgres_impl::set_field_value(pool, value).await,
+        }
+    }
+
+    async fn list_recurrence_actionable(&self, now: Timestamp) -> Result<Vec<Task>, RepoError> {
+        match &self.backend {
+            Backend::Sqlite(pool) => sqlite_impl::list_recurrence_actionable(pool, now).await,
+            Backend::Postgres(pool) => postgres_impl::list_recurrence_actionable(pool, now).await,
+        }
+    }
+
+    async fn earliest_recurrence_event(&self) -> Result<Option<Timestamp>, RepoError> {
+        match &self.backend {
+            Backend::Sqlite(pool) => sqlite_impl::earliest_recurrence_event(pool).await,
+            Backend::Postgres(pool) => postgres_impl::earliest_recurrence_event(pool).await,
+        }
+    }
+
+    async fn list_checklist_including_archived(
+        &self,
+        parent_id: TaskId,
+    ) -> Result<Vec<Task>, RepoError> {
+        match &self.backend {
+            Backend::Sqlite(pool) => {
+                sqlite_impl::list_checklist_including_archived(pool, parent_id).await
+            }
+            Backend::Postgres(pool) => {
+                postgres_impl::list_checklist_including_archived(pool, parent_id).await
+            }
         }
     }
 }

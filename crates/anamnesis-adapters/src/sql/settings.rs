@@ -79,6 +79,7 @@ fn assemble(
     sweep_recurrence_day: Option<i64>,
     suggestion_cooldown_seconds: i64,
     suggestion_high_bounce_threshold: i64,
+    suggestion_due_slot_percent: i64,
     last_swept_at: Option<i64>,
 ) -> Result<Settings, RepoError> {
     Ok(Settings {
@@ -88,8 +89,8 @@ fn assemble(
             cooldown_seconds: suggestion_cooldown_seconds,
             high_bounce_threshold: u32::try_from(suggestion_high_bounce_threshold)
                 .map_err(|e| RepoError::from_source("invalid stored high_bounce_threshold", e))?,
-            // Task 5 persists this column; until then every load gets the default.
-            due_slot_percent: anamnesis_app::DEFAULT_DUE_SLOT_PERCENT,
+            due_slot_percent: u8::try_from(suggestion_due_slot_percent)
+                .map_err(|e| RepoError::from_source("invalid stored due_slot_percent", e))?,
         },
         sweep_recurrence: decode_recurrence(
             &sweep_recurrence_kind,
@@ -111,6 +112,7 @@ struct PgSettingsNumbers {
     active_project_limit: i32,
     high_bounce_threshold: i32,
     cooldown_seconds: i32,
+    due_slot_percent: i32,
     n: Option<i32>,
     day: Option<i32>,
 }
@@ -127,6 +129,7 @@ fn narrow_settings_for_postgres(
             .map_err(|e| RepoError::from_source("high_bounce_threshold out of range", e))?,
         cooldown_seconds: i32::try_from(settings.suggestion.cooldown_seconds)
             .map_err(|e| RepoError::from_source("cooldown_seconds out of range", e))?,
+        due_slot_percent: i32::from(settings.suggestion.due_slot_percent),
         n: n.map(i32::try_from)
             .transpose()
             .map_err(|e| RepoError::from_source("recurrence n out of range", e))?,
@@ -177,8 +180,9 @@ mod sqlite_impl {
             "INSERT OR IGNORE INTO settings \
              (id, active_project_limit, timezone, sweep_recurrence_kind, \
               sweep_recurrence_n, sweep_recurrence_weekday, sweep_recurrence_day, \
-              suggestion_cooldown_seconds, suggestion_high_bounce_threshold) \
-             VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)",
+              suggestion_cooldown_seconds, suggestion_high_bounce_threshold, \
+              suggestion_due_slot_percent) \
+             VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(i64::from(defaults.active_project_limit))
         .bind(timezone)
@@ -188,6 +192,7 @@ mod sqlite_impl {
         .bind(day)
         .bind(defaults.suggestion.cooldown_seconds)
         .bind(i64::from(defaults.suggestion.high_bounce_threshold))
+        .bind(i64::from(defaults.suggestion.due_slot_percent))
         .execute(pool)
         .await
         .map_err(|e| RepoError::from_source("failed to seed default settings", e))?;
@@ -198,7 +203,8 @@ mod sqlite_impl {
         let row = sqlx::query(
             "SELECT active_project_limit, sweep_recurrence_kind, sweep_recurrence_n, \
              sweep_recurrence_weekday, sweep_recurrence_day, suggestion_cooldown_seconds, \
-             suggestion_high_bounce_threshold, last_swept_at FROM settings WHERE id = 1",
+             suggestion_high_bounce_threshold, suggestion_due_slot_percent, last_swept_at \
+             FROM settings WHERE id = 1",
         )
         .fetch_optional(pool)
         .await
@@ -212,6 +218,7 @@ mod sqlite_impl {
             row.get::<Option<i64>, _>("sweep_recurrence_day"),
             row.get::<i64, _>("suggestion_cooldown_seconds"),
             row.get::<i64, _>("suggestion_high_bounce_threshold"),
+            row.get::<i64, _>("suggestion_due_slot_percent"),
             row.get::<Option<i64>, _>("last_swept_at"),
         )
     }
@@ -221,7 +228,8 @@ mod sqlite_impl {
         sqlx::query(
             "UPDATE settings SET active_project_limit = ?, sweep_recurrence_kind = ?, \
              sweep_recurrence_n = ?, sweep_recurrence_weekday = ?, sweep_recurrence_day = ?, \
-             suggestion_cooldown_seconds = ?, suggestion_high_bounce_threshold = ? WHERE id = 1",
+             suggestion_cooldown_seconds = ?, suggestion_high_bounce_threshold = ?, \
+             suggestion_due_slot_percent = ? WHERE id = 1",
         )
         .bind(i64::from(settings.active_project_limit))
         .bind(kind)
@@ -230,6 +238,7 @@ mod sqlite_impl {
         .bind(day)
         .bind(settings.suggestion.cooldown_seconds)
         .bind(i64::from(settings.suggestion.high_bounce_threshold))
+        .bind(i64::from(settings.suggestion.due_slot_percent))
         .execute(pool)
         .await
         .map_err(|e| RepoError::from_source("failed to update settings", e))?;
@@ -263,8 +272,9 @@ mod postgres_impl {
             "INSERT INTO settings \
              (id, active_project_limit, timezone, sweep_recurrence_kind, \
               sweep_recurrence_n, sweep_recurrence_weekday, sweep_recurrence_day, \
-              suggestion_cooldown_seconds, suggestion_high_bounce_threshold) \
-             VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8) \
+              suggestion_cooldown_seconds, suggestion_high_bounce_threshold, \
+              suggestion_due_slot_percent) \
+             VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9) \
              ON CONFLICT (id) DO NOTHING",
         )
         .bind(numbers.active_project_limit)
@@ -275,6 +285,7 @@ mod postgres_impl {
         .bind(numbers.day)
         .bind(numbers.cooldown_seconds)
         .bind(numbers.high_bounce_threshold)
+        .bind(numbers.due_slot_percent)
         .execute(pool)
         .await
         .map_err(|e| RepoError::from_source("failed to seed default settings", e))?;
@@ -285,7 +296,8 @@ mod postgres_impl {
         let row = sqlx::query(
             "SELECT active_project_limit, sweep_recurrence_kind, sweep_recurrence_n, \
              sweep_recurrence_weekday, sweep_recurrence_day, suggestion_cooldown_seconds, \
-             suggestion_high_bounce_threshold, last_swept_at FROM settings WHERE id = 1",
+             suggestion_high_bounce_threshold, suggestion_due_slot_percent, last_swept_at \
+             FROM settings WHERE id = 1",
         )
         .fetch_optional(pool)
         .await
@@ -301,6 +313,7 @@ mod postgres_impl {
                 .map(i64::from),
             i64::from(row.get::<i32, _>("suggestion_cooldown_seconds")),
             i64::from(row.get::<i32, _>("suggestion_high_bounce_threshold")),
+            i64::from(row.get::<i32, _>("suggestion_due_slot_percent")),
             row.get::<Option<i64>, _>("last_swept_at"),
         )
     }
@@ -311,7 +324,8 @@ mod postgres_impl {
         sqlx::query(
             "UPDATE settings SET active_project_limit = $1, sweep_recurrence_kind = $2, \
              sweep_recurrence_n = $3, sweep_recurrence_weekday = $4, sweep_recurrence_day = $5, \
-             suggestion_cooldown_seconds = $6, suggestion_high_bounce_threshold = $7 WHERE id = 1",
+             suggestion_cooldown_seconds = $6, suggestion_high_bounce_threshold = $7, \
+             suggestion_due_slot_percent = $8 WHERE id = 1",
         )
         .bind(numbers.active_project_limit)
         .bind(kind)
@@ -320,6 +334,7 @@ mod postgres_impl {
         .bind(numbers.day)
         .bind(numbers.cooldown_seconds)
         .bind(numbers.high_bounce_threshold)
+        .bind(numbers.due_slot_percent)
         .execute(pool)
         .await
         .map_err(|e| RepoError::from_source("failed to update settings", e))?;

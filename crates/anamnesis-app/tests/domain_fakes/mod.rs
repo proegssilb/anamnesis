@@ -453,6 +453,50 @@ impl TaskRepository for Fakes {
         }
         Ok(())
     }
+
+    async fn list_recurrence_actionable(&self, now: Timestamp) -> Result<Vec<Task>, RepoError> {
+        Ok(self
+            .tasks
+            .lock()
+            .unwrap()
+            .values()
+            .map(|agg| agg.task.clone())
+            .filter(|t| {
+                t.recurrence.as_ref().is_some_and(|r| {
+                    r.next_due_at.is_some_and(|d| d <= now)
+                        || r.expires_at.is_some_and(|e| e <= now)
+                })
+            })
+            .collect())
+    }
+
+    async fn earliest_recurrence_event(&self) -> Result<Option<Timestamp>, RepoError> {
+        Ok(self
+            .tasks
+            .lock()
+            .unwrap()
+            .values()
+            .filter_map(|agg| agg.task.recurrence.as_ref())
+            .flat_map(|r| [r.next_due_at, r.expires_at])
+            .flatten()
+            .min())
+    }
+
+    async fn list_checklist_including_archived(
+        &self,
+        parent_id: TaskId,
+    ) -> Result<Vec<Task>, RepoError> {
+        let mut items: Vec<Task> = self
+            .tasks
+            .lock()
+            .unwrap()
+            .values()
+            .map(|agg| agg.task.clone())
+            .filter(|t| t.parent_task_id == Some(parent_id))
+            .collect();
+        items.sort_by_key(|t| t.checklist_position);
+        Ok(items)
+    }
 }
 
 #[async_trait]

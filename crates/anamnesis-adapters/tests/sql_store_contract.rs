@@ -22,6 +22,7 @@ use anamnesis_app::{
     TaskRepository, TaskSyncLink, TaskSyncLinkRepository, TaskUpdateError, UserDirectoryQuery,
     UserDirectoryRepository, import_comment,
 };
+use anamnesis_core::TaskRecurrence;
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
     Area, BlockingGraph, Column, CurrencyAmount, CurrencyCode, FieldData, FieldDefinition,
@@ -142,6 +143,7 @@ async fn contract(store: &SqlStore) {
     user_directory_contract(store).await;
     search_contract(store).await;
     settings_contract(store).await;
+    recurrence_contract(store).await;
     job_lease_contract(store).await;
 }
 
@@ -2614,4 +2616,141 @@ async fn postgres_store_contract() {
     raw.close().await;
 
     contract(&store).await;
+}
+
+// --- Recurrence ---
+
+fn recurring_task(project_id: ProjectId, due: Option<i64>, expires: Option<i64>) -> Task {
+    let today = time::Date::from_calendar_date(2026, time::Month::November, 13).unwrap();
+    let schedule = anamnesis_core::parse("every tue at 6pm until 8am", today).unwrap();
+    let mut t = task(project_id);
+    t.recurrence = Some(TaskRecurrence {
+        schedule,
+        next_due_at: due.map(ts),
+        expires_at: expires.map(ts),
+        last_completed_at: Some(ts(1_500)),
+        due_since: None,
+    });
+    t
+}
+
+async fn recurrence_contract(store: &SqlStore) {
+    let (_, p) = seed_area_and_project(store, 40, ProjectStatus::Active).await;
+    recurring_task_round_trips(store, p.id).await;
+    non_recurring_task_round_trips_as_none(store, p.id).await;
+    let ids = actionable_includes_due_and_expired_and_archived_but_not_future(store, p.id).await;
+    earliest_event_is_min_of_due_and_expiry(store, &ids).await;
+    checklist_listing_includes_archived_items(store, p.id).await;
+    settings_round_trip_due_slot_percent(store).await;
+    suggestion_candidates_carry_due_since(store, p.id).await;
+}
+
+async fn recurring_task_round_trips(store: &SqlStore, project_id: ProjectId) {
+    let mut t = recurring_task(project_id, Some(5_000), Some(6_000));
+    t.recurrence.as_mut().unwrap().due_since = Some(ts(4_000));
+    TaskRepository::insert(store, &t).await.unwrap();
+    let loaded = TaskRepository::load(store, t.id).await.unwrap().unwrap();
+    assert_eq!(loaded.task, t);
+
+    let mut edited = t.clone();
+    edited.recurrence.as_mut().unwrap().next_due_at = None;
+    edited.recurrence.as_mut().unwrap().expires_at = None;
+    TaskRepository::update(store, &edited, t.last_touched_at)
+        .await
+        .unwrap();
+    let loaded = TaskRepository::load(store, t.id).await.unwrap().unwrap();
+    assert_eq!(loaded.task, edited, "update persists recurrence changes");
+}
+
+async fn non_recurring_task_round_trips_as_none(store: &SqlStore, project_id: ProjectId) {
+    let t = task(project_id);
+    TaskRepository::insert(store, &t).await.unwrap();
+    let loaded = TaskRepository::load(store, t.id).await.unwrap().unwrap();
+    assert_eq!(loaded.task.recurrence, None);
+}
+
+/// Returns the ids of the tasks seeded here (all recurring tasks that are
+/// not paused), for the earliest-event contract.
+async fn actionable_includes_due_and_expired_and_archived_but_not_future(
+    store: &SqlStore,
+    project_id: ProjectId,
+) -> Vec<TaskId> {
+    let due = recurring_task(project_id, Some(10_000), None);
+    let expired = recurring_task(project_id, Some(90_000), Some(10_500));
+    let mut archived = recurring_task(project_id, Some(9_000), None);
+    archived.archived_at = Some(ts(2_500));
+    let future = recurring_task(project_id, Some(50_000), Some(60_000));
+    for t in [&due, &expired, &archived, &future] {
+        TaskRepository::insert(store, t).await.unwrap();
+    }
+    let actionable: Vec<TaskId> = TaskRepository::list_recurrence_actionable(store, ts(11_000))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    for t in [&due, &expired, &archived] {
+        assert!(actionable.contains(&t.id));
+    }
+    assert!(!actionable.contains(&future.id));
+    vec![due.id, expired.id, archived.id, future.id]
+}
+
+async fn earliest_event_is_min_of_due_and_expiry(store: &SqlStore, _ids: &[TaskId]) {
+    // The earliest event across every recurring row seeded so far: the
+    // archived task's 9_000 due time (paused tasks have NULL, this one is
+    // merely archived).
+    let earliest = TaskRepository::earliest_recurrence_event(store)
+        .await
+        .unwrap();
+    assert_eq!(earliest, Some(ts(9_000)));
+}
+
+async fn checklist_listing_includes_archived_items(store: &SqlStore, project_id: ProjectId) {
+    let parent = task(project_id);
+    let live = Task {
+        parent_task_id: Some(parent.id),
+        checklist_position: 0,
+        ..task(project_id)
+    };
+    let gone = Task {
+        parent_task_id: Some(parent.id),
+        checklist_position: 1,
+        archived_at: Some(ts(2_500)),
+        ..task(project_id)
+    };
+    for t in [&parent, &live, &gone] {
+        TaskRepository::insert(store, t).await.unwrap();
+    }
+    let all = TaskRepository::list_checklist_including_archived(store, parent.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        all.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![live.id, gone.id]
+    );
+    let active = TaskRepository::list_children(store, parent.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        active.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![live.id]
+    );
+}
+
+async fn settings_round_trip_due_slot_percent(store: &SqlStore) {
+    let mut settings = SettingsRepository::load(store).await.unwrap();
+    settings.suggestion.due_slot_percent = 35;
+    SettingsRepository::update(store, &settings).await.unwrap();
+    let loaded = SettingsRepository::load(store).await.unwrap();
+    assert_eq!(loaded.suggestion.due_slot_percent, 35);
+}
+
+async fn suggestion_candidates_carry_due_since(store: &SqlStore, project_id: ProjectId) {
+    let mut t = recurring_task(project_id, Some(99_000), None);
+    t.recurrence.as_mut().unwrap().due_since = Some(ts(7_777));
+    TaskRepository::insert(store, &t).await.unwrap();
+    let candidates = BoardQuery::suggestion_candidates(store).await.unwrap();
+    let c = candidates.iter().find(|c| c.task_id == t.id).unwrap();
+    assert_eq!(c.due_since, Some(ts(7_777)));
 }

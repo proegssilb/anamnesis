@@ -22,7 +22,7 @@ use sqlx::{PgPool, Row, SqlitePool};
 use super::tangle::{
     list_active_postgres, list_active_sqlite, list_by_column_postgres, list_by_column_sqlite,
 };
-use super::task::{TASK_COLUMNS, assemble_task};
+use super::task::{TASK_COLUMNS, assemble_task, postgres_recurrence, sqlite_recurrence};
 use super::{Backend, SqlStore, parse_uuid, project_status_from_text, title_from_text};
 
 /// Merges a column's tasks and placed tangles into one position-ordered
@@ -86,6 +86,7 @@ mod sqlite_impl {
             row.get::<i64, _>("bounce_count"),
             row.get::<Option<i64>, _>("last_bounced_at"),
             row.get::<Option<i64>, _>("last_offered_at"),
+            sqlite_recurrence(row)?,
         )
     }
 
@@ -291,6 +292,7 @@ mod postgres_impl {
             i64::from(row.get::<i32, _>("bounce_count")),
             row.get::<Option<i64>, _>("last_bounced_at"),
             row.get::<Option<i64>, _>("last_offered_at"),
+            postgres_recurrence(row)?,
         )
     }
 
