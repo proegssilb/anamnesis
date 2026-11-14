@@ -167,7 +167,7 @@ fn cadence(cursor: &mut Cursor, today: Date) -> Parsed<Cadence> {
             ));
         }
         return Ok(Cadence {
-            rule: build_rule(n, unit, WeekdaySet::new(), default_day(today))?,
+            rule: after_done_rule(n, unit)?,
             after_done: true,
         });
     }
@@ -188,9 +188,8 @@ fn every_cadence(cursor: &mut Cursor, today: Date) -> Parsed<Cadence> {
     }
     let (n, unit) = count_and_unit(cursor)?;
     if after_done(cursor)? {
-        let rule = build_rule(n, unit, WeekdaySet::new(), default_day(today))?;
         return Ok(Cadence {
-            rule,
+            rule: after_done_rule(n, unit)?,
             after_done: true,
         });
     }
@@ -198,6 +197,13 @@ fn every_cadence(cursor: &mut Cursor, today: Date) -> Parsed<Cadence> {
         rule: calendar_rule(cursor, n, unit, today)?,
         after_done: false,
     })
+}
+
+/// An after-done rule. Its `on` is ignored — the cadence counts from the
+/// completion — so it is a constant (no weekdays, the 1st), never derived
+/// from today: the same phrase saved on two days must give equal rules.
+fn after_done_rule(n: u16, unit: Unit) -> Parsed<Rule> {
+    build_rule(n, unit, WeekdaySet::new(), MonthDay::Day(1))
 }
 
 fn default_day(today: Date) -> MonthDay {
@@ -656,6 +662,16 @@ mod tests {
         let s = parse("3 months after done", TODAY).unwrap();
         assert_eq!(s.anchor, Anchor::AfterCompletion { set_on: TODAY });
         assert!(!s.is_deadline());
+    }
+
+    #[rstest]
+    #[case("every month after done")]
+    #[case("3 months after done")]
+    #[case("every 2 weeks after done")]
+    fn after_done_rule_does_not_depend_on_today(#[case] phrase: &str) {
+        let friday = parse(phrase, TODAY).unwrap();
+        let later = parse(phrase, date!(2026 - 11 - 26)).unwrap();
+        assert_eq!(friday.rule, later.rule);
     }
 
     #[rstest]

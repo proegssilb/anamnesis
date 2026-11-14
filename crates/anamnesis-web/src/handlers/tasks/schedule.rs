@@ -287,7 +287,7 @@ pub(super) fn schedule_from_builder(
     form: &ScheduleForm,
     today: Date,
 ) -> Result<Schedule, ParseError> {
-    let rule = rule_from_builder(form, today)?;
+    let rule = rule_from_builder(form)?;
     let anchor = if form.anchor == "after_done" {
         Anchor::AfterCompletion { set_on: today }
     } else {
@@ -308,13 +308,14 @@ pub(super) fn schedule_from_builder(
 
 /// The repeat interval and the days it lands on. After-done schedules have
 /// no days: the cadence is counted from the completion.
-fn rule_from_builder(form: &ScheduleForm, today: Date) -> Result<Rule, ParseError> {
+fn rule_from_builder(form: &ScheduleForm) -> Result<Rule, ParseError> {
     let n = whole_number(&form.every_n, "how often")?;
     let after_done = form.anchor == "after_done";
     match form.unit.as_str() {
         "days" => Ok(Rule::Days { n }),
         "weeks" => {
             let n = u8::try_from(n).map_err(|_| builder_error("every can be 255 at most"))?;
+            // `on` is ignored for after-done: the grammar's constant, no days.
             let on = if after_done {
                 WeekdaySet::new()
             } else {
@@ -324,8 +325,11 @@ fn rule_from_builder(form: &ScheduleForm, today: Date) -> Result<Rule, ParseErro
         }
         "months" => {
             let n = u8::try_from(n).map_err(|_| builder_error("every can be 255 at most"))?;
+            // `on` is ignored for after-done (counted from the completion),
+            // so it is the same constant the grammar uses, never today's day:
+            // otherwise re-saving an unchanged schedule would differ.
             let on = if after_done {
-                MonthDay::Day(today.day())
+                MonthDay::Day(1)
             } else {
                 month_day_from_builder(form)?
             };
@@ -698,4 +702,47 @@ async fn refuse_schedule(
         StatusCode::UNPROCESSABLE_ENTITY,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::macros::date;
+
+    const FRIDAY: Date = date!(2026 - 11 - 13);
+    const LATER: Date = date!(2026 - 11 - 26);
+
+    fn after_done_months() -> ScheduleForm {
+        ScheduleForm {
+            source: "builder".to_owned(),
+            unit: "months".to_owned(),
+            anchor: "after_done".to_owned(),
+            ..ScheduleForm::default()
+        }
+    }
+
+    #[test]
+    fn builder_after_done_rule_does_not_depend_on_today() {
+        let form = after_done_months();
+        let first = schedule_from_builder(&form, FRIDAY).unwrap();
+        let later = schedule_from_builder(&form, LATER).unwrap();
+        assert_eq!(first.rule, later.rule);
+    }
+
+    #[test]
+    fn re_saving_an_unchanged_after_done_monthly_keeps_the_stored_schedule() {
+        let stored = parse("every month after done", FRIDAY).unwrap();
+        let phrase = phrase_form("every month after done");
+        let from_phrase = schedule_from_form(&phrase, LATER, Some(&stored)).unwrap();
+        assert_eq!(from_phrase, Some(stored));
+        let from_builder = schedule_from_form(&after_done_months(), LATER, Some(&stored)).unwrap();
+        assert_eq!(from_builder, Some(stored));
+    }
+
+    fn phrase_form(phrase: &str) -> ScheduleForm {
+        ScheduleForm {
+            phrase: phrase.to_owned(),
+            ..ScheduleForm::default()
+        }
+    }
 }
