@@ -1272,6 +1272,10 @@ enum Rival {
     /// Archives it first — what a second "Archive all" or a second instance's
     /// sweep does. The reload should find it no longer swept and move on.
     Archives,
+    /// Clears the task's repeat schedule through the real
+    /// `set_task_schedule` use case — a user editing a chore while a
+    /// recurrence tick holds an older copy of it.
+    ClearsSchedule,
 }
 
 /// A `TaskRepository` that lets exactly one rival writer in, immediately
@@ -1311,6 +1315,21 @@ impl<'a> Contended<'a> {
                 ..agg.task.clone()
             },
             Rival::Archives => anamnesis_core::archive_task(&agg.task, now).unwrap(),
+            Rival::ClearsSchedule => {
+                let clock = FixedClock::at(now.unix_seconds());
+                set_task_schedule(
+                    self.inner,
+                    &clock,
+                    &TzResolver,
+                    UTC_ZONE,
+                    admin(),
+                    self.target,
+                    None,
+                )
+                .await
+                .unwrap();
+                return;
+            }
         };
         TaskRepository::update(self.inner, &next, was)
             .await
@@ -1450,6 +1469,95 @@ async fn archive_all_skips_a_task_a_rival_archived_mid_pass_and_finishes_the_res
             "either way, every swept task ends up archived"
         );
     }
+}
+
+/// Two "every day" chores in an Active project, both due one day after the
+/// schedule was set at instant 0.
+async fn two_daily_chores(fakes: &Fakes, ids: &SequentialIdGen, clock: &FixedClock) -> Vec<Task> {
+    let project_id = some_project_id(ids);
+    let mut project = anamnesis_core::create_project(
+        project_id,
+        AreaId::new(ids.next()),
+        "Home",
+        "",
+        clock.now(),
+    )
+    .unwrap();
+    project.status = ProjectStatus::Active;
+    fakes.seed_project(project);
+    let today = TzResolver.local_date(UTC_ZONE, clock.now()).unwrap();
+    let mut chores = Vec::new();
+    for title in ["Water the plants", "Feed the cat"] {
+        let task = create_task(fakes, ids, clock, fakes, member(), project_id, title, "")
+            .await
+            .unwrap();
+        let schedule = anamnesis_core::parse("every day", today).unwrap();
+        let task = set_task_schedule(
+            fakes,
+            clock,
+            &TzResolver,
+            UTC_ZONE,
+            member(),
+            task.id,
+            Some(schedule),
+        )
+        .await
+        .unwrap();
+        chores.push(task);
+    }
+    chores
+}
+
+#[tokio::test]
+async fn a_tick_holding_a_stale_copy_never_reverts_a_users_schedule_edit() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let chores = two_daily_chores(&fakes, &ids, &FixedClock::at(0)).await;
+    let repo = Contended::new(&fakes, chores[0].id, Rival::ClearsSchedule);
+    let deps = RecurrenceDeps {
+        tasks: &repo,
+        projects: &fakes,
+        board: &fakes,
+        search: &fakes,
+        tz: &TzResolver,
+        zone: UTC_ZONE,
+    };
+
+    let two_days_on = Timestamp::from_unix_seconds(2 * 24 * 60 * 60).unwrap();
+    let tick = run_recurrence_tick(&deps, two_days_on).await.unwrap();
+
+    assert_eq!(
+        fakes.task(chores[0].id).recurrence,
+        None,
+        "the user's cleared schedule must survive the tick's stale write"
+    );
+    assert_eq!(tick.fired, 1, "the contested chore is skipped, not fired");
+    let other = fakes.task(chores[1].id).recurrence.unwrap();
+    assert!(
+        other.due_since.is_some(),
+        "losing one chore must not end the tick"
+    );
+}
+
+#[tokio::test]
+async fn setting_a_schedule_stamps_last_touched_at() {
+    let fakes = Fakes::new();
+    let ids = SequentialIdGen::new();
+    let chores = two_daily_chores(&fakes, &ids, &FixedClock::at(0)).await;
+    let later = FixedClock::at(500);
+    let cleared = set_task_schedule(
+        &fakes,
+        &later,
+        &TzResolver,
+        UTC_ZONE,
+        member(),
+        chores[0].id,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(cleared.last_touched_at, later.now());
+    assert_eq!(fakes.task(chores[0].id).last_touched_at, later.now());
 }
 
 // --- Gap 2: a resolved tangle sitting in Done must be archived too, an

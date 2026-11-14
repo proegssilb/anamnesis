@@ -163,7 +163,11 @@ fn local_date_of(
 /// Sets (`Some`) or clears (`None`) a task's repeat schedule. Setting one
 /// computes `next_due_at` as the first occurrence still ahead of now and
 /// clears any due-ness or open window; placement is untouched.
-#[allow(clippy::too_many_arguments)]
+///
+/// This is a user edit, so it stamps `last_touched_at` like `edit_task`
+/// does. That stamp is the optimistic-concurrency token: a tick that read
+/// the task before this edit then has its write rejected as a conflict
+/// (and skips the task), instead of writing back the old schedule.
 pub async fn set_task_schedule(
     repo: &dyn TaskRepository,
     clock: &dyn Clock,
@@ -178,7 +182,8 @@ pub async fn set_task_schedule(
     }
     let aggregate = repo.load(task_id).await?.ok_or(AppError::NotFound)?;
     let task = &aggregate.task;
-    let updated = match schedule {
+    let now = clock.now();
+    let rescheduled = match schedule {
         None => core::clear_schedule(task),
         Some(schedule) => {
             schedule
@@ -186,9 +191,13 @@ pub async fn set_task_schedule(
                 .map_err(|e| AppError::Invalid(e.to_string()))?;
             let last = task.recurrence.as_ref().and_then(|r| r.last_completed_at);
             let last = local_date_of(last, tz, zone)?;
-            let firing = upcoming_firing(&schedule, clock.now(), last, tz, zone)?;
+            let firing = upcoming_firing(&schedule, now, last, tz, zone)?;
             core::set_schedule(task, schedule, firing.next_due_at)
         }
+    };
+    let updated = Task {
+        last_touched_at: now,
+        ..rescheduled
     };
     repo.update(&updated, task.last_touched_at).await?;
     Ok(updated)
