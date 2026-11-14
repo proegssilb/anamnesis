@@ -19,9 +19,9 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
-  packages: write
+# No `permissions:` block: Forgejo does not grant the automatic token package
+# access through it (see the login step), and the token already has the
+# repository write this job uses to create the release.
 
 env:
   REGISTRY: code.i.xenrelay.com
