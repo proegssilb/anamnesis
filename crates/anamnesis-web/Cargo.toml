@@ -17,6 +17,9 @@ axum-extra = { version = "0.12.6", features = ["cookie", "cookie-signed"] }
 # Wraps the multipart file field as a `ByteStream` (`anamnesis_app::ByteStream`)
 # for streaming straight into `BlobStore::put` without buffering it whole.
 futures-util = "0.3.34"
+# The schedule editor posts repeated `weekdays` fields, which axum's `Form`
+# (serde_urlencoded) cannot collect into a list. Already in Cargo.lock.
+form_urlencoded = "1.2.2"
 # `serde` is opt-in from 3.0: domain types (`Area`, `Task`, ...) reach
 # templates through `minijinja::value::Serde` rather than a hand-written
 # `Into<Value>` per type.

@@ -36,7 +36,9 @@ use anamnesis_app::{
     reposition_board_item, request_suggestion,
 };
 use anamnesis_core::policy::Role;
-use anamnesis_core::{Blockage, ColumnId, OfferItem, Outcome, ProjectId, Tangle, TangleId, TaskId};
+use anamnesis_core::{
+    Blockage, ColumnId, OfferItem, Outcome, ProjectId, SuggestionReason, Tangle, TangleId, TaskId,
+};
 
 use crate::auth::CurrentUser;
 use crate::error::WebError;
@@ -636,6 +638,7 @@ async fn task_card_view(
         id => task.id.to_string(),
         title => task.title.as_str(),
         bounce_count => task.bounce_count,
+        repeat_phrase => task.recurrence.as_ref().map(|r| anamnesis_core::describe(&r.schedule)),
         card_fields => card_fields,
         project_title => project_title,
         area_title => area_title,
@@ -729,6 +732,16 @@ async fn build_suggestion_view(
     }
 }
 
+/// The note shown beside a suggestion, if its reason has one. Only a chore
+/// coming due does: "next up" and "forgotten" picks speak for themselves,
+/// and a due chore is neutral ("due again"), never "overdue".
+fn reason_label(reason: SuggestionReason) -> Option<&'static str> {
+    match reason {
+        SuggestionReason::Due => Some("due again"),
+        SuggestionReason::NextUp | SuggestionReason::Forgotten => None,
+    }
+}
+
 /// One entry in an offer. A task offer needs its title looked up (the offer
 /// itself carries only ids); a tangle offer is self-describing.
 async fn offer_item_view(state: &AppState, item: &OfferItem) -> Result<minijinja::Value, WebError> {
@@ -745,6 +758,7 @@ async fn offer_item_view(state: &AppState, item: &OfferItem) -> Result<minijinja
                 task_id => task_offer.task_id.to_string(),
                 title => title,
                 high_bounce => task_offer.high_bounce,
+                reason => reason_label(task_offer.reason),
             })
         }
         OfferItem::Tangle(tangle) => Ok(context! {

@@ -50,11 +50,9 @@ pub(super) async fn render_task_page(
         build_project_context(state, user, task).await?;
     let description_html =
         crate::handlers::markdown::render(&task.description, user.user_id.as_str());
+    let schedule_editor =
+        minijinja::Value::from(Serde(super::schedule::editor_for_task(state, user, task)?));
 
-    let tmpl = state
-        .templates
-        .get_template("task.html")
-        .map_err(WebError::template)?;
     let ctx = task_page_context(TaskPageContext {
         task,
         description_html,
@@ -71,10 +69,25 @@ pub(super) async fn render_task_page(
         relationships,
         column_options,
         fields,
+        schedule_editor,
         user,
         error,
         max_body_bytes: state.max_body_bytes,
     });
+    render_task_template(state, ctx, status)
+}
+
+/// Renders `task.html` with `ctx` — the tail of [`render_task_page`], split
+/// out so that function stays about gathering the page's data.
+fn render_task_template(
+    state: &AppState,
+    ctx: minijinja::Value,
+    status: StatusCode,
+) -> Result<Response, WebError> {
+    let tmpl = state
+        .templates
+        .get_template("task.html")
+        .map_err(WebError::template)?;
     let body = tmpl.render(ctx).map_err(WebError::template)?;
     Ok((status, Html(body)).into_response())
 }
@@ -99,6 +112,7 @@ struct TaskPageContext<'a> {
     relationships: Vec<minijinja::Value>,
     column_options: Vec<minijinja::Value>,
     fields: Vec<minijinja::Value>,
+    schedule_editor: minijinja::Value,
     user: &'a CurrentUser,
     error: Option<&'a str>,
     max_body_bytes: usize,
@@ -126,6 +140,7 @@ fn task_page_context(ctx: TaskPageContext) -> minijinja::Value {
         relationships => ctx.relationships,
         column_options => ctx.column_options,
         fields => ctx.fields,
+        schedule_editor => ctx.schedule_editor,
         csrf_token => &ctx.user.csrf_token,
         current_user => &ctx.user.display_name,
         error => ctx.error,

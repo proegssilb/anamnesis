@@ -1,0 +1,96 @@
+{# The task page's "Repeats" section (`handlers/tasks/schedule.rs`): a typed
+   phrase and a dropdown builder for the same schedule. Either editor posts
+   the whole form to the preview route, which re-renders this fragment
+   (canonical phrase, dropdowns set to match, next dates) — the server is
+   the only interpreter, so the two cannot disagree. Rows show or hide by
+   unit/anchor/mode here, server-side; there is no client logic beyond the
+   `hx-*` attributes. Without JavaScript it is a plain form posting to the
+   save route. #}
+{% macro choice(value, current, label) -%}
+  <option value="{{ value }}"{% if value == current %} selected{% endif %}>{{ label }}</option>
+{%- endmacro %}
+{% macro time_row(prefix, hour, minute, ampm, minutes) -%}
+  <select name="{{ prefix }}_hour" aria-label="Hour">
+    {% for h in range(1, 13) %}{{ choice(h|string, hour, h) }}{% endfor %}
+  </select>:<select name="{{ prefix }}_minute" aria-label="Minute">
+    {% for m in minutes %}<option value="{{ m }}"{% if m|string == minute %} selected{% endif %}>{% if m < 10 %}0{% endif %}{{ m }}</option>{% endfor %}
+  </select>
+  <select name="{{ prefix }}_ampm" aria-label="am or pm">
+    {{ choice("am", ampm, "am") }}{{ choice("pm", ampm, "pm") }}
+  </select>
+{%- endmacro %}
+{% set ed = schedule_editor %}
+{% set f = ed.form %}
+<form id="schedule-editor" class="panel-form schedule-editor" method="post" action="/tasks/{{ ed.task_id }}/schedule"
+      hx-target="#schedule-editor" hx-swap="outerHTML">
+  <input type="hidden" name="csrf_token" value="{{ ed.csrf_token }}">
+  <input type="hidden" name="source" value="phrase">
+  <input type="hidden" name="original_phrase" value="{{ f.original_phrase }}">
+
+  <label for="schedule-phrase">Repeats</label>
+  <input id="schedule-phrase" name="phrase" value="{{ f.phrase }}" autocomplete="off"
+         placeholder="e.g. every tue at 6pm until 8am"{% if ed.error %} aria-invalid="true" aria-describedby="schedule-error"{% endif %}
+         hx-post="/tasks/{{ ed.task_id }}/schedule/preview" hx-trigger="keyup changed delay:400ms, change"
+         hx-include="closest form" hx-vals='{"source": "phrase"}'>
+  {% if ed.error %}<p id="schedule-error" class="field-error" role="alert">{{ ed.error }}</p>{% endif %}
+
+  <div class="schedule-builder" hx-post="/tasks/{{ ed.task_id }}/schedule/preview" hx-trigger="change"
+       hx-include="closest form" hx-vals='{"source": "builder"}'>
+    <p class="schedule-row">
+      <label for="schedule-every">Every</label>
+      <input id="schedule-every" name="every_n" type="number" min="1" max="255" inputmode="numeric" value="{{ f.every_n }}">
+      <select name="unit" aria-label="Unit">
+        {{ choice("days", f.unit, "day(s)") }}{{ choice("weeks", f.unit, "week(s)") }}{{ choice("months", f.unit, "month(s)") }}
+      </select>
+      counted from
+      <select name="anchor" aria-label="Counted from">
+        {{ choice("calendar", f.anchor, "the calendar") }}{{ choice("after_done", f.anchor, "when it's done") }}
+      </select>
+    </p>
+
+    {% if f.anchor == "calendar" and f.unit == "weeks" %}
+      <p class="schedule-row">
+        On
+        {% for code, label in [("mon", "Mon"), ("tue", "Tue"), ("wed", "Wed"), ("thu", "Thu"), ("fri", "Fri"), ("sat", "Sat"), ("sun", "Sun")] %}
+          <label class="inline-check"><input type="checkbox" name="weekdays" value="{{ code }}"{% if code in f.weekdays %} checked{% endif %}> {{ label }}</label>
+        {% endfor %}
+      </p>
+    {% elif f.anchor == "calendar" and f.unit == "months" %}
+      <p class="schedule-row">
+        On
+        <select name="month_mode" aria-label="Which day of the month">
+          {{ choice("day", f.month_mode, "a day of the month") }}{{ choice("last_day", f.month_mode, "the last day") }}{{ choice("nth", f.month_mode, "a certain weekday") }}
+        </select>
+        {% if f.month_mode == "day" %}
+          the
+          <select name="month_day" aria-label="Day of the month">
+            {% for d in range(1, 32) %}{{ choice(d|string, f.month_day, d) }}{% endfor %}
+          </select>
+        {% elif f.month_mode == "nth" %}
+          the
+          <select name="nth" aria-label="Which one">
+            {{ choice("first", f.nth, "1st") }}{{ choice("second", f.nth, "2nd") }}{{ choice("third", f.nth, "3rd") }}{{ choice("fourth", f.nth, "4th") }}{{ choice("last", f.nth, "last") }}
+          </select>
+          <select name="nth_weekday" aria-label="Weekday">
+            {% for code, label in [("mon", "Mon"), ("tue", "Tue"), ("wed", "Wed"), ("thu", "Thu"), ("fri", "Fri"), ("sat", "Sat"), ("sun", "Sun")] %}{{ choice(code, f.nth_weekday, label) }}{% endfor %}
+          </select>
+        {% endif %}
+      </p>
+    {% endif %}
+
+    <p class="schedule-row">
+      <label class="inline-check"><input type="checkbox" name="pop_in"{% if f.pop_in %} checked{% endif %}> Put it on the board at</label>
+      {% if f.pop_in %}{{ time_row("pop_in", f.pop_in_hour, f.pop_in_minute, f.pop_in_ampm, ed.at_minutes) }}{% endif %}
+    </p>
+    {% if f.pop_in %}
+      <p class="schedule-row schedule-until">
+        <label class="inline-check"><input type="checkbox" name="until"{% if f.until %} checked{% endif %}> and take it back down at</label>
+        {% if f.until %}{{ time_row("until", f.until_hour, f.until_minute, f.until_ampm, ed.until_minutes) }}{% endif %}
+      </p>
+    {% endif %}
+  </div>
+
+  {% if ed.next %}<p class="schedule-next hint">Next: {{ ed.next|join(" · ") }}</p>{% endif %}
+  <button type="submit" hx-post="/tasks/{{ ed.task_id }}/schedule" hx-include="closest form">Save</button>
+  {% if ed.saved %}<span class="hint" role="status">Saved.</span>{% endif %}
+</form>

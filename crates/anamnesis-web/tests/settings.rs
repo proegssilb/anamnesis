@@ -47,6 +47,7 @@ async fn post_settings_by_a_non_admin_is_forbidden() {
                 ("active_project_limit", "1"),
                 ("cooldown_seconds", "0"),
                 ("high_bounce_threshold", "3"),
+                ("suggestion_due_slot_percent", "80"),
                 ("sweep_kind", "never"),
             ],
             Some(&stranger_cookie),
@@ -68,6 +69,7 @@ async fn post_settings_without_a_valid_csrf_token_is_rejected() {
                 ("active_project_limit", "1"),
                 ("cooldown_seconds", "0"),
                 ("high_bounce_threshold", "3"),
+                ("suggestion_due_slot_percent", "80"),
                 ("sweep_kind", "never"),
             ],
             Some(&admin_cookie),
@@ -182,9 +184,44 @@ async fn set_suggestion_cooldown(
             ("active_project_limit", "5"),
             ("cooldown_seconds", &cooldown_seconds.to_string()),
             ("high_bounce_threshold", "3"),
+            ("suggestion_due_slot_percent", "80"),
             ("sweep_kind", "never"),
         ],
         cookie,
     )
     .await
+}
+
+#[tokio::test]
+async fn due_slot_percent_is_editable_and_bounded() {
+    let app = TestApp::new(true).await;
+    let cookie: Option<&str> = None;
+
+    async fn post(app: &TestApp, percent: &str) -> Response<Body> {
+        app.post_form(
+            "/settings",
+            &[
+                ("csrf_token", support::DEV_CSRF_TOKEN),
+                ("active_project_limit", "5"),
+                ("cooldown_seconds", "259200"),
+                ("high_bounce_threshold", "3"),
+                ("suggestion_due_slot_percent", percent),
+                ("sweep_kind", "never"),
+            ],
+            None,
+        )
+        .await
+    }
+
+    let page = body_text(app.get("/settings", cookie).await).await;
+    assert!(page.contains("Chance a due chore gets the first suggestion (%)"));
+    assert!(page.contains(r#"name="suggestion_due_slot_percent""#));
+    assert!(page.contains(r#"value="80""#), "the default is 80%");
+
+    assert_eq!(post(&app, "35").await.status(), StatusCode::SEE_OTHER);
+    let page = body_text(app.get("/settings", cookie).await).await;
+    assert!(page.contains(r#"value="35""#), "the edit sticks");
+
+    assert_eq!(post(&app, "100").await.status(), StatusCode::SEE_OTHER);
+    assert_eq!(post(&app, "101").await.status(), StatusCode::BAD_REQUEST);
 }

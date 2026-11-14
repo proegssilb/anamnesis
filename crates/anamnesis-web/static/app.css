@@ -165,6 +165,38 @@ button:hover {
   padding: 0.75rem 1rem;
 }
 
+/* --- recurring tasks: the card's repeat glyph and the Repeats editor --- */
+
+/* Deliberately quiet: no colour change, no urgency. */
+.repeat-glyph {
+  color: var(--muted);
+  font-size: 0.85em;
+  font-weight: normal;
+}
+
+.schedule-editor .schedule-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.4rem 0;
+}
+
+.schedule-editor .inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.schedule-editor input[type="number"] {
+  width: 4.5rem;
+}
+
+.field-error {
+  color: var(--danger);
+  margin: 0.25rem 0 0.5rem;
+}
+
 /* --- boards list --- */
 
 .board-list {

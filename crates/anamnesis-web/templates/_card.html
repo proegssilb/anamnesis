@@ -7,7 +7,7 @@
    dragged element. #}
 {% if item.kind == "task" %}
   <div class="card" id="card-task-{{ item.id }}" data-item-kind="task" data-item-id="{{ item.id }}">
-    <h4 class="card-title"><a href="/tasks/{{ item.id }}">{{ item.title }}</a></h4>
+    <h4 class="card-title"><a href="/tasks/{{ item.id }}">{{ item.title }}</a>{% if item.repeat_phrase %} <span class="repeat-glyph" title="Repeats: {{ item.repeat_phrase }}" aria-label="Repeats: {{ item.repeat_phrase }}" role="img">↻</span>{% endif %}</h4>
     {% if item.project_title %}
       <p class="card-breadcrumb">
         {% if item.area_title %}{{ item.area_title }} / {% endif %}{{ item.project_title }}

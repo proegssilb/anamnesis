@@ -39,6 +39,7 @@
                 {% else %}
                   <p>{{ item.title }}</p>
                 {% endif %}
+                {% if item.reason %}<p class="hint">{{ item.reason }}</p>{% endif %}
                 <form method="post" action="/board/suggestion/accept">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                   <input type="hidden" name="task_id" value="{{ item.task_id }}">

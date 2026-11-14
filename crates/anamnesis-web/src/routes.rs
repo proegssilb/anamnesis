@@ -26,8 +26,8 @@ use crate::handlers::{
     grant_area_group_handler, grant_area_member_handler, grant_project_group_handler,
     grant_project_member_handler, grant_system_admin_handler, healthz_handler, list_areas_handler,
     list_projects_handler, login_handler, logout_handler, parent_candidates_handler,
-    raise_project_task_handler, raise_task_handler, relationship_candidates_handler,
-    reposition_handler, revoke_admin_group_handler, revoke_area_group_handler,
+    preview_schedule_handler, raise_project_task_handler, raise_task_handler,
+    relationship_candidates_handler, reposition_handler, save_schedule_handler, revoke_admin_group_handler, revoke_area_group_handler,
     revoke_area_member_handler, revoke_project_group_handler, revoke_project_member_handler,
     revoke_system_admin_handler, root_handler, search_handler, set_field_value_handler,
     set_parent_handler, transition_project_status_handler, trigger_sync_now_handler,
@@ -168,6 +168,11 @@ fn task_routes() -> Router<AppState> {
         .route(
             "/tasks/{id}/fields/{field_id}",
             post(set_field_value_handler),
+        )
+        .route("/tasks/{id}/schedule", post(save_schedule_handler))
+        .route(
+            "/tasks/{id}/schedule/preview",
+            post(preview_schedule_handler),
         )
 }
 

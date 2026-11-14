@@ -105,6 +105,7 @@ pub use tasks::{
     begin_upload_handler, complete_upload_handler, create_relationship_handler,
     delete_relationship_handler, download_attachment_handler, drop_task_handler,
     edit_task_description_handler, edit_task_title_handler, parent_candidates_handler,
-    raise_task_handler, relationship_candidates_handler, set_field_value_handler,
-    set_parent_handler, unarchive_task_handler, upload_part_handler, view_task_handler,
+    preview_schedule_handler, raise_task_handler, relationship_candidates_handler,
+    save_schedule_handler, set_field_value_handler, set_parent_handler, unarchive_task_handler,
+    upload_part_handler, view_task_handler,
 };

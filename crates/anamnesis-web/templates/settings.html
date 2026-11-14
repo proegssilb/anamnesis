@@ -33,6 +33,9 @@
     <label for="high_bounce_threshold">High-bounce threshold</label>
     <input id="high_bounce_threshold" name="high_bounce_threshold" type="number" min="0"
            inputmode="numeric" required value="{{ high_bounce_threshold }}">
+    <label for="suggestion_due_slot_percent">Chance a due chore gets the first suggestion (%)</label>
+    <input id="suggestion_due_slot_percent" name="suggestion_due_slot_percent" type="number"
+           min="0" max="100" inputmode="numeric" required value="{{ due_slot_percent }}">
 
     <h2>Scheduled archive sweep</h2>
     <p class="hint">

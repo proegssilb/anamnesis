@@ -343,6 +343,8 @@ pub struct UpdateSettingsForm {
     pub active_project_limit: String,
     pub cooldown_seconds: String,
     pub high_bounce_threshold: String,
+    /// Whole percent, 0 to 100.
+    pub suggestion_due_slot_percent: String,
     /// `"never"` | `"every_n_weeks"` | `"day_of_month"`.
     pub sweep_kind: String,
     #[serde(default)]

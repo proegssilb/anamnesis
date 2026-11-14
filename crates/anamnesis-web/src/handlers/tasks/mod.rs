@@ -21,6 +21,7 @@ mod hierarchy;
 mod lifecycle;
 mod page;
 mod relationships;
+mod schedule;
 mod view;
 
 pub use attachments::{
@@ -39,6 +40,7 @@ pub use lifecycle::{
 pub use relationships::{
     create_relationship_handler, delete_relationship_handler, relationship_candidates_handler,
 };
+pub use schedule::{preview_schedule_handler, save_schedule_handler};
 pub use view::view_task_handler;
 
 use anamnesis_app::AppError;

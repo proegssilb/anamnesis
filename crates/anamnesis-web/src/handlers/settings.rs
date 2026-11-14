@@ -72,6 +72,15 @@ fn parse_u32(raw: &str, field: &str) -> Result<u32, WebError> {
         .map_err(|_| bad(format!("{field} must be a whole number")))
 }
 
+/// A whole percentage, 0 to 100 inclusive.
+fn parse_percent(raw: &str) -> Result<u8, WebError> {
+    raw.trim()
+        .parse::<u8>()
+        .ok()
+        .filter(|percent| *percent <= 100)
+        .ok_or_else(|| bad("the due-chore chance must be a whole number from 0 to 100"))
+}
+
 fn parse_recurrence(form: &UpdateSettingsForm) -> Result<Recurrence, WebError> {
     match form.sweep_kind.as_str() {
         "never" => Ok(Recurrence::Never),
@@ -137,9 +146,6 @@ async fn update_settings_impl(
     }
     let admin = access::is_system_admin(state, &user.user_id).await?;
     let role = admin.then_some(Role::SystemAdmin);
-    // The due-slot percentage is not on the form yet, so saving keeps
-    // whatever is stored rather than resetting it.
-    let stored = view_settings(state.settings.as_ref(), role).await?;
 
     let new_settings = Settings {
         active_project_limit: parse_u32(&form.active_project_limit, "the active project limit")?,
@@ -149,7 +155,7 @@ async fn update_settings_impl(
                 &form.high_bounce_threshold,
                 "the high-bounce threshold",
             )?,
-            due_slot_percent: stored.suggestion.due_slot_percent,
+            due_slot_percent: parse_percent(&form.suggestion_due_slot_percent)?,
         },
         sweep_recurrence: parse_recurrence(&form)?,
         // Ignored by `SettingsRepository::update` (see its doc comment) --
@@ -194,6 +200,7 @@ fn render_settings_page(
             active_project_limit => settings.active_project_limit,
             cooldown_seconds => settings.suggestion.cooldown_seconds,
             high_bounce_threshold => settings.suggestion.high_bounce_threshold,
+            due_slot_percent => settings.suggestion.due_slot_percent,
             sweep_kind => sweep_kind,
             sweep_n => sweep_n,
             sweep_weekday => sweep_weekday,

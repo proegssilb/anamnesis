@@ -643,6 +643,7 @@ pub async fn set_active_project_limit(app: &TestApp, limit: u32, cookie: Option<
                 ("active_project_limit", &limit),
                 ("cooldown_seconds", "259200"),
                 ("high_bounce_threshold", "3"),
+                ("suggestion_due_slot_percent", "80"),
                 ("sweep_kind", "never"),
             ],
             cookie,

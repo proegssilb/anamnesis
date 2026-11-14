@@ -84,6 +84,11 @@
 
   {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 
+  <section class="schedule-section">
+    <h2>Repeats</h2>
+    {% include "_schedule_editor.html" %}
+  </section>
+
   {% if fields %}
     <section>
       <h2>Fields</h2>
