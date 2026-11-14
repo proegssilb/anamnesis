@@ -7,8 +7,8 @@ use axum::response::{IntoResponse, Redirect, Response};
 use futures_util::StreamExt as _;
 
 use anamnesis_app::{
-    AppError, AttachmentId, AttachmentKind, ByteStream, add_file_attachment, add_link_attachment,
-    list_attachments,
+    AppError, Attachment, AttachmentId, AttachmentKind, ByteStream, add_file_attachment,
+    add_link_attachment, list_attachments,
 };
 use anamnesis_core::TaskId;
 
@@ -282,17 +282,35 @@ fn suffix_range(suffix: &str, size: u64) -> Result<Option<(u64, u64)>, WebError>
     Ok(Some((size - suffix, size - 1)))
 }
 
+/// Loads `attachment_id`, but only for a user who may view its task.
+/// `list_attachments`'s own gate (`Action::ViewTask`) is exactly what a
+/// download should be gated on — reused here via the use case itself rather
+/// than re-deriving the check, keeping this one call site honest about going
+/// through the same permission path every other read of this task's
+/// attachments does. Checked before anything about the attachment is acted
+/// on, so a caller without access learns nothing of it beyond that it exists.
+async fn load_viewable_attachment(
+    state: &AppState,
+    user: &CurrentUser,
+    attachment_id: AttachmentId,
+) -> Result<Attachment, WebError> {
+    let attachment = state
+        .attachments
+        .load(attachment_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let (_, role) = role_for_task(state, &user.user_id, attachment.task_id).await?;
+    list_attachments(state.attachments.as_ref(), role, attachment.task_id).await?;
+    Ok(attachment)
+}
+
 async fn download_attachment_impl(
     state: &AppState,
     user: &CurrentUser,
     attachment_id: AttachmentId,
     headers: &HeaderMap,
 ) -> Result<Response, WebError> {
-    let attachment = state
-        .attachments
-        .load(attachment_id)
-        .await?
-        .ok_or(AppError::NotFound)?;
+    let attachment = load_viewable_attachment(state, user, attachment_id).await?;
     let AttachmentKind::File {
         blob_key,
         filename,
@@ -305,13 +323,6 @@ async fn download_attachment_impl(
         ));
     };
     let size = *size;
-    let (_, role) = role_for_task(state, &user.user_id, attachment.task_id).await?;
-    // `list_attachments`'s own gate (`Action::ViewTask`) is exactly what a
-    // download should be gated on — reused here via the use case itself
-    // rather than re-deriving the check, keeping this one call site honest
-    // about going through the same permission path every other read of this
-    // task's attachments does.
-    list_attachments(state.attachments.as_ref(), role, attachment.task_id).await?;
 
     let range_header = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
     match parse_single_range(range_header, size) {

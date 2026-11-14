@@ -94,20 +94,26 @@ fn app_status_and_message(err: &AppError) -> (StatusCode, String) {
             StatusCode::UNPROCESSABLE_ENTITY,
             "That is the last System Admin — grant someone else System Admin first.".to_string(),
         ),
-        AppError::Repo(e) => {
-            if let Some(message) = payload_too_large_message(e) {
-                return (StatusCode::PAYLOAD_TOO_LARGE, message.to_string());
-            }
-            tracing::error!(error = %e, "repository error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Something went wrong on our end.".to_string(),
-            )
-        }
+        AppError::Repo(e) => repo_status_and_message(e),
         AppError::SyncNotConfigured | AppError::IssueTracker(_) | AppError::Crypto(_) => {
             sync_status_and_message(err)
         }
     }
+}
+
+/// A repository failure as HTTP: a payload-too-large cause buried in its
+/// source chain (see [`payload_too_large_message`]) is the client's 413;
+/// anything else is our 500, logged here since the user only sees a
+/// generic message.
+fn repo_status_and_message(err: &RepoError) -> (StatusCode, String) {
+    if let Some(message) = payload_too_large_message(err) {
+        return (StatusCode::PAYLOAD_TOO_LARGE, message.to_string());
+    }
+    tracing::error!(error = %err, "repository error");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Something went wrong on our end.".to_string(),
+    )
 }
 
 /// The project-sync-specific (issues #40/#41) half of [`app_status_and_message`],

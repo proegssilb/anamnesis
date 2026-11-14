@@ -105,6 +105,10 @@ clippy:
 # than leaving it to the PR round trip to catch. Note lizard counts each
 # `?` in Rust as a branch alongside `if`/`for`/`match`, so a chain of
 # fallible calls adds up faster than the visible branching suggests.
+# Since lizard 1.24.1 each `match` arm and each `let-else` counts too, so
+# CCN here can run higher than what Codacy reported on PRs #17/#49 for
+# the same code (those calibrations used 1.24.0's counting); the local
+# gate is the stricter of the two.
 #
 # A fail here is a prompt to look at the actual function, not to
 # restructure around this tool's counting behavior.

@@ -8,7 +8,8 @@ use std::hash::{Hash, Hasher};
 
 use anamnesis_core::policy::Role;
 use anamnesis_core::{
-    self as core, ColumnId, OfferItem, Outcome, Placement, SuggestionSettings, TaskSummary, UserId,
+    self as core, ColumnId, Offer, OfferItem, Outcome, Placement, SuggestionSettings, TaskSummary,
+    Timestamp, UserId,
 };
 
 use crate::error::AppError;
@@ -96,18 +97,32 @@ pub async fn request_suggestion(
     let outcome = core::suggest(now, seed, &board_state, &candidates, &graph, settings);
 
     if let Outcome::Offer(offer) = &outcome {
-        for item in &offer.items {
-            if let OfferItem::Task(task_offer) = item {
-                let Some(aggregate) = task_repo.load(task_offer.task_id).await? else {
-                    continue; // vanished since the query above; nothing to stamp.
-                };
-                let marked = core::mark_offered(&aggregate.task, now);
-                task_repo
-                    .update(&marked, aggregate.task.last_touched_at)
-                    .await?;
-            }
-        }
+        stamp_offered(task_repo, offer, now).await?;
     }
 
     Ok(outcome)
+}
+
+/// Stamps `last_offered_at` on every task in `offer` (`docs/DOMAIN.md` §5:
+/// "Every offer stamps `last_offered_at`"). Non-task items carry nothing to
+/// stamp, and a task that vanished since the candidate query is skipped.
+async fn stamp_offered(
+    task_repo: &dyn TaskRepository,
+    offer: &Offer,
+    now: Timestamp,
+) -> Result<(), AppError> {
+    let task_ids = offer.items.iter().filter_map(|item| match item {
+        OfferItem::Task(task_offer) => Some(task_offer.task_id),
+        OfferItem::Tangle(_) => None,
+    });
+    for task_id in task_ids {
+        let Some(aggregate) = task_repo.load(task_id).await? else {
+            continue; // vanished since the query above; nothing to stamp.
+        };
+        let marked = core::mark_offered(&aggregate.task, now);
+        task_repo
+            .update(&marked, aggregate.task.last_touched_at)
+            .await?;
+    }
+    Ok(())
 }

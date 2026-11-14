@@ -66,6 +66,21 @@ fn relationship_kind_id(kind: &str) -> Result<(anamnesis_core::KindId, bool), We
     }
 }
 
+/// The project of the task a new relationship points at. A missing target
+/// is the form's mistake (a stale or mistyped id), so it is a 400 rather
+/// than the 404 the URL's own task would get.
+async fn target_project(
+    state: &AppState,
+    to_task_id: TaskId,
+) -> Result<anamnesis_core::ProjectId, WebError> {
+    let to = state
+        .tasks
+        .load(to_task_id)
+        .await?
+        .ok_or_else(|| WebError::BadRequest("that target task does not exist".to_string()))?;
+    Ok(to.task.project_id)
+}
+
 async fn create_relationship_impl(
     state: &AppState,
     user: &CurrentUser,
@@ -77,19 +92,15 @@ async fn create_relationship_impl(
     }
     let (from_project_id, role) = role_for_task(state, &user.user_id, task_id).await?;
     let to_task_id = TaskId::new(form.to_task_id);
-    let to = state
-        .tasks
-        .load(to_task_id)
-        .await?
-        .ok_or_else(|| WebError::BadRequest("that target task does not exist".to_string()))?;
+    let to_project_id = target_project(state, to_task_id).await?;
 
     let (kind_id, reversed) = relationship_kind_id(&form.kind)?;
     let _ = resolve_kind(state.projects.as_ref(), kind_id).await?; // built-ins always resolve; keeps this call site honest about going through the same lookup create_relationship itself uses.
 
     let (from_id, from_project, to_id, to_project) = if reversed {
-        (to_task_id, to.task.project_id, task_id, from_project_id)
+        (to_task_id, to_project_id, task_id, from_project_id)
     } else {
-        (task_id, from_project_id, to_task_id, to.task.project_id)
+        (task_id, from_project_id, to_task_id, to_project_id)
     };
     match create_relationship(
         state.relationships.as_ref(),
