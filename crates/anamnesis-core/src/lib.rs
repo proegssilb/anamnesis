@@ -20,6 +20,7 @@ pub mod policy;
 mod project;
 mod recurrence;
 mod relationship;
+mod schedule;
 mod suggest;
 mod tangle;
 mod task;
@@ -48,6 +49,10 @@ pub use recurrence::{Recurrence, next_run, sweep_done, sweep_done_tangles};
 pub use relationship::{
     Relationship, RelationshipKind, builtin_blocks, builtin_duplicates, builtin_relates_to,
     create_relationship, create_relationship_kind, is_blocking,
+};
+pub use schedule::{
+    Anchor, MonthDay, Nth, PopIn, Rule, Schedule, ScheduleError, WeekdaySet, first_start,
+    next_occurrence, upcoming,
 };
 pub use suggest::{
     Blockage, BlockingGraph, BoardState, Offer, OfferItem, Outcome, SuggestionReason,
