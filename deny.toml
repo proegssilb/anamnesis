@@ -55,6 +55,29 @@ ignore = [
     # anamnesis ever opens a database file it did not create (e.g. a restore
     # or import feature).
     { id = "RUSTSEC-2026-0459", reason = "only operator-configured databases are opened; no sqlx release allows the fixed libsqlite3-sys yet" },
+    # chrono is unmaintained (chronotope/chrono#1768); all versions are
+    # flagged and no safe upgrade exists. anamnesis's own production code
+    # uses `time`/`jiff` instead -- `time = "0.3.55"` is a direct dep of
+    # anamnesis-core, anamnesis-web and anamnesis-adapters, and no .rs file
+    # in the workspace references `chrono`. The two transitive pulls are
+    # `openidconnect`/`oauth2` and `object_store`, both of which pin their
+    # own chrono requirement (the advisory's "no safe upgrade" path) and
+    # have no chrono-free release yet. The only direct use is the
+    # dev-dependency in anamnesis-adapters/tests/identity_provider.rs, which
+    # computes StandardClaims' expires_at/issued_at offsets for a mock OIDC
+    # token -- test-only, offline, never shipped. Drop this once
+    # openidconnect, oauth2 and object_store all publish releases that no
+    # longer depend on chrono (and the dev-dep is replaced by `time`/`jiff`
+    # at that point).
+    { id = "RUSTSEC-2026-0543", reason = "no anamnesis production code uses chrono; transitive via openidconnect/oauth2/object_store, plus one offline test; no chrono-free release of those upstreams yet" },
+    # humantime is flagged because it wraps chrono (RUSTSEC-2026-0543 above),
+    # not for its own reasons. It is not a direct dep of any crate in this
+    # workspace and no .rs file references it; it enters the graph only as a
+    # transitive requirement of `object_store` (prod path, anamnesis-adapters
+    # S3 backend) and `cucumber` (dev-dep of anamnesis-app, BDD tests).
+    # Neither upstream has a humantime-free release yet. Drop this once both
+    # publish one.
+    { id = "RUSTSEC-2026-0542", reason = "humantime is a transitive requirement of object_store and cucumber only; no direct use; no upstream release drops it yet" },
 ]
 
 # Only crates.io. A dependency from any other registry or straight from a
