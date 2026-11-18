@@ -386,21 +386,11 @@ fn month_day(cursor: &mut Cursor) -> Parsed<MonthDay> {
         ));
     };
     if word == "last" {
-        return if cursor.eat("day") {
-            Ok(MonthDay::LastDay)
-        } else {
-            let weekday = single_weekday(cursor)?;
-            Ok(MonthDay::Nth {
-                nth: Nth::Last,
-                weekday,
-            })
-        };
+        return last_month_day(cursor);
     }
     let value = ordinal(&word)?;
     if cursor.peek_is_weekday() {
-        let nth = nth_from(value, &word)?;
-        let weekday = single_weekday(cursor)?;
-        return Ok(MonthDay::Nth { nth, weekday });
+        return nth_weekday_month_day(cursor, value, &word);
     }
     if (1..=31).contains(&value) {
         Ok(MonthDay::Day(value))
@@ -410,6 +400,23 @@ fn month_day(cursor: &mut Cursor) -> Parsed<MonthDay> {
             "the day of the month must be 1st to 31st",
         ))
     }
+}
+
+// "last day" | "last" <weekday>
+fn last_month_day(cursor: &mut Cursor) -> Parsed<MonthDay> {
+    if cursor.eat("day") {
+        Ok(MonthDay::LastDay)
+    } else {
+        let weekday = single_weekday(cursor)?;
+        Ok(MonthDay::Nth { nth: Nth::Last, weekday })
+    }
+}
+
+// <ordinal> <weekday> as the Nth weekday of the month
+fn nth_weekday_month_day(cursor: &mut Cursor, value: u8, word: &str) -> Parsed<MonthDay> {
+    let nth = nth_from(value, word)?;
+    let weekday = single_weekday(cursor)?;
+    Ok(MonthDay::Nth { nth, weekday })
 }
 
 fn nth_from(value: u8, word: &str) -> Parsed<Nth> {
@@ -467,6 +474,17 @@ fn time_of_day(cursor: &mut Cursor) -> Parsed<Time> {
     })
 }
 
+/// Convert a 12-hour base to 24-hour given a meridiem indicator and whether
+/// the input had a colon. A bare hour without colon is rejected as ambiguous.
+fn hour24(hour: u8, pm: Option<bool>, has_colon: bool) -> Option<u8> {
+    match pm {
+        Some(pm) if (1..=12).contains(&hour) => Some(hour % 12 + u8::from(pm) * 12),
+        Some(_) => None,
+        None if has_colon => Some(hour),
+        None => None,
+    }
+}
+
 /// `6pm`, `6:30pm`, `18:00`, `noon`, `midnight`. A bare hour ("6") is
 /// ambiguous and rejected.
 fn parse_time(word: &str) -> Option<Time> {
@@ -481,12 +499,7 @@ fn parse_time(word: &str) -> Option<Time> {
         _ => (word, None),
     };
     let (hour, minute, has_colon) = clock_parts(body)?;
-    let hour = match pm {
-        Some(pm) if (1..=12).contains(&hour) => hour % 12 + if pm { 12 } else { 0 },
-        Some(_) => return None,
-        None if has_colon => hour,
-        None => return None,
-    };
+    let hour = hour24(hour, pm, has_colon)?;
     Time::from_hms(hour, minute, 0).ok()
 }
 

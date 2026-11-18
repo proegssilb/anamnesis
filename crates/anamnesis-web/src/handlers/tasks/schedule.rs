@@ -283,6 +283,11 @@ fn whole_number(text: &str, what: &str) -> Result<u16, ParseError> {
         .map_err(|_| builder_error(&format!("{what} must be a whole number")))
 }
 
+/// The dropdowns allow up to 99; the domain only needs u8.
+fn clamped_interval(n: u16) -> Result<u8, ParseError> {
+    u8::try_from(n).map_err(|_| builder_error("every can be 255 at most"))
+}
+
 /// Builds the schedule the dropdowns describe. `today` supplies what the
 /// dropdowns leave out, exactly as it does for a typed phrase.
 pub(super) fn schedule_from_builder(
@@ -315,29 +320,35 @@ fn rule_from_builder(form: &ScheduleForm) -> Result<Rule, ParseError> {
     let after_done = form.anchor == "after_done";
     match form.unit.as_str() {
         "days" => Ok(Rule::Days { n }),
-        "weeks" => {
-            let n = u8::try_from(n).map_err(|_| builder_error("every can be 255 at most"))?;
+        "weeks" => Ok(Rule::Weeks {
+            n: clamped_interval(n)?,
             // `on` is ignored for after-done: the grammar's constant, no days.
-            let on = if after_done {
-                WeekdaySet::new()
-            } else {
-                weekdays_from_builder(form)?
-            };
-            Ok(Rule::Weeks { n, on })
-        }
-        "months" => {
-            let n = u8::try_from(n).map_err(|_| builder_error("every can be 255 at most"))?;
+            on: weekdays_for(form, after_done)?,
+        }),
+        "months" => Ok(Rule::Months {
+            n: clamped_interval(n)?,
             // `on` is ignored for after-done (counted from the completion),
             // so it is the same constant the grammar uses, never today's day:
             // otherwise re-saving an unchanged schedule would differ.
-            let on = if after_done {
-                MonthDay::Day(1)
-            } else {
-                month_day_from_builder(form)?
-            };
-            Ok(Rule::Months { n, on })
-        }
+            on: month_day_for(form, after_done)?,
+        }),
         _ => Err(builder_error("pick days, weeks or months")),
+    }
+}
+
+fn weekdays_for(form: &ScheduleForm, after_done: bool) -> Result<WeekdaySet, ParseError> {
+    if after_done {
+        Ok(WeekdaySet::new())
+    } else {
+        weekdays_from_builder(form)
+    }
+}
+
+fn month_day_for(form: &ScheduleForm, after_done: bool) -> Result<MonthDay, ParseError> {
+    if after_done {
+        Ok(MonthDay::Day(1))
+    } else {
+        month_day_from_builder(form)
     }
 }
 
