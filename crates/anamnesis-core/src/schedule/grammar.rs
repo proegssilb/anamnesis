@@ -408,7 +408,10 @@ fn last_month_day(cursor: &mut Cursor) -> Parsed<MonthDay> {
         Ok(MonthDay::LastDay)
     } else {
         let weekday = single_weekday(cursor)?;
-        Ok(MonthDay::Nth { nth: Nth::Last, weekday })
+        Ok(MonthDay::Nth {
+            nth: Nth::Last,
+            weekday,
+        })
     }
 }
 
