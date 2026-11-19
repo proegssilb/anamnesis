@@ -53,7 +53,11 @@ uuid = { version = "1.25.0", features = ["v4"] }
 
 [dev-dependencies]
 chrono = "0.4.45"
-rsa = { version = "0.10.0", features = ["pem"] }
+rsa = "0.10.0"
+# The `rsa` 0.10 `TryCryptoRng` bound needs a concrete OS RNG; `getrandom::SysRng`
+# is the one the crate's own docs and tests use. `sys_rng` pulls in the
+# `rand_core` re-export behind it.
+getrandom = { version = "0.4.3", features = ["sys_rng"] }
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 wiremock = "0.6.5"

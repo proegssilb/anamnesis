@@ -12,3 +12,17 @@
 # name = "some-crate"
 # version = "1.2.3"
 # reason = "RUSTSEC-YYYY-NNNN: fixes ... ; cannot wait out the 14 days"
+
+# RUSTSEC-2023-0071 (Marvin timing sidechannel) is fixed in the 0.10 series;
+# 0.9.x has no patch, so this is the only way out and it arrived 10 days
+# before this check. Both were published 2026-11-08; drop each once it is
+# >= 14 days old (2026-11-22) or it leaves Cargo.lock.
+[[allow]]
+name = "rsa"
+version = "0.10.0"
+reason = "RUSTSEC-2023-0071 fix is only in 0.10.x; no 0.9.x patch exists, so the 14-day wait would leave the advisory unfixed"
+
+[[allow]]
+name = "crypto-bigint"
+version = "0.7.11"
+reason = "pulled in by rsa 0.10.0 (its dep spec is ^0.7.11; base lock had 0.7.10); same 2026-11-08 release as the RUSTSEC-2023-0071 fix"
