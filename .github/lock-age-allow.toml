@@ -26,3 +26,26 @@ reason = "RUSTSEC-2023-0071 fix is only in 0.10.x; no 0.9.x patch exists, so the
 name = "crypto-bigint"
 version = "0.7.11"
 reason = "pulled in by rsa 0.10.0 (its dep spec is ^0.7.11; base lock had 0.7.10); same 2026-11-08 release as the RUSTSEC-2023-0071 fix"
+
+# RUSTSEC-2026-0592 (stack overflow in url's Url::origin() on nested blob:
+# URLs) is fixed only in 2.5.9, published 2026-11-20; url 2.5.9's dep spec
+# pulls form_urlencoded 1.2.3 from the same release. Drop each once >= 14
+# days old (2026-12-04) or they leave Cargo.lock.
+[[allow]]
+name = "url"
+version = "2.5.9"
+reason = "RUSTSEC-2026-0592: fix is only in 2.5.9; waiting out the 14 days would leave the advisory unfixed"
+
+[[allow]]
+name = "form_urlencoded"
+version = "1.2.3"
+reason = "pulled in by url 2.5.9 (its dep spec is ^1.2.3; base lock had 1.2.2); same 2026-11-20 release as the RUSTSEC-2026-0592 fix"
+
+# RUSTSEC-2026-0594 (private cookie nonces can repeat in forked processes)
+# is fixed only in 0.18.3, published 2026-11-23; anamnesis-web seals session
+# cookies with cookie's PrivateJar via axum-extra. Drop once >= 14 days old
+# (2026-12-07) or it leaves Cargo.lock.
+[[allow]]
+name = "cookie"
+version = "0.18.3"
+reason = "RUSTSEC-2026-0594: fix is only in 0.18.3; waiting out the 14 days would leave the advisory unfixed"
