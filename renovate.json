@@ -9,6 +9,12 @@
   "vulnerabilityAlerts": {
     "labels": ["security"]
   },
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "automerge": true
+    }
+  ],
   "customManagers": [
     {
       "customType": "regex",

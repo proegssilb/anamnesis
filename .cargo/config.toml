@@ -1,0 +1,25 @@
+# Native Cargo resolver gate for the 14-day minimum-release-age rule.
+#
+# `registry.global-min-publish-age` sets the threshold: a registry version
+# whose `pubtime` is newer than this is treated as incompatible. `resolver.incompatible-publish-age`
+# sets what the resolver does with those versions -- `deny` keeps them out of
+# any *new* resolution, while versions already in Cargo.lock stay put, so an
+# existing lockfile still builds exactly as locked.
+#
+# This makes `cargo update` and a fresh `cargo add` refuse to pull in a crate
+# version published less than 14 days ago, at resolution time, instead of
+# only catching it afterwards. It complements -- not replaces -- the rest of
+# the chain, which still holds the same 14-day rule from two other sides:
+# renovate.json's `minimumReleaseAge` (Renovate bumps), and
+# `scripts/check_lock_age.py` in the `lock-age` CI job (authoritative gate,
+# with the reason-tagged allow-list at `.github/lock-age-allow.toml`).
+#
+# Honored by Cargo 1.100+ -- the version `rust:1.100-bookworm` in the
+# Dockerfile and the `stable` CI toolchain resolve to. Older toolchains
+# simply ignore these keys and build as before (still age-gated by CI).
+
+[registry]
+global-min-publish-age = "14 days"
+
+[resolver]
+incompatible-publish-age = "deny"

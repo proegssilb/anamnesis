@@ -18,7 +18,7 @@
 # Pinned, so an image build never runs a cargo-chef published minutes ago.
 # Renovate bumps this (see the customManagers entry in renovate.json), which
 # holds it to the same 14-day minimumReleaseAge as every other dependency.
-FROM rust:1.98-bookworm AS chef
+FROM rust:1.100-bookworm AS chef
 RUN cargo install cargo-chef --version 0.1.78 --locked
 WORKDIR /build
 
@@ -45,7 +45,7 @@ RUN mkdir -p /state/blobs
 # `cc` rather than `static-debian12`: the binary links glibc (via `ring`'s C
 # code and the standard library's DNS resolution), so it is not static.
 #
-# The Debian release MUST match the builder's. `rust:1.98-trixie` is Debian 13
+# The Debian release MUST match the builder's. `rust:1.100-trixie` is Debian 13
 # (glibc 2.41) and produces a binary that will not start on this Debian 12
 # base (glibc 2.36); bookworm and `cc-debian12` are the matched pair.
 FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
