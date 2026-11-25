@@ -54,9 +54,9 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "ammonia"
-version = "4.2.4"
+version = "4.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f45dfa685e1ec33b1bf1a3b93b8047cbdbef41b6040deebbe6bea7720a45574"
+checksum = "b34ca49e407c06daac53f0c4debe8ff5df9cc2a4e9369d164a5d86ef8c219319"
 dependencies = [
  "cssparser",
  "html5ever",
@@ -2287,9 +2287,9 @@ checksum = "d5848f5a9e8117cf94f2f90faac24a87ff81600ff8628c1e3deaab572e76bfa1"
 
 [[package]]
 name = "minijinja"
-version = "3.0.5"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00f5a04892e86ddb4fc254e9160835370b63a0d44042d3ab4725bc2dbcbab136"
+checksum = "509eeb2603a84eccabb4d75f6ec8ba23b46bbf441aaeb863d6b83a5887fd51e4"
 dependencies = [
  "serde",
 ]
